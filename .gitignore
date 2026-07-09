@@ -14,11 +14,15 @@ __pycache__/
 *.tar
 *.tar.gz
 *.zip
-data/
-datasets/
-runs/
-checkpoints/
-outputs/
+/data/
+/datasets/
+/runs/
+/checkpoints/
+/outputs/
+/external/FastWAM/
+/external/FastWAM-*/
+/.cache/
+/.hf/
 *.mp4
 *.png
 

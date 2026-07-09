@@ -49,16 +49,40 @@ docs/DESIGN.md    # 设计、判定实验、工程要点(反坍塌等)
 CodeWAM 复用 Wan 基座专家的构件,由 FastWAM 参考实现提供:
 
 ```bash
-pip install -e /path/to/FastWAM     # 提供 `fastwam` 包(WanVideoDiT/ActionDiT/MoT/VAE/scheduler/loaders)
-pip install -e .                    # codewam
+bash scripts/bootstrap_fastwam.sh   # sparse checkout FastWAM 到 external/FastWAM 并 editable install
+pip install -e .                    # codewam; bootstrap 脚本默认也会执行
 ```
 
 二者共享数据与评测,便于 **CodeWAM vs FastWAM** 的 apples-to-apples 对照。
+
+推荐的完整准备顺序:
+
+```bash
+# 1) 拉取固定版本 FastWAM 依赖
+bash scripts/bootstrap_fastwam.sh
+
+# 2) 下载 Wan/FastWAM 模型文件到 checkpoints/
+bash scripts/download_models.sh
+
+# 3) 从 Wan DiT 预生成 ActionDiT backbone
+bash scripts/prepare_action_dit.sh
+
+# 4) 检查环境与模型文件
+python3 scripts/check_environment.py
+
+# 5) 训练示例
+bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
+```
+
+外部依赖和模型固定在 [`upstreams.yaml`](./upstreams.yaml)。更多说明见
+[`docs/BOOTSTRAP.md`](./docs/BOOTSTRAP.md)。
 
 ## 状态
 
 - 已通过:码本模块 CPU 单测、P1/P2/P4 判定实验(真机 latent)、模型构建 + 1-step 前反向 smoke。
 - 下一步(真正判据):训一段后用三通道动作敏感性诊断看**图像通道 max|Δ| 是否抬升**——
   这才是"破动作级 proprio 捷径"的证据;并与 FastWAM 在同数据/同评测下对照成功率与推理代价。
+- 工程整理:已补齐外部上游 sparse checkout、模型下载、ActionDiT 预处理、Hydra 训练配置和
+  CodeWAM 训练入口;外部代码/模型默认不入库。
 
 详见 [`docs/DESIGN.md`](./docs/DESIGN.md)。

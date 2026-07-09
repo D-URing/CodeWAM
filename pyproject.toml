@@ -13,6 +13,18 @@ dependencies = [
   "einops",
   "omegaconf",
   "hydra-core",
+  "pillow",
+]
+
+[project.optional-dependencies]
+bootstrap = [
+  "huggingface-hub",
+  "modelscope",
+  "safetensors",
+]
+dev = [
+  "ruff",
+  "pytest",
 ]
 
 # NOTE: CodeWAM 复用 Wan 基座专家的构件(WanVideoDiT / ActionDiT / MoT / VAE / scheduler),

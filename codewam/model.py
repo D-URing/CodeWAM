@@ -1058,6 +1058,11 @@ class CodeWAM(torch.nn.Module):
                 context_mask=context_mask,
                 proprio=proprio,
             )
+        context, context_mask, _ = self._encode_state_and_append_context(
+            context=context,
+            context_mask=context_mask,
+            input_latents=first_frame_latents,
+        )
 
         infer_timesteps_video, infer_deltas_video = self.infer_video_scheduler.build_inference_schedule(
             num_inference_steps=num_inference_steps,
@@ -1197,6 +1202,11 @@ class CodeWAM(torch.nn.Module):
                 context_mask=context_mask,
                 proprio=proprio,
             )
+        context, context_mask, _ = self._encode_state_and_append_context(
+            context=context,
+            context_mask=context_mask,
+            input_latents=first_frame_latents,
+        )
 
         timestep_video = torch.zeros(
             (first_frame_latents.shape[0],),

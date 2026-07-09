@@ -1,0 +1,30 @@
+fastwam:
+  repo: https://github.com/yuantianyuan01/FastWAM.git
+  commit: 45d8e1458921d83f8ad6cf9ce993d371208dabd0
+  sparse_paths:
+    - src/fastwam
+    - configs
+    - scripts
+  local_dir: external/FastWAM
+
+models:
+  wan_video_dit:
+    repo: Wan-AI/Wan2.2-TI2V-5B
+    include:
+      - diffusion_pytorch_model*.safetensors
+  wan_common_converted:
+    repo: DiffSynth-Studio/Wan-Series-Converted-Safetensors
+    include:
+      - Wan2.2_VAE.safetensors
+      - models_t5_umt5-xxl-enc-bf16.safetensors
+  tokenizer:
+    repo: Wan-AI/Wan2.1-T2V-1.3B
+    include:
+      - google/umt5-xxl/**
+  fastwam_release:
+    repo: yuanty/fastwam
+    include:
+      - libero_uncond_2cam224.pt
+      - libero_uncond_2cam224_dataset_stats.json
+      - robotwin_uncond_3cam_384.pt
+      - robotwin_uncond_3cam_384_dataset_stats.json

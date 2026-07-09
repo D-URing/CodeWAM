@@ -1,12 +1,24 @@
 # Configs
 
-CodeWAM 与 FastWAM 共享数据与评测管线以便公平对照。训练配置沿用 FastWAM 的 hydra 结构:
-`model` 用 `_target_: codewam.runtime.create_codewam` + `state_codebook` 块;`data`/`task`
-复用 FastWAM 的真机数据配置(如 `real_robot_joint_2cam_v6`)。
+CodeWAM 使用与 FastWAM 相同的 Hydra 组织方式:
 
-启用码本训练的最小 `state_codebook` 块示例:
+```text
+configs/
+├── train.yaml
+├── data/
+│   ├── libero_2cam.yaml
+│   └── robotwin.yaml
+├── model/
+│   └── codewam.yaml
+└── task/
+    ├── libero_codewam_2cam224.yaml
+    └── robotwin_codewam_3cam384.yaml
+```
+
+`configs/model/codewam.yaml` 使用:
 
 ```yaml
+_target_: codewam.runtime.create_codewam
 state_codebook:
   enabled: true
   dim: 128
@@ -18,4 +30,11 @@ state_codebook:
   loss_lambda_vq: 1.0
 ```
 
-(具体 model/task yaml 待与 FastWAM 对照实验一起定稿。)
+训练示例:
+
+```bash
+bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
+bash scripts/train_zero1.sh 8 task=robotwin_codewam_3cam384
+```
+
+数据路径沿用 FastWAM 约定,默认在 `data/` 下;模型路径默认在 `checkpoints/` 下。
