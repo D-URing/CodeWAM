@@ -7,14 +7,37 @@ MODEL_ROOT="${DIFFSYNTH_MODEL_BASE_PATH:-${ROOT_DIR}/checkpoints}"
 INSTALL_DOWNLOAD_DEPS="${INSTALL_DOWNLOAD_DEPS:-true}"
 DOWNLOAD_TEXT_ENCODER="${DOWNLOAD_TEXT_ENCODER:-false}"
 DOWNLOAD_FASTWAM_RELEASE="${DOWNLOAD_FASTWAM_RELEASE:-true}"
+HF_CLI="${HF_CLI:-}"
 
 export DIFFSYNTH_MODEL_BASE_PATH="${MODEL_ROOT}"
 export HF_HOME="${HF_HOME:-${ROOT_DIR}/.hf}"
+PYTHON_BIN_DIR="$(cd "$(dirname "${PYTHON_BIN}")" 2>/dev/null && pwd || true)"
+if [[ -n "${PYTHON_BIN_DIR}" ]]; then
+  export PATH="${PYTHON_BIN_DIR}:${PATH}"
+fi
 
 mkdir -p "${MODEL_ROOT}" "${HF_HOME}"
 
 if [[ "${INSTALL_DOWNLOAD_DEPS}" == "true" ]]; then
-  "${PYTHON_BIN}" -m pip install -U huggingface_hub
+  if ! "${PYTHON_BIN}" -m pip install -U huggingface_hub; then
+    if command -v uv >/dev/null 2>&1; then
+      uv pip install --python "${PYTHON_BIN}" -U huggingface_hub
+    else
+      echo "Could not install huggingface_hub; install pip or uv first." >&2
+      exit 1
+    fi
+  fi
+fi
+
+if [[ -z "${HF_CLI}" ]]; then
+  if command -v hf >/dev/null 2>&1; then
+    HF_CLI="hf"
+  elif command -v huggingface-cli >/dev/null 2>&1; then
+    HF_CLI="huggingface-cli"
+  else
+    echo "Neither `hf` nor `huggingface-cli` is available." >&2
+    exit 1
+  fi
 fi
 
 download_hf() {
@@ -24,24 +47,20 @@ download_hf() {
 
   mkdir -p "${local_dir}"
   echo "[download] ${repo} -> ${local_dir}"
-  huggingface-cli download "${repo}" "$@" --local-dir "${local_dir}"
+  "${HF_CLI}" download "${repo}" "$@" --local-dir "${local_dir}"
 }
 
 download_hf \
   "Wan-AI/Wan2.2-TI2V-5B" \
   "${MODEL_ROOT}/Wan-AI/Wan2.2-TI2V-5B" \
-  --include "diffusion_pytorch_model*.safetensors"
-
-download_hf \
-  "DiffSynth-Studio/Wan-Series-Converted-Safetensors" \
-  "${MODEL_ROOT}/DiffSynth-Studio/Wan-Series-Converted-Safetensors" \
-  --include "Wan2.2_VAE.safetensors"
+  --include "diffusion_pytorch_model*.safetensors" \
+  --include "Wan2.2_VAE.pth"
 
 if [[ "${DOWNLOAD_TEXT_ENCODER}" == "true" ]]; then
   download_hf \
-    "DiffSynth-Studio/Wan-Series-Converted-Safetensors" \
-    "${MODEL_ROOT}/DiffSynth-Studio/Wan-Series-Converted-Safetensors" \
-    --include "models_t5_umt5-xxl-enc-bf16.safetensors"
+    "Wan-AI/Wan2.2-TI2V-5B" \
+    "${MODEL_ROOT}/Wan-AI/Wan2.2-TI2V-5B" \
+    --include "models_t5_umt5-xxl-enc-bf16.pth"
 
   download_hf \
     "Wan-AI/Wan2.1-T2V-1.3B" \

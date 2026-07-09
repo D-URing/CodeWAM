@@ -18,6 +18,18 @@ pip install torch==2.7.1+cu128 torchvision==0.22.1+cu128 --extra-index-url https
 
 Use the CUDA build that matches your machine if `cu128` is not appropriate.
 
+On macOS, use the lightweight local development setup instead of the full CUDA
+training environment:
+
+```bash
+bash scripts/setup_local_env.sh
+source .venv/bin/activate
+```
+
+This installs CodeWAM, a sparse FastWAM checkout, and Mac-compatible local
+dependencies. It is intended for code work and lightweight checks; full 5B
+training/inference still belongs on a Linux CUDA machine.
+
 ## 2. Pull The Selected FastWAM Subtree
 
 ```bash
@@ -55,7 +67,7 @@ checkpoints/
 The script downloads by default:
 
 - Wan DiT weights from `Wan-AI/Wan2.2-TI2V-5B`
-- converted Wan VAE from `DiffSynth-Studio/Wan-Series-Converted-Safetensors`
+- Wan VAE from `Wan-AI/Wan2.2-TI2V-5B`
 - released FastWAM checkpoints and stats from `yuanty/fastwam`
 
 Optional tokenizer/text assets:

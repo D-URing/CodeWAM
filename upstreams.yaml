@@ -13,10 +13,10 @@ models:
     include:
       - diffusion_pytorch_model*.safetensors
   wan_common_converted:
-    repo: DiffSynth-Studio/Wan-Series-Converted-Safetensors
+    repo: Wan-AI/Wan2.2-TI2V-5B
     include:
-      - Wan2.2_VAE.safetensors
-      - models_t5_umt5-xxl-enc-bf16.safetensors
+      - Wan2.2_VAE.pth
+      - models_t5_umt5-xxl-enc-bf16.pth
   tokenizer:
     repo: Wan-AI/Wan2.1-T2V-1.3B
     include:

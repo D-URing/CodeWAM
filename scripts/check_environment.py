@@ -39,7 +39,8 @@ def main() -> None:
     )
     status(
         "Wan2.2 VAE",
-        has_any("DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors"),
+        has_any("Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth")
+        or has_any("DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors"),
     )
     status(
         "ActionDiT backbone",
