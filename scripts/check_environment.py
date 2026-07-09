@@ -46,6 +46,14 @@ def main() -> None:
         "ActionDiT backbone",
         (ROOT / "checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt").exists(),
     )
+    status(
+        "FastWAM LIBERO release",
+        (ROOT / "checkpoints/fastwam_release/libero_uncond_2cam224.pt").exists(),
+    )
+    status(
+        "FastWAM RoboTwin release (optional)",
+        (ROOT / "checkpoints/fastwam_release/robotwin_uncond_3cam_384.pt").exists(),
+    )
 
 
 if __name__ == "__main__":

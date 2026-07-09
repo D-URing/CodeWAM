@@ -68,12 +68,18 @@ The script downloads by default:
 
 - Wan DiT weights from `Wan-AI/Wan2.2-TI2V-5B`
 - Wan VAE from `Wan-AI/Wan2.2-TI2V-5B`
-- released FastWAM checkpoints and stats from `yuanty/fastwam`
+- released LIBERO FastWAM checkpoint and stats from `yuanty/fastwam`
 
 Optional tokenizer/text assets:
 
 ```bash
 DOWNLOAD_TEXT_ENCODER=true bash scripts/download_models.sh
+```
+
+Optional RoboTwin / 3cam release checkpoint:
+
+```bash
+DOWNLOAD_ROBOTWIN_RELEASE=true bash scripts/download_models.sh
 ```
 
 If Hugging Face is unavailable in your environment, set FastWAM's native loader

@@ -7,6 +7,8 @@ MODEL_ROOT="${DIFFSYNTH_MODEL_BASE_PATH:-${ROOT_DIR}/checkpoints}"
 INSTALL_DOWNLOAD_DEPS="${INSTALL_DOWNLOAD_DEPS:-true}"
 DOWNLOAD_TEXT_ENCODER="${DOWNLOAD_TEXT_ENCODER:-false}"
 DOWNLOAD_FASTWAM_RELEASE="${DOWNLOAD_FASTWAM_RELEASE:-true}"
+DOWNLOAD_LIBERO_RELEASE="${DOWNLOAD_LIBERO_RELEASE:-true}"
+DOWNLOAD_ROBOTWIN_RELEASE="${DOWNLOAD_ROBOTWIN_RELEASE:-false}"
 HF_CLI="${HF_CLI:-}"
 
 export DIFFSYNTH_MODEL_BASE_PATH="${MODEL_ROOT}"
@@ -69,13 +71,20 @@ if [[ "${DOWNLOAD_TEXT_ENCODER}" == "true" ]]; then
 fi
 
 if [[ "${DOWNLOAD_FASTWAM_RELEASE}" == "true" ]]; then
-  download_hf \
-    "yuanty/fastwam" \
-    "${MODEL_ROOT}/fastwam_release" \
-    --include "libero_uncond_2cam224.pt" \
-    --include "libero_uncond_2cam224_dataset_stats.json" \
-    --include "robotwin_uncond_3cam_384.pt" \
-    --include "robotwin_uncond_3cam_384_dataset_stats.json"
+  if [[ "${DOWNLOAD_LIBERO_RELEASE}" == "true" ]]; then
+    download_hf \
+      "yuanty/fastwam" \
+      "${MODEL_ROOT}/fastwam_release" \
+      --include "libero_uncond_2cam224.pt" \
+      --include "libero_uncond_2cam224_dataset_stats.json"
+  fi
+  if [[ "${DOWNLOAD_ROBOTWIN_RELEASE}" == "true" ]]; then
+    download_hf \
+      "yuanty/fastwam" \
+      "${MODEL_ROOT}/fastwam_release" \
+      --include "robotwin_uncond_3cam_384.pt" \
+      --include "robotwin_uncond_3cam_384_dataset_stats.json"
+  fi
 fi
 
 echo "[download] done. Export this before training:"
