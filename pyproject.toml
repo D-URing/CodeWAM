@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codewam"
+version = "0.1.0"
+description = "CodeWAM — Codebook World-Action Model: RQ discrete state codebook over shared base experts, a peer method to FastWAM."
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "numpy",
+  "einops",
+  "omegaconf",
+  "hydra-core",
+]
+
+# NOTE: CodeWAM 复用 Wan 基座专家的构件(WanVideoDiT / ActionDiT / MoT / VAE / scheduler),
+# 通过 FastWAM 参考实现提供。请将该实现以可编辑方式装好并置于 PYTHONPATH:
+#   pip install -e /path/to/FastWAM     (提供 `fastwam` 包)
+# 二者共享数据与评测管线, 以便 CodeWAM 与 FastWAM 做公平对照。
+
+[tool.setuptools.packages.find]
+include = ["codewam*"]

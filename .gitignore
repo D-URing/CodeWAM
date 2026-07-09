@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Models / data / large artifacts (不上传)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.npz
+*.tar
+*.tar.gz
+*.zip
+data/
+datasets/
+runs/
+checkpoints/
+outputs/
+*.mp4
+*.png
+
+# Logs / env
+*.log
+.env
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Credentials — never commit
+*.secret
+credentials
+*token*
