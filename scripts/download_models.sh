@@ -15,7 +15,7 @@ HF_CLI="${HF_CLI:-}"
 UV_BIN="${UV_BIN:-${HOME}/.local/bin/uv}"
 
 export DIFFSYNTH_MODEL_BASE_PATH="${MODEL_ROOT}"
-export HF_HOME="${HF_HOME:-${ROOT_DIR}/.hf}"
+export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 if [[ "${HF_DISABLE_XET}" == "true" ]]; then
   export HF_HUB_DISABLE_XET=1
 fi

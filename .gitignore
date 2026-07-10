@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage*
+htmlcov/
 
 # Models / data / large artifacts (不上传)
 *.pt
@@ -19,12 +24,19 @@ __pycache__/
 /runs/
 /checkpoints/
 /outputs/
+/logs/
+/tmp/
+/wandb/
 /external/FastWAM/
 /external/FastWAM-*/
 /.cache/
 /.hf/
 *.mp4
 *.png
+*.partial
+*.part
+*.tmp
+*.download
 
 # Logs / env
 *.log

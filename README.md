@@ -68,7 +68,7 @@ bash scripts/download_models.sh
 bash scripts/prepare_action_dit.sh
 
 # 4) 检查环境与模型文件
-python3 scripts/check_environment.py
+python3 scripts/check_environment.py --mode local
 
 # 5) 训练示例
 bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
