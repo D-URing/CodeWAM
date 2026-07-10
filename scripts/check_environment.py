@@ -67,6 +67,8 @@ def collect_checks(mode: str) -> list[CheckResult]:
         module_check("codewam module", "codewam", required=True),
         module_check("hydra module", "hydra", required=True),
         module_check("imageio module", "imageio", required=True),
+        module_check("pyarrow module", "pyarrow", required=not cluster),
+        module_check("av module", "av", required=not cluster),
         module_check("deepspeed module", "deepspeed", required=cluster),
         import_check("StateCodebook import", "codewam.codebook", required=True),
         import_check("CodeWAM import", "codewam.model", required=True),
@@ -94,6 +96,7 @@ def collect_checks(mode: str) -> list[CheckResult]:
             ROOT / "checkpoints/fastwam_release/robotwin_uncond_3cam_384.pt",
             required=False,
         ),
+        path_check("Package Scan v6 local data", ROOT / "package_scan_v6/meta/info.json", required=False),
     ]
     return checks
 

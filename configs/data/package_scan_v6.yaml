@@ -1,0 +1,39 @@
+train:
+  _target_: codewam.data.package_scan_v6.PackageScanV6Dataset
+  root: ./package_scan_v6
+  camera_keys:
+    - observation.images.top
+    - observation.images.wrist
+  num_frames: 33
+  global_sample_stride: 1
+  action_video_freq_ratio: 4
+  camera_size: [224, 224]
+  concat_multi_camera: horizontal
+  normalize_video: true
+  window_start_stride: 1
+  max_windows: null
+  return_camera_stack: false
+
+  # Compatibility metadata consumed by model configs and docs.
+  shape_meta:
+    images:
+      - key: top
+        raw_shape: [3, 480, 640]
+        shape: [3, 224, 224]
+      - key: wrist
+        raw_shape: [3, 480, 640]
+        shape: [3, 224, 224]
+    action:
+      - key: default
+        raw_shape: 7
+        shape: 7
+    state:
+      - key: default
+        raw_shape: 7
+        shape: 7
+  processor:
+    num_output_cameras: 2
+    action_output_dim: 7
+    proprio_output_dim: 7
+  text_embedding_cache_dir: ./data/text_embeds_cache/package_scan_v6
+  context_len: 128

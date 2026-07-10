@@ -25,6 +25,21 @@ Local mode does not require:
 - complete training datasets
 - RoboTwin / 3cam release checkpoint
 
+## Package Scan V6 Local Demo
+
+`package_scan_v6/` is the current local real-robot demo dataset. It is ignored
+by git and should stay on the local machine or be mounted on the cluster.
+
+Run a data smoke demo:
+
+```bash
+python scripts/demo_package_scan_v6.py
+```
+
+This checks the LeRobot v3 parquet metadata, decodes the AV1 top/wrist videos,
+builds CodeWAM-style windows, and writes a preview strip under
+`runs/package_scan_v6_demo/`.
+
 ## Cluster Setup
 
 On the training cluster:

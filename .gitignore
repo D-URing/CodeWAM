@@ -21,6 +21,7 @@ htmlcov/
 *.zip
 /data/
 /datasets/
+/package_scan_v6/
 /runs/
 /checkpoints/
 /outputs/

@@ -1,6 +1,8 @@
 # Lightweight macOS/local development environment.
 # Full 5B training/inference should run on Linux CUDA with requirements/cluster-cu128.txt.
 accelerate
+av
+datasets
 einops
 huggingface-hub
 hydra-core
@@ -9,7 +11,9 @@ imageio-ffmpeg
 modelscope
 numpy
 omegaconf
+pandas
 pillow
+pyarrow
 safetensors
 torch
 torchvision

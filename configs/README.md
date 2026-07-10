@@ -7,12 +7,14 @@ configs/
 ├── train.yaml
 ├── data/
 │   ├── libero_2cam.yaml
-│   └── robotwin.yaml
+│   ├── robotwin.yaml
+│   └── package_scan_v6.yaml
 ├── model/
 │   └── codewam.yaml
 └── task/
     ├── libero_codewam_2cam224.yaml
-    └── robotwin_codewam_3cam384.yaml
+    ├── robotwin_codewam_3cam384.yaml
+    └── package_scan_v6_demo.yaml
 ```
 
 `configs/model/codewam.yaml` 使用:
@@ -38,3 +40,5 @@ bash scripts/train_zero1.sh 8 task=robotwin_codewam_3cam384
 ```
 
 数据路径沿用 FastWAM 约定,默认在 `data/` 下;模型路径默认在 `checkpoints/` 下。
+`package_scan_v6.yaml` 是本机 Package Scan v6 小 demo 数据入口,默认读取仓库根目录下被 git 忽略的
+`package_scan_v6/`。

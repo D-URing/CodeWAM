@@ -77,6 +77,17 @@ bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
 外部依赖和模型固定在 [`upstreams.yaml`](./upstreams.yaml)。更多说明见
 [`docs/BOOTSTRAP.md`](./docs/BOOTSTRAP.md) 和 [`docs/TRAINING.md`](./docs/TRAINING.md)。
 
+## 本机 Package Scan v6 Demo
+
+`package_scan_v6/` 是当前本机真机小 demo 数据目录,不入库。链路检查:
+
+```bash
+python scripts/demo_package_scan_v6.py
+```
+
+脚本会读取 LeRobot v3 parquet 元数据、解码 top/wrist 两路 AV1 视频、构造 CodeWAM 风格窗口,并在
+`runs/package_scan_v6_demo/` 下保存预览条。
+
 ## 状态
 
 - 已通过:码本模块 CPU 单测、P1/P2/P4 判定实验(真机 latent)、模型构建 + 1-step 前反向 smoke。
