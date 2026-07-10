@@ -9,10 +9,16 @@ DOWNLOAD_TEXT_ENCODER="${DOWNLOAD_TEXT_ENCODER:-false}"
 DOWNLOAD_FASTWAM_RELEASE="${DOWNLOAD_FASTWAM_RELEASE:-true}"
 DOWNLOAD_LIBERO_RELEASE="${DOWNLOAD_LIBERO_RELEASE:-true}"
 DOWNLOAD_ROBOTWIN_RELEASE="${DOWNLOAD_ROBOTWIN_RELEASE:-false}"
+HF_MAX_WORKERS="${HF_MAX_WORKERS:-2}"
+HF_DISABLE_XET="${HF_DISABLE_XET:-false}"
 HF_CLI="${HF_CLI:-}"
+UV_BIN="${UV_BIN:-${HOME}/.local/bin/uv}"
 
 export DIFFSYNTH_MODEL_BASE_PATH="${MODEL_ROOT}"
 export HF_HOME="${HF_HOME:-${ROOT_DIR}/.hf}"
+if [[ "${HF_DISABLE_XET}" == "true" ]]; then
+  export HF_HUB_DISABLE_XET=1
+fi
 PYTHON_BIN_DIR="$(cd "$(dirname "${PYTHON_BIN}")" 2>/dev/null && pwd || true)"
 if [[ -n "${PYTHON_BIN_DIR}" ]]; then
   export PATH="${PYTHON_BIN_DIR}:${PATH}"
@@ -22,7 +28,9 @@ mkdir -p "${MODEL_ROOT}" "${HF_HOME}"
 
 if [[ "${INSTALL_DOWNLOAD_DEPS}" == "true" ]]; then
   if ! "${PYTHON_BIN}" -m pip install -U huggingface_hub; then
-    if command -v uv >/dev/null 2>&1; then
+    if command -v "${UV_BIN}" >/dev/null 2>&1; then
+      "${UV_BIN}" pip install --python "${PYTHON_BIN}" -U huggingface_hub
+    elif command -v uv >/dev/null 2>&1; then
       uv pip install --python "${PYTHON_BIN}" -U huggingface_hub
     else
       echo "Could not install huggingface_hub; install pip or uv first." >&2
@@ -49,7 +57,7 @@ download_hf() {
 
   mkdir -p "${local_dir}"
   echo "[download] ${repo} -> ${local_dir}"
-  "${HF_CLI}" download "${repo}" "$@" --local-dir "${local_dir}"
+  "${HF_CLI}" download "${repo}" "$@" --local-dir "${local_dir}" --max-workers "${HF_MAX_WORKERS}"
 }
 
 download_hf \

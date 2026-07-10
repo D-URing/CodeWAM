@@ -104,7 +104,8 @@ checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt
 ## 5. Check
 
 ```bash
-python3 scripts/check_environment.py
+python3 scripts/check_environment.py --mode local
+python3 scripts/check_environment.py --mode cluster
 ```
 
 ## 6. Train
@@ -116,3 +117,5 @@ bash scripts/train_zero1.sh 8 task=robotwin_codewam_3cam384
 
 The train launcher uses this repository's `configs/` and FastWAM's
 `fastwam.runtime.run_training`.
+
+See `docs/TRAINING.md` for the full local-development and cluster-handoff flow.

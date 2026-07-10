@@ -75,7 +75,7 @@ bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
 ```
 
 外部依赖和模型固定在 [`upstreams.yaml`](./upstreams.yaml)。更多说明见
-[`docs/BOOTSTRAP.md`](./docs/BOOTSTRAP.md)。
+[`docs/BOOTSTRAP.md`](./docs/BOOTSTRAP.md) 和 [`docs/TRAINING.md`](./docs/TRAINING.md)。
 
 ## 状态
 

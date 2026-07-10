@@ -22,13 +22,7 @@ fi
 INSTALL_EDITABLE=false "${ROOT_DIR}/scripts/bootstrap_fastwam.sh"
 "${UV_BIN}" pip install --python "${VENV_DIR}/bin/python" -e "${ROOT_DIR}/external/FastWAM" --no-deps
 
-"${UV_BIN}" pip install --python "${VENV_DIR}/bin/python" \
-  safetensors \
-  transformers \
-  huggingface-hub \
-  modelscope \
-  accelerate \
-  torchvision
+"${UV_BIN}" pip install --python "${VENV_DIR}/bin/python" -r "${ROOT_DIR}/requirements/local-dev.txt"
 
 echo "Local development environment is ready."
 echo "Activate it with:"

@@ -9,6 +9,7 @@ CodeWAM/
 │   └── runtime.py             # Hydra factory
 ├── configs/                   # CodeWAM Hydra configs
 ├── scripts/                   # Bootstrap, download, train launchers
+├── requirements/               # Local-dev and cluster CUDA dependency sets
 ├── docs/                      # Design and setup docs
 ├── external/FastWAM/          # Local sparse checkout, ignored by git
 ├── checkpoints/               # Model files, ignored by git
