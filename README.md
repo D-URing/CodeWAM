@@ -76,6 +76,8 @@ bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
 
 外部依赖和模型固定在 [`upstreams.yaml`](./upstreams.yaml)。更多说明见
 [`docs/BOOTSTRAP.md`](./docs/BOOTSTRAP.md) 和 [`docs/TRAINING.md`](./docs/TRAINING.md)。
+CodeWAM 从 compatible 接入走向 native 架构的规划见
+[`docs/CODEWAM_NATIVE_DESIGN.md`](./docs/CODEWAM_NATIVE_DESIGN.md)。
 
 ## 本机 Package Scan v6 Demo
 
