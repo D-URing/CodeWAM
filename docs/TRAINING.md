@@ -40,46 +40,6 @@ This checks the LeRobot v3 parquet metadata, decodes the AV1 top/wrist videos,
 builds CodeWAM-style windows, and writes a preview strip under
 `runs/package_scan_v6_demo/`.
 
-## Package Scan V6 Native Probe
-
-Run the lightweight native probe:
-
-```bash
-python -m codewam.native_probe --max-windows 256
-```
-
-This local probe is a protocol smoke test, not the final cluster experiment. It
-uses resized RGB frames as the feature source so it can run without CUDA-heavy
-Wan/DiT feature extraction. The important part is the experimental structure:
-
-```text
-offline train tokenizer -> freeze tokenizer -> compare downstream heads
-```
-
-The action probe asks whether the frozen visual code helps action prediction:
-
-```text
-proprio_only       -> action
-code_only          -> action
-code_plus_proprio  -> action
-```
-
-`proprio_only` is the shortcut baseline. If `code_plus_proprio` does not beat
-it, the code is probably not useful to the policy yet.
-
-The dynamics probe asks whether the frozen code supports world-action modeling:
-
-```text
-copy_current_code            -> next code
-proprio_only                 -> next code
-code_only                    -> next code
-code_plus_action             -> next code
-```
-
-`code_plus_action` should beat copy/proprio baselines if the code is useful as a
-world-model state. The cluster version should replace resized RGB with frozen
-Wan-VAE latent or video-DiT hidden features.
-
 ## Cluster Setup
 
 On the training cluster:

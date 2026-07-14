@@ -591,36 +591,6 @@ E5: code + action -> next frozen code
 E6: future frozen code -> stage/success/contact proxy
 ```
 
-这里的对照不是为了追求一个漂亮的 offline action loss,而是为了拆开回答两个问题:
-
-```text
-Policy question:
-    模型做动作时,到底主要靠 proprio 捷径,还是 frozen visual code 真的提供了增量信息?
-
-World-model question:
-    frozen code 是否能作为 action-conditioned dynamics 的状态,支持 c_t + a_t -> c_{t+1}?
-```
-
-所以第一张表应看 action prediction:
-
-```text
-proprio-only      -> action   # 捷径基线
-code-only         -> action   # 视觉码本自己有没有动作信息
-code + proprio    -> action   # code 是否给 proprio 增量
-```
-
-第二张表应看 frozen-code dynamics:
-
-```text
-copy current code      -> next code   # 最低基线
-proprio-only           -> next code   # 本体捷径基线
-code-only              -> next code   # 视觉状态可预测性
-code + action          -> next code   # 真正 world-action model
-```
-
-如果 `code + proprio` 没有强于 `proprio-only`,code 对 policy 可能只是装饰。
-如果 `code + action` 没有强于复制当前 code 或 proprio-only,next-code dynamics 可能不是 WAM。
-
 必要扰动:
 
 ```text
