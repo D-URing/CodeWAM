@@ -1,0 +1,77 @@
+# Denser local Package Scan v6 codebook probe.
+#
+# This is still a local exploratory run, but it is large enough to compare
+# whether codebooks are driven by current latent state, latent deltas, or the
+# full transition descriptor.
+
+output_dir: runs/codebook_eval/package_scan_v6_dense
+max_windows: null
+
+export:
+  output_dir: runs/codebook_eval/latents/package_scan_v6_dense
+  device: auto
+  dtype: float32
+  batch_size: 1
+  shard_size: 16
+  max_windows: 256
+  tiled: false
+  tile_size: [30, 52]
+  tile_stride: [15, 26]
+  dataset:
+    _target_: codewam.data.package_scan_v6.PackageScanV6Dataset
+    root: ./package_scan_v6
+    camera_keys:
+      - observation.images.top
+      - observation.images.wrist
+    num_frames: 25
+    global_sample_stride: 1
+    action_video_freq_ratio: 1
+    camera_size: [112, 112]
+    concat_multi_camera: horizontal
+    normalize_video: true
+    window_start_stride: 8
+    max_windows: 256
+    return_camera_stack: false
+
+datasets:
+  - name: package_scan_v6_dense
+    enabled: true
+    latent_paths:
+      - runs/codebook_eval/latents/package_scan_v6_dense/*.pt
+    max_windows: null
+
+descriptors:
+  strides: [2, 3, 5]
+  pool: 2
+  normalize: true
+  variants:
+    - name: current_only
+      include_current: true
+      include_future: false
+      include_delta: false
+    - name: delta_only
+      include_current: false
+      include_future: false
+      include_delta: true
+    - name: transition
+      include_current: true
+      include_future: true
+      include_delta: true
+
+training:
+  device: auto
+  seed: 7
+  kmeans_iters: 30
+  chunk_size: 2048
+  max_vectors_per_descriptor: null
+  variants:
+    - method: rq
+      k: 16
+      levels: 3
+    - method: rq
+      k: 32
+      levels: 3
+    - method: rq
+      k: 64
+      levels: 3
+

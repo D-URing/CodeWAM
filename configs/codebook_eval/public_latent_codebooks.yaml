@@ -41,10 +41,20 @@ datasets:
 descriptors:
   strides: [2, 3, 5]
   pool: 2
-  include_current: true
-  include_future: true
-  include_delta: true
   normalize: true
+  variants:
+    - name: current_only
+      include_current: true
+      include_future: false
+      include_delta: false
+    - name: delta_only
+      include_current: false
+      include_future: false
+      include_delta: true
+    - name: transition
+      include_current: true
+      include_future: true
+      include_delta: true
 
 training:
   device: auto

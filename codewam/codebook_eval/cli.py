@@ -47,6 +47,39 @@ def _resolve_device(spec: str) -> torch.device:
     return torch.device(spec)
 
 
+def _descriptor_variants(descriptors_cfg: DictConfig) -> list[dict[str, Any]]:
+    variants = descriptors_cfg.get("variants", None)
+    if variants:
+        return [dict(OmegaConf.to_container(item, resolve=True)) for item in variants]
+    return [
+        {
+            "name": str(descriptors_cfg.get("name", "transition")),
+            "include_current": bool(descriptors_cfg.get("include_current", True)),
+            "include_future": bool(descriptors_cfg.get("include_future", True)),
+            "include_delta": bool(descriptors_cfg.get("include_delta", True)),
+        }
+    ]
+
+
+def _build_descriptor_batches(latents: torch.Tensor, descriptors_cfg: DictConfig):
+    batches = []
+    for variant in _descriptor_variants(descriptors_cfg):
+        name = str(variant.get("name", "descriptor"))
+        batches.extend(
+            build_temporal_descriptors(
+                latents,
+                strides=descriptors_cfg.get("strides", [2, 3, 5]),
+                pool=int(descriptors_cfg.get("pool", 2)),
+                family=name,
+                include_current=bool(variant.get("include_current", True)),
+                include_future=bool(variant.get("include_future", True)),
+                include_delta=bool(variant.get("include_delta", True)),
+                normalize=bool(variant.get("normalize", descriptors_cfg.get("normalize", True))),
+            )
+        )
+    return batches
+
+
 def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Path) -> list[dict[str, Any]]:
     dataset_name = str(dataset_cfg.get("name", "dataset"))
     latent_paths = dataset_cfg.get("latent_paths")
@@ -60,15 +93,7 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
     latents = payload["latents"]
     actions = payload.get("action")
 
-    batches = build_temporal_descriptors(
-        latents,
-        strides=descriptors_cfg.get("strides", [2, 3, 5]),
-        pool=int(descriptors_cfg.get("pool", 2)),
-        include_current=bool(descriptors_cfg.get("include_current", True)),
-        include_future=bool(descriptors_cfg.get("include_future", True)),
-        include_delta=bool(descriptors_cfg.get("include_delta", True)),
-        normalize=bool(descriptors_cfg.get("normalize", True)),
-    )
+    batches = _build_descriptor_batches(latents, descriptors_cfg)
 
     device = _resolve_device(str(training.get("device", "auto")))
     seed = int(training.get("seed", 0))
@@ -91,7 +116,7 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
             method = str(variant.get("method", "rq")).lower()
             k = int(variant.get("k", 256))
             levels = int(variant.get("levels", 3))
-            run_name = f"{dataset_name}_{batch.name}_{method}_k{k}_l{levels}"
+            run_name = f"{dataset_name}_{batch.family}_{batch.name}_{method}_k{k}_l{levels}"
             run_dir = ensure_dir(output_root / dataset_name / run_name)
 
             if method == "kmeans":
@@ -102,7 +127,13 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
                 km.distances = distances.detach()
                 metrics = kmeans_metrics(batch, centers, codes.cpu(), k=k)
                 metrics.update(action_relevance_metrics(batch, codes.cpu(), actions, latent_t=latents.shape[2], k=k))
-                torch.save(pack_codebook(km, {"dataset": dataset_name, "descriptor": batch.name}), run_dir / "codebook.pt")
+                torch.save(
+                    pack_codebook(
+                        km,
+                        {"dataset": dataset_name, "descriptor_family": batch.family, "descriptor": batch.name},
+                    ),
+                    run_dir / "codebook.pt",
+                )
             elif method == "rq":
                 rq = train_residual_quantizer(
                     train_x,
@@ -129,7 +160,13 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
                 metrics.update(
                     action_relevance_metrics(batch, eval_rq.codes, actions, latent_t=latents.shape[2], k=k)
                 )
-                torch.save(pack_codebook(eval_rq, {"dataset": dataset_name, "descriptor": batch.name}), run_dir / "codebook.pt")
+                torch.save(
+                    pack_codebook(
+                        eval_rq,
+                        {"dataset": dataset_name, "descriptor_family": batch.family, "descriptor": batch.name},
+                    ),
+                    run_dir / "codebook.pt",
+                )
             else:
                 raise ValueError(f"Unsupported clustering method: {method}")
 
@@ -138,6 +175,7 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
                 "dataset": dataset_name,
                 "device": str(device),
                 "method": method,
+                "descriptor_family": batch.family,
                 **metrics,
             }
             save_json(run_dir / "metrics.json", row)
@@ -198,18 +236,7 @@ def write_cross_stride_reports(cfg: DictConfig, expected_runs: set[str] | None =
             dataset_cfg.get("latent_paths"),
             max_windows=None if max_windows is None else int(max_windows),
         )
-        batches = {
-            batch.stride: batch
-            for batch in build_temporal_descriptors(
-                payload["latents"],
-                strides=descriptors_cfg.get("strides", [2, 3, 5]),
-                pool=int(descriptors_cfg.get("pool", 2)),
-                include_current=bool(descriptors_cfg.get("include_current", True)),
-                include_future=bool(descriptors_cfg.get("include_future", True)),
-                include_delta=bool(descriptors_cfg.get("include_delta", True)),
-                normalize=bool(descriptors_cfg.get("normalize", True)),
-            )
-        }
+        batches = {(batch.family, batch.stride): batch for batch in _build_descriptor_batches(payload["latents"], descriptors_cfg)}
 
         records: dict[tuple[int, int], list[dict[str, Any]]] = {}
         dataset_root = output_root / dataset_name
@@ -222,10 +249,11 @@ def write_cross_stride_reports(cfg: DictConfig, expected_runs: set[str] | None =
             codebook = torch.load(metrics_path.parent / "codebook.pt", map_location="cpu")
             if codebook.get("type") != "rq":
                 continue
-            key = (int(metrics["k"]), int(metrics["levels"]))
+            key = (str(metrics.get("descriptor_family", "transition")), int(metrics["k"]), int(metrics["levels"]))
             records.setdefault(key, []).append(
                 {
                     "run": metrics_path.parent.name,
+                    "family": str(metrics.get("descriptor_family", "transition")),
                     "stride": int(metrics["stride"]),
                     "k": int(metrics["k"]),
                     "levels": int(metrics["levels"]),
@@ -234,14 +262,14 @@ def write_cross_stride_reports(cfg: DictConfig, expected_runs: set[str] | None =
             )
 
         dataset_rows: list[dict[str, Any]] = []
-        for (k, levels), items in records.items():
+        for (family, k, levels), items in records.items():
             by_stride = {item["stride"]: item for item in items}
             strides = sorted(by_stride)
             for i, stride_a in enumerate(strides):
                 for stride_b in strides[i + 1 :]:
                     item_a = by_stride[stride_a]
                     item_b = by_stride[stride_b]
-                    idx_a, idx_b = _aligned_indices(batches[stride_a], batches[stride_b])
+                    idx_a, idx_b = _aligned_indices(batches[(family, stride_a)], batches[(family, stride_b)])
                     if idx_a.numel() == 0:
                         continue
                     codes_a = item_a["codes"][idx_a]
@@ -250,6 +278,7 @@ def write_cross_stride_reports(cfg: DictConfig, expected_runs: set[str] | None =
                     labels_b = joint_codes(codes_b, k=k)
                     row: dict[str, Any] = {
                         "dataset": dataset_name,
+                        "descriptor_family": family,
                         "method": "rq",
                         "k": k,
                         "levels": levels,
@@ -276,6 +305,7 @@ def write_cross_stride_reports(cfg: DictConfig, expected_runs: set[str] | None =
                 columns=[
                     "dataset",
                     "method",
+                    "descriptor_family",
                     "k",
                     "levels",
                     "stride_a",
@@ -298,6 +328,7 @@ def write_cross_stride_reports(cfg: DictConfig, expected_runs: set[str] | None =
             columns=[
                 "dataset",
                 "method",
+                "descriptor_family",
                 "k",
                 "levels",
                 "stride_a",
@@ -353,25 +384,15 @@ def validate_artifacts(config_path: str | Path, atol: float = 1e-6) -> list[dict
             dataset_cfg.get("latent_paths"),
             max_windows=None if max_windows is None else int(max_windows),
         )
-        batches = {
-            batch.stride: batch
-            for batch in build_temporal_descriptors(
-                payload["latents"],
-                strides=descriptors_cfg.get("strides", [2, 3, 5]),
-                pool=int(descriptors_cfg.get("pool", 2)),
-                include_current=bool(descriptors_cfg.get("include_current", True)),
-                include_future=bool(descriptors_cfg.get("include_future", True)),
-                include_delta=bool(descriptors_cfg.get("include_delta", True)),
-                normalize=bool(descriptors_cfg.get("normalize", True)),
-            )
-        }
+        batches = {(batch.family, batch.stride): batch for batch in _build_descriptor_batches(payload["latents"], descriptors_cfg)}
 
         dataset_root = output_root / dataset_name
         for metrics_path in sorted(dataset_root.glob("*/metrics.json")):
             if expected_runs is not None and metrics_path.parent.name not in expected_runs:
                 continue
             metrics = json.loads(metrics_path.read_text())
-            batch = batches[int(metrics["stride"])]
+            family = str(metrics.get("descriptor_family", "transition"))
+            batch = batches[(family, int(metrics["stride"]))]
             codebook = torch.load(metrics_path.parent / "codebook.pt", map_location="cpu")
             quantized = _reconstruct_from_codebook(batch.vectors, codebook)
             rec = reconstruction_metrics(batch.vectors, quantized)

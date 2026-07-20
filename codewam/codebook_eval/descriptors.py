@@ -10,6 +10,7 @@ import torch.nn.functional as F
 @dataclass(frozen=True)
 class DescriptorBatch:
     name: str
+    family: str
     stride: int
     vectors: torch.Tensor
     sample_index: torch.Tensor
@@ -35,6 +36,7 @@ def build_temporal_descriptors(
     latents: torch.Tensor,
     strides: Iterable[int],
     pool: int = 2,
+    family: str = "transition",
     include_current: bool = True,
     include_future: bool = True,
     include_delta: bool = True,
@@ -79,6 +81,7 @@ def build_temporal_descriptors(
         batches.append(
             DescriptorBatch(
                 name=f"latent_stride{stride}_pool{pool}",
+                family=family,
                 stride=stride,
                 vectors=vectors.contiguous(),
                 sample_index=sample_index,
@@ -91,4 +94,3 @@ def build_temporal_descriptors(
             f"No descriptors were built. Check latent temporal length T={t} and strides={list(strides)}."
         )
     return batches
-

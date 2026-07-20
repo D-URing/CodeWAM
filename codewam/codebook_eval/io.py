@@ -98,6 +98,7 @@ def write_summary_tsv(path: str | Path, rows: list[dict[str, Any]]) -> None:
         "dataset",
         "device",
         "method",
+        "descriptor_family",
         "descriptor",
         "stride",
         "k",
