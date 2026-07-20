@@ -90,21 +90,85 @@ descriptors:
 training:
   variants:
     - method: kmeans
-      k: 256
+      k: 32
+      levels: 1
+    - method: kmeans
+      k: 64
+      levels: 1
+    - method: kmeans
+      k: 128
       levels: 1
     - method: rq
-      k: 256
+      k: 32
       levels: 3
     - method: rq
-      k: 512
+      k: 64
+      levels: 3
+    - method: rq
+      k: 128
       levels: 3
 ```
 
 建议第一批只比较:
 
 - 单层 KMeans: baseline,看单码本能否覆盖状态。
-- `RQ-3 x K=256`: 默认轻量候选。
-- `RQ-3 x K=512`: 看更大词表是否提升或产生死码。
+- `K=32/64/128`: 从小码本开始看 usage、perplexity 和 action relevance。
+- `RQ-3`: 看三层残差是否确实补充信息,而不是只制造更多 index。
+
+`K=256/512/1024` 暂时不作为默认项。只有当 `K=128` usage 健康、perplexity 接近上限、
+retrieval/action relevance 仍有明显欠拟合迹象时,再向上扩。
+
+## Data Preparation
+
+码本训练不直接读原始公开数据集,而是读统一的 Wan latent shards。因此需要先准备:
+
+```text
+dataset adapter -> normalized video window -> Wan-VAE latent shard
+```
+
+每个 dataset adapter 至少要返回:
+
+```python
+{
+    "video": Tensor[C, T, H, W],  # normalized to [-1, 1]
+}
+```
+
+如果能同时返回下面字段,评估会更有用:
+
+```python
+{
+    "action": Tensor[T_action, D],
+    "proprio": Tensor[T_action, D],
+    "prompt": str,  # or "task"
+}
+```
+
+公开数据建议顺序:
+
+```text
+1. LIBERO / robomimic
+   先做小而干净的码本 sanity check。
+
+2. CALVIN / BridgeData V2
+   看长时序和真实视频上 temporal code 是否仍稳定。
+
+3. DROID / Open X-Embodiment subset
+   最后做多场景压力测试,先用子集。
+```
+
+导出的 latent 放到约定目录:
+
+```text
+runs/codebook_eval/latents/libero/*.pt
+runs/codebook_eval/latents/calvin/*.pt
+runs/codebook_eval/latents/bridgedata_v2/*.pt
+runs/codebook_eval/latents/droid_subset/*.pt
+```
+
+如果你已经有 `.pt` latent shards,只要满足 `Latent Cache Format`,直接放进对应目录即可。
+如果还没有,用 `export_latents_template.yaml` 替换里面的 `export.dataset` 为目标公开数据集
+adapter,再运行 `export-latents`。
 
 ## Metrics
 
@@ -151,7 +215,7 @@ python scripts/codebook_eval.py export-latents --config configs/codebook_eval/ex
 默认 `export_latents_template.yaml` 使用 Package Scan v6 作为 adapter 示例。公开数据集接入时,
 替换 `export.dataset` 即可。
 
-输出文件:
+评估结果会自动生成,不需要手动整理。默认输出文件:
 
 ```text
 runs/codebook_eval/public_latent_codebooks/
@@ -160,6 +224,23 @@ runs/codebook_eval/public_latent_codebooks/
 └── <dataset>/<run>/
     ├── codebook.pt
     └── metrics.json
+```
+
+其中:
+
+- `summary.tsv`: 最适合直接打开看对比表。
+- `summary.json`: 方便后续画图或脚本读取。
+- `<dataset>/<run>/codebook.pt`: 冻结码本 artifact。
+- `<dataset>/<run>/metrics.json`: 单个候选方案的完整指标。
+
+第一眼先看 `summary.tsv` 里的这些列:
+
+```text
+method, stride, k, levels
+relative_mse, r2_like, mean_cosine
+level1_usage, level1_perplexity_frac, level1_dead_frac
+temporal_same_next_frac, temporal_change_next_frac
+action_code_r2_in_sample
 ```
 
 ## Decision Rule

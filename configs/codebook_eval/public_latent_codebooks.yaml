@@ -54,11 +54,20 @@ training:
   max_vectors_per_descriptor: 200000
   variants:
     - method: kmeans
-      k: 256
+      k: 32
+      levels: 1
+    - method: kmeans
+      k: 64
+      levels: 1
+    - method: kmeans
+      k: 128
       levels: 1
     - method: rq
-      k: 256
+      k: 32
       levels: 3
     - method: rq
-      k: 512
+      k: 64
+      levels: 3
+    - method: rq
+      k: 128
       levels: 3

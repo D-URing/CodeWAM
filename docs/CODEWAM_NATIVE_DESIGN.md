@@ -317,8 +317,11 @@ s in {2, 3, 5}
 c_t = {RQ_2(desc_2(t)), RQ_3(desc_3(t)), RQ_5(desc_5(t))}
 ```
 
-每套码本暂定 3 层 RQ。`K=256/512/1024` 应由 usage、perplexity、dead code、重构误差、
-temporal transition、action relevance 和 retrieval sanity 共同决定,而不是提前拍定。
+每套码本暂定 3 层 RQ。第一轮默认从 `K=32/64/128` 开始,因为 Wan-VAE latent channel
+只有 48,即便默认 temporal descriptor 经过 `pool=2` 和 `current/future/delta` 后是 576 维,
+也不应过早把中心数开得太大。`K=256/512/1024` 只作为后续扩容候选,应由 usage、
+perplexity、dead code、重构误差、temporal transition、action relevance 和 retrieval sanity
+共同决定。
 
 ## 4. 设计选择总览
 
