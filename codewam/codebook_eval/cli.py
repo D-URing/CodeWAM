@@ -11,8 +11,9 @@ from omegaconf import DictConfig, OmegaConf
 
 from .clustering import assign_codes, kmeans, pack_codebook, train_residual_quantizer
 from .descriptors import build_temporal_descriptors
-from .io import ensure_dir, load_latent_shards, save_json, write_summary_tsv
+from .io import ensure_dir, load_latent_shards, save_json, write_rows_tsv, write_summary_tsv
 from .metrics import action_relevance_metrics, kmeans_metrics, reconstruction_metrics, rq_metrics
+from .metrics import joint_codes, mutual_information_metrics
 
 
 def _cfg(path: str | Path) -> DictConfig:
@@ -160,7 +161,158 @@ def train_from_config(config_path: str | Path) -> list[dict[str, Any]]:
         raise ValueError("No codebook runs were executed. Check `datasets[].enabled` and latent paths.")
     write_summary_tsv(output_root / "summary.tsv", rows)
     save_json(output_root / "summary.json", rows)
+    write_cross_stride_reports(cfg, expected_runs={str(row["run"]) for row in rows})
     return rows
+
+
+def _batch_index(batch) -> dict[tuple[int, int], int]:
+    return {
+        (int(sample), int(time)): idx
+        for idx, (sample, time) in enumerate(zip(batch.sample_index.tolist(), batch.time_index.tolist()))
+    }
+
+
+def _aligned_indices(batch_a, batch_b) -> tuple[torch.Tensor, torch.Tensor]:
+    index_a = _batch_index(batch_a)
+    index_b = _batch_index(batch_b)
+    common = sorted(set(index_a) & set(index_b))
+    if not common:
+        return torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long)
+    return (
+        torch.tensor([index_a[key] for key in common], dtype=torch.long),
+        torch.tensor([index_b[key] for key in common], dtype=torch.long),
+    )
+
+
+def write_cross_stride_reports(cfg: DictConfig, expected_runs: set[str] | None = None) -> list[dict[str, Any]]:
+    output_root = Path(cfg.get("output_dir", "runs/codebook_eval"))
+    descriptors_cfg = cfg.get("descriptors", {})
+    all_rows: list[dict[str, Any]] = []
+
+    for dataset_cfg in list(cfg.get("datasets", [])):
+        if not bool(dataset_cfg.get("enabled", True)):
+            continue
+        dataset_name = str(dataset_cfg.get("name", "dataset"))
+        max_windows = dataset_cfg.get("max_windows", cfg.get("max_windows", None))
+        payload = load_latent_shards(
+            dataset_cfg.get("latent_paths"),
+            max_windows=None if max_windows is None else int(max_windows),
+        )
+        batches = {
+            batch.stride: batch
+            for batch in build_temporal_descriptors(
+                payload["latents"],
+                strides=descriptors_cfg.get("strides", [2, 3, 5]),
+                pool=int(descriptors_cfg.get("pool", 2)),
+                include_current=bool(descriptors_cfg.get("include_current", True)),
+                include_future=bool(descriptors_cfg.get("include_future", True)),
+                include_delta=bool(descriptors_cfg.get("include_delta", True)),
+                normalize=bool(descriptors_cfg.get("normalize", True)),
+            )
+        }
+
+        records: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        dataset_root = output_root / dataset_name
+        for metrics_path in sorted(dataset_root.glob("*/metrics.json")):
+            if expected_runs is not None and metrics_path.parent.name not in expected_runs:
+                continue
+            metrics = json.loads(metrics_path.read_text())
+            if metrics.get("method") != "rq":
+                continue
+            codebook = torch.load(metrics_path.parent / "codebook.pt", map_location="cpu")
+            if codebook.get("type") != "rq":
+                continue
+            key = (int(metrics["k"]), int(metrics["levels"]))
+            records.setdefault(key, []).append(
+                {
+                    "run": metrics_path.parent.name,
+                    "stride": int(metrics["stride"]),
+                    "k": int(metrics["k"]),
+                    "levels": int(metrics["levels"]),
+                    "codes": codebook["codes"].long(),
+                }
+            )
+
+        dataset_rows: list[dict[str, Any]] = []
+        for (k, levels), items in records.items():
+            by_stride = {item["stride"]: item for item in items}
+            strides = sorted(by_stride)
+            for i, stride_a in enumerate(strides):
+                for stride_b in strides[i + 1 :]:
+                    item_a = by_stride[stride_a]
+                    item_b = by_stride[stride_b]
+                    idx_a, idx_b = _aligned_indices(batches[stride_a], batches[stride_b])
+                    if idx_a.numel() == 0:
+                        continue
+                    codes_a = item_a["codes"][idx_a]
+                    codes_b = item_b["codes"][idx_b]
+                    labels_a = joint_codes(codes_a, k=k)
+                    labels_b = joint_codes(codes_b, k=k)
+                    row: dict[str, Any] = {
+                        "dataset": dataset_name,
+                        "method": "rq",
+                        "k": k,
+                        "levels": levels,
+                        "stride_a": stride_a,
+                        "stride_b": stride_b,
+                        "common_n": int(idx_a.numel()),
+                    }
+                    row.update(mutual_information_metrics(labels_a, labels_b, prefix="joint"))
+                    for level in range(levels):
+                        row.update(
+                            mutual_information_metrics(
+                                codes_a[:, level],
+                                codes_b[:, level],
+                                prefix=f"level{level + 1}",
+                            )
+                        )
+                    dataset_rows.append(row)
+                    all_rows.append(row)
+
+        if dataset_rows:
+            write_rows_tsv(
+                output_root / dataset_name / "cross_stride_metrics.tsv",
+                dataset_rows,
+                columns=[
+                    "dataset",
+                    "method",
+                    "k",
+                    "levels",
+                    "stride_a",
+                    "stride_b",
+                    "common_n",
+                    "joint_nmi_min",
+                    "joint_nmi_sqrt",
+                    "joint_mi",
+                    "level1_nmi_min",
+                    "level2_nmi_min",
+                    "level3_nmi_min",
+                ],
+            )
+            save_json(output_root / dataset_name / "cross_stride_metrics.json", dataset_rows)
+
+    if all_rows:
+        write_rows_tsv(
+            output_root / "cross_stride_metrics.tsv",
+            all_rows,
+            columns=[
+                "dataset",
+                "method",
+                "k",
+                "levels",
+                "stride_a",
+                "stride_b",
+                "common_n",
+                "joint_nmi_min",
+                "joint_nmi_sqrt",
+                "joint_mi",
+                "level1_nmi_min",
+                "level2_nmi_min",
+                "level3_nmi_min",
+            ],
+        )
+        save_json(output_root / "cross_stride_metrics.json", all_rows)
+    return all_rows
 
 
 def _reconstruct_from_codebook(batch_vectors: torch.Tensor, payload: dict[str, Any]) -> torch.Tensor:
@@ -186,6 +338,11 @@ def validate_artifacts(config_path: str | Path, atol: float = 1e-6) -> list[dict
     descriptors_cfg = cfg.get("descriptors", {})
     datasets = list(cfg.get("datasets", []))
     rows: list[dict[str, Any]] = []
+    summary_path = output_root / "summary.json"
+    expected_runs: set[str] | None = None
+    if summary_path.exists():
+        summary_rows = json.loads(summary_path.read_text())
+        expected_runs = {str(row["run"]) for row in summary_rows}
 
     for dataset_cfg in datasets:
         if not bool(dataset_cfg.get("enabled", True)):
@@ -211,6 +368,8 @@ def validate_artifacts(config_path: str | Path, atol: float = 1e-6) -> list[dict
 
         dataset_root = output_root / dataset_name
         for metrics_path in sorted(dataset_root.glob("*/metrics.json")):
+            if expected_runs is not None and metrics_path.parent.name not in expected_runs:
+                continue
             metrics = json.loads(metrics_path.read_text())
             batch = batches[int(metrics["stride"])]
             codebook = torch.load(metrics_path.parent / "codebook.pt", map_location="cpu")

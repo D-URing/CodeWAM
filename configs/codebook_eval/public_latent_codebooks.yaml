@@ -53,15 +53,6 @@ training:
   chunk_size: 8192
   max_vectors_per_descriptor: 200000
   variants:
-    - method: kmeans
-      k: 32
-      levels: 1
-    - method: kmeans
-      k: 64
-      levels: 1
-    - method: kmeans
-      k: 128
-      levels: 1
     - method: rq
       k: 32
       levels: 3

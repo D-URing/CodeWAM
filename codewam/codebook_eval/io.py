@@ -110,11 +110,60 @@ def write_summary_tsv(path: str | Path, rows: list[dict[str, Any]]) -> None:
         "level1_usage",
         "level1_perplexity_frac",
         "level1_dead_frac",
+        "level2_usage",
+        "level2_perplexity_frac",
+        "level2_dead_frac",
+        "level3_usage",
+        "level3_perplexity_frac",
+        "level3_dead_frac",
+        "joint_code_unique_frac",
+        "joint_code_perplexity_frac",
+        "joint_code_max_count_frac",
+        "residual_total_reduction",
+        "residual_reduction_l1",
+        "residual_reduction_l2",
+        "residual_reduction_l3",
         "temporal_same_next_frac",
         "temporal_change_next_frac",
+        "temporal_transition_entropy",
+        "joint_same_next_frac",
+        "joint_change_next_frac",
+        "joint_transition_entropy",
+        "action_level1_r2_in_sample",
+        "action_level2_r2_in_sample",
+        "action_level3_r2_in_sample",
+        "action_joint_r2_in_sample",
+        "action_code_r2_in_sample",
     ]
     extra = sorted({key for row in rows for key in row if key not in columns})
     columns.extend(extra)
+    lines = ["\t".join(columns)]
+    for row in rows:
+        values = []
+        for column in columns:
+            value = row.get(column, "")
+            if isinstance(value, float):
+                values.append(f"{value:.6g}")
+            else:
+                values.append(str(value))
+        lines.append("\t".join(values))
+    path.write_text("\n".join(lines) + "\n")
+
+
+def write_rows_tsv(path: str | Path, rows: list[dict[str, Any]], columns: list[str] | None = None) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("")
+        return
+    if columns is None:
+        columns = []
+        for row in rows:
+            for key in row:
+                if key not in columns:
+                    columns.append(key)
+    extra = [key for row in rows for key in row if key not in columns]
+    columns.extend(sorted(set(extra)))
     lines = ["\t".join(columns)]
     for row in rows:
         values = []

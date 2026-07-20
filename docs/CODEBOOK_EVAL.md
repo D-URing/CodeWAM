@@ -18,7 +18,7 @@ BridgeData V2、DROID/Open X-Embodiment 子集。
 public robot dataset
 -> Wan-VAE latent cache
 -> temporal interleaved descriptors
--> KMeans / RQ codebooks
+-> three RQ-3 codebooks, one for each stride
 -> usage / reconstruction / temporal / action-relevance metrics
 ```
 
@@ -90,15 +90,6 @@ descriptors:
 training:
   device: auto
   variants:
-    - method: kmeans
-      k: 32
-      levels: 1
-    - method: kmeans
-      k: 64
-      levels: 1
-    - method: kmeans
-      k: 128
-      levels: 1
     - method: rq
       k: 32
       levels: 3
@@ -110,14 +101,20 @@ training:
       levels: 3
 ```
 
-建议第一批只比较:
+建议第一批主评估只跑:
 
-- 单层 KMeans: baseline,看单码本能否覆盖状态。
+- `stride=2/3/5`: 三套互质时间间隔码本。
+- `RQ-3`: 每套码本三层 residual quantization。
 - `K=32/64/128`: 从小码本开始看 usage、perplexity 和 action relevance。
-- `RQ-3`: 看三层残差是否确实补充信息,而不是只制造更多 index。
 
 `K=256/512/1024` 暂时不作为默认项。只有当 `K=128` usage 健康、perplexity 接近上限、
 retrieval/action relevance 仍有明显欠拟合迹象时,再向上扩。
+
+KMeans 代码仍保留为临时 baseline,但不再是默认主流程。现在的默认问题是:
+
+```text
+三套 stride RQ-3 codebook 是否各自健康,且彼此互补?
+```
 
 ## Data Preparation
 
@@ -218,12 +215,14 @@ training:
 
 - usage: code 使用率、dead code、perplexity、最大簇占比。
 - reconstruction: MSE、relative MSE、R2-like、mean cosine。
-- RQ residual: 每层残差是否持续下降。
-- temporal: 相邻 latent time 的 code 是否稳定但不过度粘滞。
+- RQ residual: 每层残差是否持续下降,以及每层残差下降比例。
+- temporal: 相邻 latent time 的 code 是否稳定但不过度粘滞,以及 transition entropy。
+- joint code: 完整 `(level1, level2, level3)` tuple 的 unique/perplexity。
+- action relevance: 每层 code 和完整 joint code 对 action segment 的解释度。
+- cross-stride: `stride=2/3/5` 三套码本之间的 MI/NMI,判断互补还是重复。
 
 下一步可以继续加:
 
-- action relevance: code 对 action/proprio delta 的解释度。
 - retrieval sanity: 同 code 最近邻是否处在相似操作阶段。
 - cross-dataset: 一个数据集训练的 descriptor/normalization 逻辑在另一个数据集上是否健康。
 
@@ -242,11 +241,11 @@ python scripts/codebook_eval.py all --config configs/codebook_eval/package_scan_
 python scripts/codebook_eval.py validate-artifacts --config configs/codebook_eval/package_scan_v6_local.yaml
 ```
 
-这个配置只导出 4 个窗口,使用较小分辨率和小 K,用途是验证:
+这个配置只导出 16 个窗口,使用较小分辨率和小 K,用途是验证:
 
 ```text
 Package Scan v6 -> Wan-VAE latent -> stride 2/3/5 descriptors
--> KMeans/RQ artifacts -> metrics summary -> artifact reconstruction check
+-> RQ-3 artifacts -> metrics summary -> artifact reconstruction check
 ```
 
 从已有 latent shards 训练所有候选码本:
@@ -277,6 +276,8 @@ python scripts/codebook_eval.py export-latents --config configs/codebook_eval/ex
 runs/codebook_eval/public_latent_codebooks/
 ├── summary.tsv
 ├── summary.json
+├── cross_stride_metrics.tsv
+├── cross_stride_metrics.json
 └── <dataset>/<run>/
     ├── codebook.pt
     └── metrics.json
@@ -286,6 +287,7 @@ runs/codebook_eval/public_latent_codebooks/
 
 - `summary.tsv`: 最适合直接打开看对比表。
 - `summary.json`: 方便后续画图或脚本读取。
+- `cross_stride_metrics.tsv/json`: 三套 stride 码本之间的冗余/互补度量。
 - `<dataset>/<run>/codebook.pt`: 冻结码本 artifact。
 - `<dataset>/<run>/metrics.json`: 单个候选方案的完整指标。
 
@@ -303,7 +305,9 @@ method, stride, k, levels
 relative_mse, r2_like, mean_cosine
 level1_usage, level1_perplexity_frac, level1_dead_frac
 temporal_same_next_frac, temporal_change_next_frac
-action_code_r2_in_sample
+joint_code_unique_frac, joint_code_perplexity_frac
+joint_transition_entropy, residual_total_reduction
+action_joint_r2_in_sample
 ```
 
 ## Decision Rule
