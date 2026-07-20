@@ -1,0 +1,64 @@
+# Offline codebook comparison template.
+#
+# Public dataset workflow:
+#   1. Export Wan-VAE latent shards for each dataset into paths like:
+#        runs/codebook_eval/latents/libero/*.pt
+#      Each shard stores at least:
+#        latents: [N, C, T, H, W]
+#      Optional:
+#        action:  [N, T_action, D]
+#        proprio: [N, T_action, D]
+#        meta:    list/dict
+#   2. Fill `latent_paths` below.
+#   3. Run:
+#        python scripts/codebook_eval.py train --config configs/codebook_eval/public_latent_codebooks.yaml
+
+output_dir: runs/codebook_eval/public_latent_codebooks
+max_windows: null
+
+datasets:
+  - name: libero
+    enabled: true
+    latent_paths:
+      - runs/codebook_eval/latents/libero/*.pt
+    max_windows: null
+  - name: calvin
+    enabled: false
+    latent_paths:
+      - runs/codebook_eval/latents/calvin/*.pt
+    max_windows: null
+  - name: bridgedata_v2
+    enabled: false
+    latent_paths:
+      - runs/codebook_eval/latents/bridgedata_v2/*.pt
+    max_windows: null
+  - name: droid_subset
+    enabled: false
+    latent_paths:
+      - runs/codebook_eval/latents/droid_subset/*.pt
+    max_windows: null
+
+descriptors:
+  strides: [2, 3, 5]
+  pool: 2
+  include_current: true
+  include_future: true
+  include_delta: true
+  normalize: true
+
+training:
+  device: cpu
+  seed: 7
+  kmeans_iters: 50
+  chunk_size: 8192
+  max_vectors_per_descriptor: 200000
+  variants:
+    - method: kmeans
+      k: 256
+      levels: 1
+    - method: rq
+      k: 256
+      levels: 3
+    - method: rq
+      k: 512
+      levels: 3

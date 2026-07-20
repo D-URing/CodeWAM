@@ -272,6 +272,54 @@ stats: usage, perplexity, dead-code ratio, nearest-neighbor samples
 所以第一版 CodeWAM-native 应把 RQ-VAE 当成离线 state tokenizer,而不是 policy 训练环路中的
 可变聚类模块。
 
+### 3.4 当前阶段门: 先证明码本
+
+当前工作顺序应调整为:
+
+```text
+先评估 codebook 是否是有用的状态度量,
+再设计 code embedding / register token 如何进入 policy。
+```
+
+Package Scan v6 只作为本机链路检查。真正有借鉴意义的第一阶段评估应放在公开数据集上:
+
+```text
+LIBERO / robomimic:
+    小而干净,适合验证 usage、phase、action relevance。
+
+CALVIN / BridgeData V2:
+    更长时序和真实视频,适合验证 temporal code 是否稳定且有阶段意义。
+
+DROID / Open X-Embodiment subset:
+    多场景压力测试,不应作为第一步全量入口。
+```
+
+第一版 codebook evaluation 已按统一 latent cache 组织:
+
+```text
+public robot dataset
+-> Wan-VAE latent cache [N,C,T,H,W]
+-> temporal interleaved descriptor
+-> KMeans / RQ candidates
+-> metrics and frozen artifacts
+```
+
+当前推荐 descriptor 不再额外训练重 State Encoder,而是直接度量 Wan latent:
+
+```text
+desc_s(t) = concat(pool(f_t), pool(f_{t+s}), pool(f_{t+s}) - pool(f_t))
+s in {2, 3, 5}
+```
+
+这样每个当前状态都有三套互质时间间隔码本:
+
+```text
+c_t = {RQ_2(desc_2(t)), RQ_3(desc_3(t)), RQ_5(desc_5(t))}
+```
+
+每套码本暂定 3 层 RQ。`K=256/512/1024` 应由 usage、perplexity、dead code、重构误差、
+temporal transition、action relevance 和 retrieval sanity 共同决定,而不是提前拍定。
+
 ## 4. 设计选择总览
 
 下面是供我们取舍的几条路线。它们不是互斥的,但阶段上应有先后。

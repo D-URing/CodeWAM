@@ -1,0 +1,38 @@
+# Template for exporting Wan-VAE latent shards from any Hydra-instantiable dataset.
+# Replace `export.dataset` with a public dataset adapter config.
+#
+# Example run:
+#   DIFFSYNTH_MODEL_BASE_PATH=./checkpoints \
+#   python scripts/codebook_eval.py export-latents --config configs/codebook_eval/export_latents_template.yaml
+
+export:
+  output_dir: runs/codebook_eval/latents/example_dataset
+  device: cuda
+  dtype: bfloat16
+  batch_size: 1
+  shard_size: 64
+  max_windows: 512
+  tiled: false
+  tile_size: [30, 52]
+  tile_stride: [15, 26]
+
+  # Any dataset yielding at least:
+  #   video: [C, T, H, W], normalized to [-1, 1]
+  # Optional:
+  #   action, proprio, prompt/task
+  dataset:
+    _target_: codewam.data.package_scan_v6.PackageScanV6Dataset
+    root: ./package_scan_v6
+    camera_keys:
+      - observation.images.top
+      - observation.images.wrist
+    num_frames: 33
+    global_sample_stride: 1
+    action_video_freq_ratio: 4
+    camera_size: [224, 224]
+    concat_multi_camera: horizontal
+    normalize_video: true
+    window_start_stride: 16
+    max_windows: 512
+    return_camera_stack: false
+
