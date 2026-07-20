@@ -235,6 +235,20 @@ training:
 python scripts/codebook_eval.py synthetic-smoke
 ```
 
+用本机 Package Scan v6 跑一个小规模端到端检查:
+
+```bash
+python scripts/codebook_eval.py all --config configs/codebook_eval/package_scan_v6_local.yaml
+python scripts/codebook_eval.py validate-artifacts --config configs/codebook_eval/package_scan_v6_local.yaml
+```
+
+这个配置只导出 4 个窗口,使用较小分辨率和小 K,用途是验证:
+
+```text
+Package Scan v6 -> Wan-VAE latent -> stride 2/3/5 descriptors
+-> KMeans/RQ artifacts -> metrics summary -> artifact reconstruction check
+```
+
 从已有 latent shards 训练所有候选码本:
 
 ```bash
@@ -274,6 +288,12 @@ runs/codebook_eval/public_latent_codebooks/
 - `summary.json`: 方便后续画图或脚本读取。
 - `<dataset>/<run>/codebook.pt`: 冻结码本 artifact。
 - `<dataset>/<run>/metrics.json`: 单个候选方案的完整指标。
+
+如果要确认保存的 codebook centers/codes 和 summary 指标一致:
+
+```bash
+python scripts/codebook_eval.py validate-artifacts --config <config.yaml>
+```
 
 第一眼先看 `summary.tsv` 里的这些列:
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from omegaconf import DictConfig, OmegaConf
 from .clustering import assign_codes, kmeans, pack_codebook, train_residual_quantizer
 from .descriptors import build_temporal_descriptors
 from .io import ensure_dir, load_latent_shards, save_json, write_summary_tsv
-from .metrics import action_relevance_metrics, kmeans_metrics, rq_metrics
+from .metrics import action_relevance_metrics, kmeans_metrics, reconstruction_metrics, rq_metrics
 
 
 def _cfg(path: str | Path) -> DictConfig:
@@ -95,7 +96,9 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
             if method == "kmeans":
                 km = kmeans(train_x, k=k, iters=iters, seed=seed, chunk_size=chunk_size)
                 centers = km.centers.to(device=device)
-                codes, _ = assign_codes(eval_vectors.float(), centers, chunk_size=chunk_size)
+                codes, distances = assign_codes(eval_vectors.float(), centers, chunk_size=chunk_size)
+                km.codes = codes.detach()
+                km.distances = distances.detach()
                 metrics = kmeans_metrics(batch, centers, codes.cpu(), k=k)
                 metrics.update(action_relevance_metrics(batch, codes.cpu(), actions, latent_t=latents.shape[2], k=k))
                 torch.save(pack_codebook(km, {"dataset": dataset_name, "descriptor": batch.name}), run_dir / "codebook.pt")
@@ -125,7 +128,7 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
                 metrics.update(
                     action_relevance_metrics(batch, eval_rq.codes, actions, latent_t=latents.shape[2], k=k)
                 )
-                torch.save(pack_codebook(rq, {"dataset": dataset_name, "descriptor": batch.name}), run_dir / "codebook.pt")
+                torch.save(pack_codebook(eval_rq, {"dataset": dataset_name, "descriptor": batch.name}), run_dir / "codebook.pt")
             else:
                 raise ValueError(f"Unsupported clustering method: {method}")
 
@@ -157,6 +160,81 @@ def train_from_config(config_path: str | Path) -> list[dict[str, Any]]:
         raise ValueError("No codebook runs were executed. Check `datasets[].enabled` and latent paths.")
     write_summary_tsv(output_root / "summary.tsv", rows)
     save_json(output_root / "summary.json", rows)
+    return rows
+
+
+def _reconstruct_from_codebook(batch_vectors: torch.Tensor, payload: dict[str, Any]) -> torch.Tensor:
+    if payload["type"] == "kmeans":
+        centers = payload["centers"].float()
+        codes = payload["codes"].long()
+        return centers[codes]
+
+    if payload["type"] != "rq":
+        raise ValueError(f"Unsupported codebook type: {payload.get('type')}")
+
+    centers = [center.float() for center in payload["centers"]]
+    codes = payload["codes"].long()
+    quantized = torch.zeros_like(batch_vectors.float())
+    for level, center in enumerate(centers):
+        quantized += center[codes[:, level]]
+    return quantized
+
+
+def validate_artifacts(config_path: str | Path, atol: float = 1e-6) -> list[dict[str, Any]]:
+    cfg = _cfg(config_path)
+    output_root = Path(cfg.get("output_dir", "runs/codebook_eval"))
+    descriptors_cfg = cfg.get("descriptors", {})
+    datasets = list(cfg.get("datasets", []))
+    rows: list[dict[str, Any]] = []
+
+    for dataset_cfg in datasets:
+        if not bool(dataset_cfg.get("enabled", True)):
+            continue
+        dataset_name = str(dataset_cfg.get("name", "dataset"))
+        max_windows = dataset_cfg.get("max_windows", cfg.get("max_windows", None))
+        payload = load_latent_shards(
+            dataset_cfg.get("latent_paths"),
+            max_windows=None if max_windows is None else int(max_windows),
+        )
+        batches = {
+            batch.stride: batch
+            for batch in build_temporal_descriptors(
+                payload["latents"],
+                strides=descriptors_cfg.get("strides", [2, 3, 5]),
+                pool=int(descriptors_cfg.get("pool", 2)),
+                include_current=bool(descriptors_cfg.get("include_current", True)),
+                include_future=bool(descriptors_cfg.get("include_future", True)),
+                include_delta=bool(descriptors_cfg.get("include_delta", True)),
+                normalize=bool(descriptors_cfg.get("normalize", True)),
+            )
+        }
+
+        dataset_root = output_root / dataset_name
+        for metrics_path in sorted(dataset_root.glob("*/metrics.json")):
+            metrics = json.loads(metrics_path.read_text())
+            batch = batches[int(metrics["stride"])]
+            codebook = torch.load(metrics_path.parent / "codebook.pt", map_location="cpu")
+            quantized = _reconstruct_from_codebook(batch.vectors, codebook)
+            rec = reconstruction_metrics(batch.vectors, quantized)
+            delta = abs(float(rec["relative_mse"]) - float(metrics["relative_mse"]))
+            row = {
+                "run": metrics_path.parent.name,
+                "stride": int(metrics["stride"]),
+                "method": str(metrics["method"]),
+                "relative_mse_delta": delta,
+                "ok": delta <= float(atol),
+            }
+            print(
+                f"{row['run']}: stride={row['stride']} method={row['method']} "
+                f"relative_mse_delta={delta:.3g} ok={row['ok']}"
+            )
+            rows.append(row)
+
+    failures = [row for row in rows if not row["ok"]]
+    if failures:
+        raise RuntimeError(f"Artifact validation failed for {len(failures)} runs.")
+    if not rows:
+        raise ValueError("No artifacts were validated.")
     return rows
 
 
@@ -232,10 +310,10 @@ def export_latents(config_path: str | Path) -> None:
 
     from hydra.utils import instantiate
 
-    device = str(export.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    device = _resolve_device(str(export.get("device", "auto")))
     dtype_name = str(export.get("dtype", "bfloat16"))
     torch_dtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype_name]
-    vae = _load_vae(device=device, torch_dtype=torch_dtype)
+    vae = _load_vae(device=str(device), torch_dtype=torch_dtype)
     dataset = instantiate(export["dataset"])
 
     out_dir = ensure_dir(export.get("output_dir", "runs/codebook_eval/latents"))
@@ -272,7 +350,7 @@ def export_latents(config_path: str | Path) -> None:
     for start in range(0, max_windows, batch_size):
         samples = [dataset[i] for i in range(start, min(start + batch_size, max_windows))]
         videos = torch.stack([sample["video"] for sample in samples], dim=0).to(device=device, dtype=torch_dtype)
-        z = vae.encode(videos, device=device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
+        z = vae.encode(videos, device=str(device), tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
         if isinstance(z, list):
             z = torch.stack(z, dim=0)
         shard_latents.append(z.detach().float().cpu())
@@ -301,6 +379,10 @@ def main(argv: list[str] | None = None) -> None:
     p_all.add_argument("--config", required=True)
     p_all.add_argument("--skip-export", action="store_true")
 
+    p_validate = sub.add_parser("validate-artifacts", help="Recompute metrics from saved codebook artifacts.")
+    p_validate.add_argument("--config", required=True)
+    p_validate.add_argument("--atol", type=float, default=1e-6)
+
     p_smoke = sub.add_parser("synthetic-smoke", help="Run a tiny synthetic end-to-end smoke test.")
     p_smoke.add_argument("--output-dir", default="runs/codebook_eval_synthetic")
 
@@ -313,6 +395,8 @@ def main(argv: list[str] | None = None) -> None:
         if not args.skip_export:
             export_latents(args.config)
         train_from_config(args.config)
+    elif args.cmd == "validate-artifacts":
+        validate_artifacts(args.config, atol=args.atol)
     elif args.cmd == "synthetic-smoke":
         synthetic_smoke(args.output_dir)
 

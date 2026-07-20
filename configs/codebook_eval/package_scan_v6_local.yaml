@@ -1,0 +1,70 @@
+# Local end-to-end smoke config for Package Scan v6.
+#
+# This intentionally uses few windows and small K values. It is for validating
+# the Wan-VAE latent export + stride 2/3/5 codebook metrics path on a laptop,
+# not for drawing research conclusions.
+
+output_dir: runs/codebook_eval/package_scan_v6_local
+max_windows: null
+
+export:
+  output_dir: runs/codebook_eval/latents/package_scan_v6_local
+  device: auto
+  dtype: float32
+  batch_size: 1
+  shard_size: 4
+  max_windows: 4
+  tiled: false
+  tile_size: [30, 52]
+  tile_stride: [15, 26]
+  dataset:
+    _target_: codewam.data.package_scan_v6.PackageScanV6Dataset
+    root: ./package_scan_v6
+    camera_keys:
+      - observation.images.top
+      - observation.images.wrist
+    num_frames: 25
+    global_sample_stride: 1
+    action_video_freq_ratio: 1
+    camera_size: [112, 112]
+    concat_multi_camera: horizontal
+    normalize_video: true
+    window_start_stride: 64
+    max_windows: 4
+    return_camera_stack: false
+
+datasets:
+  - name: package_scan_v6_local
+    enabled: true
+    latent_paths:
+      - runs/codebook_eval/latents/package_scan_v6_local/*.pt
+    max_windows: null
+
+descriptors:
+  strides: [2, 3, 5]
+  pool: 2
+  include_current: true
+  include_future: true
+  include_delta: true
+  normalize: true
+
+training:
+  device: auto
+  seed: 7
+  kmeans_iters: 10
+  chunk_size: 1024
+  max_vectors_per_descriptor: null
+  variants:
+    - method: kmeans
+      k: 4
+      levels: 1
+    - method: kmeans
+      k: 8
+      levels: 1
+    - method: rq
+      k: 4
+      levels: 3
+    - method: rq
+      k: 8
+      levels: 3
+
