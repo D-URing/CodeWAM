@@ -26,6 +26,25 @@ def _select_vectors(x: torch.Tensor, max_vectors: int | None, seed: int) -> torc
     return x[idx]
 
 
+def _resolve_device(spec: str) -> torch.device:
+    spec = str(spec).lower()
+    if spec == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if spec.startswith("cuda") and not torch.cuda.is_available():
+        print(f"Requested device `{spec}` but CUDA is unavailable; falling back to CPU.")
+        return torch.device("cpu")
+    if spec == "mps":
+        has_mps = getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()
+        if not has_mps:
+            print("Requested device `mps` but MPS is unavailable; falling back to CPU.")
+            return torch.device("cpu")
+    return torch.device(spec)
+
+
 def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Path) -> list[dict[str, Any]]:
     dataset_name = str(dataset_cfg.get("name", "dataset"))
     latent_paths = dataset_cfg.get("latent_paths")
@@ -49,7 +68,7 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
         normalize=bool(descriptors_cfg.get("normalize", True)),
     )
 
-    device = torch.device(str(training.get("device", "cpu")))
+    device = _resolve_device(str(training.get("device", "auto")))
     seed = int(training.get("seed", 0))
     iters = int(training.get("kmeans_iters", 50))
     chunk_size = int(training.get("chunk_size", 8192))
@@ -65,7 +84,7 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
             None if max_vectors is None else int(max_vectors),
             seed=seed + batch.stride,
         ).to(device=device)
-        eval_batch = batch
+        eval_vectors = batch.vectors.to(device=device)
         for variant in variants:
             method = str(variant.get("method", "rq")).lower()
             k = int(variant.get("k", 256))
@@ -75,10 +94,10 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
 
             if method == "kmeans":
                 km = kmeans(train_x, k=k, iters=iters, seed=seed, chunk_size=chunk_size)
-                centers = km.centers.to(device=eval_batch.vectors.device)
-                codes, _ = assign_codes(eval_batch.vectors.float(), centers)
-                metrics = kmeans_metrics(eval_batch, km.centers, codes.cpu(), k=k)
-                metrics.update(action_relevance_metrics(eval_batch, codes.cpu(), actions, latent_t=latents.shape[2], k=k))
+                centers = km.centers.to(device=device)
+                codes, _ = assign_codes(eval_vectors.float(), centers, chunk_size=chunk_size)
+                metrics = kmeans_metrics(batch, centers, codes.cpu(), k=k)
+                metrics.update(action_relevance_metrics(batch, codes.cpu(), actions, latent_t=latents.shape[2], k=k))
                 torch.save(pack_codebook(km, {"dataset": dataset_name, "descriptor": batch.name}), run_dir / "codebook.pt")
             elif method == "rq":
                 rq = train_residual_quantizer(
@@ -89,8 +108,8 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
                     seed=seed,
                     chunk_size=chunk_size,
                 )
-                centers = [center.to(device=eval_batch.vectors.device) for center in rq.centers]
-                residual = eval_batch.vectors.float()
+                centers = [center.to(device=device) for center in rq.centers]
+                residual = eval_vectors.float()
                 quantized = torch.zeros_like(residual)
                 codes = []
                 for center in centers:
@@ -102,9 +121,9 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
                 eval_rq = rq
                 eval_rq.codes = torch.stack(codes, dim=1)
                 eval_rq.quantized = quantized.cpu()
-                metrics = rq_metrics(eval_batch, eval_rq, k=k)
+                metrics = rq_metrics(batch, eval_rq, k=k)
                 metrics.update(
-                    action_relevance_metrics(eval_batch, eval_rq.codes, actions, latent_t=latents.shape[2], k=k)
+                    action_relevance_metrics(batch, eval_rq.codes, actions, latent_t=latents.shape[2], k=k)
                 )
                 torch.save(pack_codebook(rq, {"dataset": dataset_name, "descriptor": batch.name}), run_dir / "codebook.pt")
             else:
@@ -113,6 +132,7 @@ def _train_one_dataset(cfg: DictConfig, dataset_cfg: DictConfig, output_root: Pa
             row = {
                 "run": run_name,
                 "dataset": dataset_name,
+                "device": str(device),
                 "method": method,
                 **metrics,
             }
@@ -173,7 +193,7 @@ def synthetic_smoke(output_dir: str | Path) -> list[dict[str, Any]]:
                 "normalize": True,
             },
             "training": {
-                "device": "cpu",
+                "device": "auto",
                 "seed": 7,
                 "kmeans_iters": 8,
                 "chunk_size": 2048,

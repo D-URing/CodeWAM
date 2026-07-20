@@ -88,6 +88,7 @@ descriptors:
   pool: 2
 
 training:
+  device: auto
   variants:
     - method: kmeans
       k: 32
@@ -170,6 +171,47 @@ runs/codebook_eval/latents/droid_subset/*.pt
 如果还没有,用 `export_latents_template.yaml` 替换里面的 `export.dataset` 为目标公开数据集
 adapter,再运行 `export-latents`。
 
+## GPU Execution
+
+码本训练使用 torch 实现,默认走 GPU-first:
+
+```yaml
+training:
+  device: auto
+```
+
+`auto` 的选择顺序是:
+
+```text
+cuda -> mps -> cpu
+```
+
+在训练集群上可以显式指定:
+
+```yaml
+training:
+  device: cuda
+```
+
+如果 CUDA 不可用,脚本会回退到 CPU。每行 `summary.tsv` 都会记录实际运行的 `device`。
+
+聚类 assignment 是 chunked torch 计算,不会一次性保留完整 `[N, K]` 距离矩阵。显存/内存不够时,
+优先调小:
+
+```yaml
+training:
+  chunk_size: 2048
+  max_vectors_per_descriptor: 50000
+```
+
+确认指标稳定后再逐步增加:
+
+```yaml
+training:
+  chunk_size: 8192
+  max_vectors_per_descriptor: 200000
+```
+
 ## Metrics
 
 当前脚本会输出:
@@ -236,6 +278,7 @@ runs/codebook_eval/public_latent_codebooks/
 第一眼先看 `summary.tsv` 里的这些列:
 
 ```text
+device
 method, stride, k, levels
 relative_mse, r2_like, mean_cosine
 level1_usage, level1_perplexity_frac, level1_dead_frac

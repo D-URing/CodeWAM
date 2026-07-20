@@ -47,7 +47,7 @@ descriptors:
   normalize: true
 
 training:
-  device: cpu
+  device: auto
   seed: 7
   kmeans_iters: 50
   chunk_size: 8192

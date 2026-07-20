@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from .clustering import RQResult, assign_codes
+from .clustering import RQResult
 from .descriptors import DescriptorBatch
 
 
@@ -128,8 +128,7 @@ def rq_metrics(batch: DescriptorBatch, result: RQResult, k: int) -> dict[str, An
 
 def kmeans_metrics(batch: DescriptorBatch, centers: torch.Tensor, codes: torch.Tensor, k: int) -> dict[str, Any]:
     centers = centers.float()
-    codes_device, _ = assign_codes(batch.vectors.float(), centers.to(batch.vectors.device))
-    quantized = centers[codes_device.cpu()]
+    quantized = centers[codes.to(device=centers.device)].cpu()
     out: dict[str, Any] = {
         "descriptor": batch.name,
         "stride": batch.stride,

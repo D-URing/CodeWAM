@@ -34,9 +34,17 @@ def squared_l2(x: torch.Tensor, centers: torch.Tensor, chunk_size: int = 8192) -
 
 
 def assign_codes(x: torch.Tensor, centers: torch.Tensor, chunk_size: int = 8192) -> tuple[torch.Tensor, torch.Tensor]:
-    dist = squared_l2(x, centers, chunk_size=chunk_size)
-    distances, codes = dist.min(dim=1)
-    return codes, distances
+    codes_out = []
+    distances_out = []
+    centers_t = centers.t()
+    center_norm = centers.square().sum(dim=1).unsqueeze(0)
+    for start in range(0, x.shape[0], chunk_size):
+        xb = x[start : start + chunk_size]
+        dist = xb.square().sum(dim=1, keepdim=True) - 2.0 * xb @ centers_t + center_norm
+        distances, codes = dist.min(dim=1)
+        codes_out.append(codes)
+        distances_out.append(distances)
+    return torch.cat(codes_out, dim=0), torch.cat(distances_out, dim=0)
 
 
 def _init_centers(x: torch.Tensor, k: int, generator: torch.Generator) -> torch.Tensor:
@@ -88,9 +96,9 @@ def kmeans(
 
     codes, distances = assign_codes(x, centers, chunk_size=chunk_size)
     return KMeansResult(
-        centers=centers.detach().cpu(),
-        codes=codes.detach().cpu(),
-        distances=distances.detach().cpu(),
+        centers=centers.detach(),
+        codes=codes.detach(),
+        distances=distances.detach(),
         inertia=float(distances.mean().item()),
     )
 
@@ -125,14 +133,14 @@ def train_residual_quantizer(
         q = centers[codes]
         quantized = quantized + q
         residual = residual - q
-        all_centers.append(km.centers)
-        all_codes.append(km.codes)
+        all_centers.append(km.centers.detach())
+        all_codes.append(km.codes.detach())
         residual_norms.append(float(residual.square().mean().item()))
 
     return RQResult(
         centers=all_centers,
         codes=torch.stack(all_codes, dim=1),
-        quantized=quantized.detach().cpu(),
+        quantized=quantized.detach(),
         residual_norms=residual_norms,
     )
 
@@ -140,8 +148,19 @@ def train_residual_quantizer(
 def pack_codebook(result: KMeansResult | RQResult, meta: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {"meta": dict(meta)}
     if isinstance(result, KMeansResult):
-        payload.update({"type": "kmeans", "centers": result.centers, "codes": result.codes})
+        payload.update(
+            {
+                "type": "kmeans",
+                "centers": result.centers.detach().cpu(),
+                "codes": result.codes.detach().cpu(),
+            }
+        )
     else:
-        payload.update({"type": "rq", "centers": result.centers, "codes": result.codes})
+        payload.update(
+            {
+                "type": "rq",
+                "centers": [center.detach().cpu() for center in result.centers],
+                "codes": result.codes.detach().cpu(),
+            }
+        )
     return payload
-

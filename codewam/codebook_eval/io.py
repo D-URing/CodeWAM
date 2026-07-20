@@ -96,6 +96,7 @@ def write_summary_tsv(path: str | Path, rows: list[dict[str, Any]]) -> None:
     columns = [
         "run",
         "dataset",
+        "device",
         "method",
         "descriptor",
         "stride",
@@ -125,4 +126,3 @@ def write_summary_tsv(path: str | Path, rows: list[dict[str, Any]]) -> None:
                 values.append(str(value))
         lines.append("\t".join(values))
     path.write_text("\n".join(lines) + "\n")
-
