@@ -3,16 +3,17 @@
 ```text
 CodeWAM/
 ├── codewam/                   # CodeWAM package
-│   ├── codebook.py             # StateEncoder, RQ, DynamicsHead, StateCodebook
-│   ├── model.py                # CodeWAM assembly, training, inference, checkpoints
-│   ├── probe.py                # P1/P2/P4 latent probe
-│   └── runtime.py              # Hydra factory
+│   ├── codebook.py            # Legacy online-EMA codebook prototype; disabled
+│   ├── codebook_eval/         # Legacy in-memory evaluator; streaming migration target
+│   ├── model.py               # Current FastWAM-compatible prototype
+│   ├── probe.py               # Early compatibility probe
+│   └── runtime.py             # Hydra factory
 ├── configs/                    # Hydra configs for model/data/task/train
 ├── scripts/                    # Bootstrap, download, train, environment checks
 │   ├── accelerate_configs/      # accelerate launch configs
 │   └── ds_configs/              # DeepSpeed configs
 ├── requirements/                # Local-dev and cluster CUDA dependency sets
-├── docs/                       # Design, setup, training, and layout docs
+├── docs/                       # Canonical plans, setup, training, and layout docs
 ├── external/                   # External source checkouts; contents ignored by git
 ├── checkpoints/                # Model files; ignored by git
 ├── data/                       # Datasets; ignored by git
@@ -40,9 +41,11 @@ and `*.egg-info/` should be treated as disposable local state.
 
 CodeWAM owns:
 
-- RQ state codebook
-- CodeWAM-specific context-token injection
-- future-code dynamics loss
+- offline frozen Q2/Q3/Q5 RQ artifacts
+- continuous state plus nine read-only code measurement interface
+- Policy/Forward-Dynamics/Video-Prior mask program
+- future-code world objective
+- streaming codebook evaluation and artifact pipeline
 - CodeWAM Hydra model/task configs
 
 FastWAM remains the provider for:
@@ -55,5 +58,8 @@ FastWAM remains the provider for:
 - dataset processors
 - training runtime
 
-The chosen FastWAM subtree and model repositories are pinned in
-`upstreams.yaml`.
+The chosen FastWAM subtree and model repositories are pinned in `upstreams.yaml`.
+
+Canonical architecture decisions are in `CODEWAM_V1_PLAN.md`. Dataset selection, DROID staging,
+streaming RQ and 8xA100 execution are in `DATASET_SCALE_PLAN.md`. Existing `codewam/codebook.py`
+and `codewam/model.py` must not be treated as the completed canonical implementation.

@@ -33,6 +33,8 @@ public robot dataset
 
 完整结构、已知/未知信息边界和实现顺序见
 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md)。
+公开数据选择、DROID 分阶段方案、海量 streaming RQ 和 8xA100 作业布局见
+[`docs/DATASET_SCALE_PLAN.md`](./docs/DATASET_SCALE_PLAN.md)。
 
 ## 结构
 
@@ -118,8 +120,10 @@ bash scripts/train_codebooks.sh configs/codebook_eval/public_latent_codebooks.ya
 - 已锁定:三套独立 causal RQ、九个只读 code measurements、连续状态路径、belief 聚合器、
   mode-specific Policy/FD/Prior masks 和可选 MemoryPort。
 - 当前边界:`codewam/codebook.py` 的在线 EMA 单 token 原型已默认关闭;不能作为 v1 实验结果。
-- 下一步:迁移 evaluator 到 episode split、train-only normalization、held-out probe、retrieval
-  montage 和几何扰动测试,先完成 Gate 0/1/2,再实现模型接口与 mask 单测。
+- 数据决策:DROID 作为主码本数据,LIBERO 做受控验证,BridgeData V2 做跨域复核;AgiBot World、
+  RoboMIND 和 Open X-Embodiment 后置。
+- 下一步:先实现 episode manifest、pooled-feature shards 和 distributed streaming RQ,再迁移
+  causal evaluator 与 Gate 0/1/2,最后实现模型接口与 mask 单测。
 
 项目决策以 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md) 为准;早期兼容原型说明见
 [`docs/DESIGN.md`](./docs/DESIGN.md)。

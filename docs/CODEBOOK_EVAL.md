@@ -4,6 +4,7 @@
 > `[t-2s,t-s,t]` descriptor、episode split、train-only normalization 和 held-out probe 要求。
 > canonical v1 中 `Q2/Q3/Q5` 完全独立,每套保留 3 个 RQ level token。迁移目标与实验门以
 > `docs/CODEWAM_V1_PLAN.md` 为准;迁移完成前,本页命令只用于链路检查,不能生成正式 artifact。
+> 面向 DROID 和 8xA100 的 streaming data/clustering 规范见 `docs/DATASET_SCALE_PLAN.md`。
 
 本页描述 CodeWAM 当前阶段最重要的离线工作:
 
