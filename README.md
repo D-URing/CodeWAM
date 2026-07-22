@@ -2,7 +2,7 @@
 
 CodeWAM 是一个独立的世界动作模型(world-action model)方法。它与 FastWAM **复用同一套基座专家**
 ——Wan 视频专家 + ActionDiT 动作专家 + MoT 混合注意力 + Wan-VAE + flow-matching——但采用**不同的
-组合形式**:围绕离散状态码本构建可度量、可预测、可复用的机器人状态空间。
+组合形式**:用离散视觉状态码本为连续视觉 latent 建立可度量、可预测、可复用的机器人状态坐标。
 
 CodeWAM 不是对 FastWAM 的补丁或子类;它是一个平行方法,最终与 FastWAM **做对照**。
 
@@ -11,7 +11,8 @@ CodeWAM 不是对 FastWAM 的补丁或子类;它是一个平行方法,最终与 
 当前阶段的主线不是先把 codebook 接进 policy,而是先回答:
 
 ```text
-Wan-VAE / DiT latent 能否被离散化成有行为意义的 state code?
+Wan-VAE / DiT latent 能否被离散化成有行为意义的 visual state code,
+并与连续 latent 共同提升动作预测和世界建模?
 ```
 
 为此,CodeWAM 先建立离线 codebook evaluation:
@@ -25,7 +26,7 @@ public robot dataset
 ```
 
 如果离线指标证明 codebook 确实形成了有用的状态度量,下一阶段再讨论 code embedding /
-register token 应该如何注入 ActionDiT 或 MoT 中间层。
+register token 如何与 continuous latent 一起注入 ActionDiT 或 MoT 中间层。
 
 ## 结构
 
@@ -73,7 +74,8 @@ bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
 外部依赖和模型固定在 [`upstreams.yaml`](./upstreams.yaml)。更多说明见
 [`docs/BOOTSTRAP.md`](./docs/BOOTSTRAP.md) 和 [`docs/TRAINING.md`](./docs/TRAINING.md)。
 CodeWAM 从 compatible 接入走向 native 架构的规划见
-[`docs/CODEWAM_NATIVE_DESIGN.md`](./docs/CODEWAM_NATIVE_DESIGN.md)。
+[`docs/CODEWAM_NATIVE_DESIGN.md`](./docs/CODEWAM_NATIVE_DESIGN.md)。当前推荐的 hybrid 架构见
+[`docs/CODEWAM_HYBRID_ARCHITECTURE.md`](./docs/CODEWAM_HYBRID_ARCHITECTURE.md)。
 
 ## 本机 Package Scan v6 Demo
 
