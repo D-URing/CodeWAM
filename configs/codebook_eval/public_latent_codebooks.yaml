@@ -64,11 +64,11 @@ training:
   max_vectors_per_descriptor: 200000
   variants:
     - method: rq
+      k: 16
+      levels: 3
+    - method: rq
       k: 32
       levels: 3
     - method: rq
       k: 64
-      levels: 3
-    - method: rq
-      k: 128
       levels: 3

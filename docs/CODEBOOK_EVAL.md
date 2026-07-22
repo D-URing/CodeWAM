@@ -1,8 +1,9 @@
 # Offline Codebook Evaluation
 
-> 本页描述当前已实现的早期 evaluator。它仍使用 `current/future/delta` variants,尚未满足
-> causal split、train-only normalization 和 held-out probe 要求。下一版迁移目标与实验门以
-> `docs/CODEWAM_V1_PLAN.md` 为准;在迁移完成前,本页命令只用于链路检查。
+> **Legacy evaluator:** 当前实现仍使用 `current/future/delta` variants,尚未满足 causal
+> `[t-2s,t-s,t]` descriptor、episode split、train-only normalization 和 held-out probe 要求。
+> canonical v1 中 `Q2/Q3/Q5` 完全独立,每套保留 3 个 RQ level token。迁移目标与实验门以
+> `docs/CODEWAM_V1_PLAN.md` 为准;迁移完成前,本页命令只用于链路检查,不能生成正式 artifact。
 
 本页描述 CodeWAM 当前阶段最重要的离线工作:
 
@@ -39,8 +40,8 @@ each stride: 3-level RQ
 c_t = {c_2(t), c_3(t), c_5(t)}
 ```
 
-这一步暂时只证明状态空间是否值得继续使用。code embedding 放在哪里、是否进
-ActionDiT cross-attention、是否作为 MoT register token,留到下一阶段。
+这一步暂时只证明状态空间是否值得继续使用。已经锁定的下游位置是感知与 state reasoning
+边界处的 9 个只读 measurement tokens;当前 evaluator 尚未实现该接口。
 
 ## Latent Cache Format
 
@@ -95,13 +96,13 @@ training:
   device: auto
   variants:
     - method: rq
+      k: 16
+      levels: 3
+    - method: rq
       k: 32
       levels: 3
     - method: rq
       k: 64
-      levels: 3
-    - method: rq
-      k: 128
       levels: 3
 ```
 
@@ -109,9 +110,9 @@ training:
 
 - `stride=2/3/5`: 三套互质时间间隔码本。
 - `RQ-3`: 每套码本三层 residual quantization。
-- `K=32/64/128`: 从小码本开始看 usage、perplexity 和 action relevance。
+- `K=16/32/64`: 从小码本开始看 usage、perplexity 和 action relevance。
 
-`K=256/512/1024` 暂时不作为默认项。只有当 `K=128` usage 健康、perplexity 接近上限、
+`K>=128` 暂时不作为默认项。只有当 `K=64` usage 健康、perplexity 接近上限、
 retrieval/action relevance 仍有明显欠拟合迹象时,再向上扩。
 
 KMeans 代码仍保留为临时 baseline,但不再是默认主流程。现在的默认问题是:

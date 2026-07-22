@@ -1,7 +1,9 @@
 # CodeWAM Native Design
 
-本文件是 CodeWAM 的技术规划主文档。它的目标不是描述当前代码已经实现了什么,
-而是帮助我们决定 CodeWAM 应该长成什么样。
+> **Research background, not specification:** 本文保留早期研究论证与备选路线。当前 v1 的
+> 唯一结构、信息身份、mask program 和实现顺序见 `docs/CODEWAM_V1_PLAN.md`;冲突内容以其为准。
+
+本文件的目标不是描述当前代码已经实现了什么,而是保留帮助我们形成 CodeWAM 的研究过程。
 
 当前最重要的判断是: CodeWAM 不应被限定为 "FastWAM + codebook"。FastWAM 是
 预训练资源、工程参考和公平对照,但 CodeWAM 的核心问题应该更独立:

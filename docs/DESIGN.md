@@ -1,5 +1,9 @@
 # World Fast Codebook — FastWAM 的 RQ 离散状态码本扩展
 
+> **Legacy prototype:** 本文只记录早期 `StateEncoder + online EMA RQ + single token` 兼容实现。
+> 该路径现已默认关闭,不代表 CodeWAM v1。三套独立 frozen RQ、九个只读测量 token、连续状态
+> 路径和 mode-specific mask 的唯一规范见 `docs/CODEWAM_V1_PLAN.md`。
+
 > 本文件记录在 FastWAM 之上引入的 **World Fast Codebook**(RQ 离散状态码本)扩展:动机、
 > 设计、代码落点、判定实验结果、如何启用。核心代码全部为**可选**(默认关闭,与原 FastWAM 行为一致)。
 

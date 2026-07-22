@@ -1,44 +1,50 @@
 # CodeWAM — Codebook World-Action Model
 
-CodeWAM 是一个独立的世界动作模型(world-action model)方法。它与 FastWAM **复用同一套基座专家**
-——Wan 视频专家 + ActionDiT 动作专家 + MoT 混合注意力 + Wan-VAE + flow-matching——但采用**不同的
-组合形式**:用离散视觉状态码本为连续视觉 latent 建立可度量、可预测、可复用的机器人状态坐标。
+CodeWAM 是一个独立的世界动作模型(world-action model)方法。它复用 Wan-VAE、Video DiT、
+ActionDiT 和 flow-matching 等基座能力,但不把 FastWAM 的对称 MoT 拓扑当作结构边界。核心是用
+冻结的离散视觉状态码本,为连续 Wan latent 建立可度量、可预测、可干预的机器人状态坐标。
 
 CodeWAM 不是对 FastWAM 的补丁或子类;它是一个平行方法,最终与 FastWAM **做对照**。
 
 ## 核心思想
 
-当前阶段的主线不是先把 codebook 接进 policy,而是先回答:
+CodeWAM v1 已锁定为连续与离散双路径:
 
 ```text
-Wan-VAE / DiT latent 能否被离散化成有行为意义的 visual state code,
-并与连续 latent 共同提升动作预测和世界建模?
+unquantized Wan latent -> continuous state H -> 精确几何与动作微调
+three frozen RQ-3     -> 9 code tokens     -> 多时间尺度状态坐标
+H + code + L/P        -> belief B          -> continuous action policy
+shared state + action -> world expert      -> training-only future-code objective
 ```
 
-为此,CodeWAM 先建立离线 codebook evaluation:
+三套码本基于因果窗口 `[t-2s,t-s,t]`,其中 `s in {2,3,5}`。它们彼此独立,三级 residual
+centers 不共享,九个 code measurement tokens 不求和、不流式更新。Policy、Forward Dynamics
+和 Video Prior 使用显式不同的 mask program,动作分支永远看不到未来 target。
+
+实现仍按实验门推进,先建立可信的离线 codebook evaluation:
 
 ```text
 public robot dataset
 -> Wan-VAE latent cache
--> temporal interleaved descriptors, e.g. stride 2/3/5
--> KMeans / 3-level RQ codebooks
+-> causal temporal descriptors at stride 2/3/5
+-> three independent 3-level RQ codebooks
 -> usage / reconstruction / temporal / action relevance metrics
 ```
 
-如果离线指标证明 codebook 确实形成了有用的状态度量,下一阶段再讨论 code embedding /
-register token 如何与 continuous latent 一起注入 ActionDiT 或 MoT 中间层。
+完整结构、已知/未知信息边界和实现顺序见
+[`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md)。
 
 ## 结构
 
 ```
 codewam/
-├── codebook.py   # StateEncoder(可配 pool) + ResidualQuantizer(EMA + 死码重置) + DynamicsHead + StateCodebook
-├── codebook_eval/ # 离线 latent descriptor、KMeans/RQ 训练与指标
-├── model.py      # class CodeWAM: 组装基座专家 + 码本; build_inputs(A) / training_loss(B) / infer
-├── runtime.py    # create_codewam 工厂(hydra _target_)
-└── probe.py      # 早期兼容探针,后续会被 codebook_eval 路线替代
+├── codebook.py    # legacy online EMA 原型,默认关闭
+├── codebook_eval/ # 早期离线 evaluator,待迁移到 canonical causal contract
+├── model.py       # 当前 FastWAM-compatible 模型原型,不是最终 v1 topology
+├── runtime.py     # create_codewam 工厂(hydra _target_)
+└── probe.py       # 早期兼容探针
 configs/          # model / task 配置(与 FastWAM 共享数据管线以便对照)
-docs/DESIGN.md    # 设计、判定实验、工程要点(反坍塌等)
+docs/CODEWAM_V1_PLAN.md # canonical architecture + mask program
 ```
 
 ## 依赖与安装
@@ -109,10 +115,11 @@ bash scripts/train_codebooks.sh configs/codebook_eval/public_latent_codebooks.ya
 
 - 已准备:外部上游 sparse checkout、模型下载脚本、ActionDiT 预处理、Hydra 训练配置、
   本机 Package Scan v6 demo reader。
-- 当前推进:Gate 0 数据因果检查 -> causal C2/C3/C5 descriptor -> frozen RQ-3 -> Gate 1 离线评估。
-- 下一步:把早期 evaluator 迁移到 episode split、train-only normalization、held-out probe、
-  retrieval montage 和几何扰动测试。
-- 工程整理:已补齐外部上游 sparse checkout、模型下载、ActionDiT 预处理、Hydra 训练配置和
-  CodeWAM 训练入口;外部代码/模型默认不入库。
+- 已锁定:三套独立 causal RQ、九个只读 code measurements、连续状态路径、belief 聚合器、
+  mode-specific Policy/FD/Prior masks 和可选 MemoryPort。
+- 当前边界:`codewam/codebook.py` 的在线 EMA 单 token 原型已默认关闭;不能作为 v1 实验结果。
+- 下一步:迁移 evaluator 到 episode split、train-only normalization、held-out probe、retrieval
+  montage 和几何扰动测试,先完成 Gate 0/1/2,再实现模型接口与 mask 单测。
 
-详见 [`docs/DESIGN.md`](./docs/DESIGN.md)。
+项目决策以 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md) 为准;早期兼容原型说明见
+[`docs/DESIGN.md`](./docs/DESIGN.md)。

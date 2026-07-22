@@ -59,8 +59,10 @@ loss:
   lambda_video: 1.0
   lambda_action: 1.0
 
+# Legacy online EMA prototype only. Canonical v1 loads three independent,
+# offline-fitted frozen RQ artifacts through a future FrozenRQAdapter.
 state_codebook:
-  enabled: true
+  enabled: false
   dim: 128
   n_levels: 3
   codebook_size: 64
