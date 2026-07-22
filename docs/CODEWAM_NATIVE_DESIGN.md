@@ -20,7 +20,8 @@ continuous visual latent = 精确几何和操作细节
 discrete visual RQ code = 状态结构、动态模式和可检索坐标
 ```
 
-当前 hybrid 架构主说明见 `docs/CODEWAM_HYBRID_ARCHITECTURE.md`。
+当前 v1 的唯一结构与实验决策规范见 `docs/CODEWAM_V1_PLAN.md`;本文保留研究背景、备选路线
+和早期论证。hybrid 架构的详细动机见 `docs/CODEWAM_HYBRID_ARCHITECTURE.md`。
 
 ## 1. 研究依据
 

@@ -1,5 +1,8 @@
 # CodeWAM Hybrid Architecture
 
+> 本文保留设计动机和完整备选细节。当前 v1 的结构接口、实验门和通过标准以
+> `docs/CODEWAM_V1_PLAN.md` 为准。
+
 本文件记录当前推荐的 CodeWAM 新结构。核心判断是:
 
 ```text

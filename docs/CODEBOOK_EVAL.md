@@ -1,5 +1,9 @@
 # Offline Codebook Evaluation
 
+> 本页描述当前已实现的早期 evaluator。它仍使用 `current/future/delta` variants,尚未满足
+> causal split、train-only normalization 和 held-out probe 要求。下一版迁移目标与实验门以
+> `docs/CODEWAM_V1_PLAN.md` 为准;在迁移完成前,本页命令只用于链路检查。
+
 本页描述 CodeWAM 当前阶段最重要的离线工作:
 
 ```text

@@ -75,7 +75,8 @@ bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
 [`docs/BOOTSTRAP.md`](./docs/BOOTSTRAP.md) 和 [`docs/TRAINING.md`](./docs/TRAINING.md)。
 CodeWAM 从 compatible 接入走向 native 架构的规划见
 [`docs/CODEWAM_NATIVE_DESIGN.md`](./docs/CODEWAM_NATIVE_DESIGN.md)。当前推荐的 hybrid 架构见
-[`docs/CODEWAM_HYBRID_ARCHITECTURE.md`](./docs/CODEWAM_HYBRID_ARCHITECTURE.md)。
+[`docs/CODEWAM_HYBRID_ARCHITECTURE.md`](./docs/CODEWAM_HYBRID_ARCHITECTURE.md)。当前唯一的 v1
+结构与实验决策规范见 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md)。
 
 ## 本机 Package Scan v6 Demo
 
@@ -108,9 +109,9 @@ bash scripts/train_codebooks.sh configs/codebook_eval/public_latent_codebooks.ya
 
 - 已准备:外部上游 sparse checkout、模型下载脚本、ActionDiT 预处理、Hydra 训练配置、
   本机 Package Scan v6 demo reader。
-- 当前推进:公开数据集 latent cache -> 多互质时间间隔 descriptor -> KMeans/RQ 码本候选 ->
-  离线指标对比。
-- 下一步:补充公开数据集 adapter/latent export,并加入 action relevance 与 retrieval sanity check。
+- 当前推进:Gate 0 数据因果检查 -> causal C2/C3/C5 descriptor -> frozen RQ-3 -> Gate 1 离线评估。
+- 下一步:把早期 evaluator 迁移到 episode split、train-only normalization、held-out probe、
+  retrieval montage 和几何扰动测试。
 - 工程整理:已补齐外部上游 sparse checkout、模型下载、ActionDiT 预处理、Hydra 训练配置和
   CodeWAM 训练入口;外部代码/模型默认不入库。
 
