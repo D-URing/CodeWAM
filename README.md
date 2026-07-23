@@ -35,6 +35,8 @@ public robot dataset
 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md)。
 公开数据选择、DROID 分阶段方案、海量 streaming RQ 和 8xA100 作业布局见
 [`docs/DATASET_SCALE_PLAN.md`](./docs/DATASET_SCALE_PLAN.md)。
+LIBERO 官方完整 HDF5 归档、固定版本下载和全量校验见
+[`docs/LIBERO_DATASET.md`](./docs/LIBERO_DATASET.md)。
 已实现的 manifest、pooled shard、causal descriptor、streaming RQ 和本机 smoke 见
 [`docs/STREAMING_CODEBOOKS.md`](./docs/STREAMING_CODEBOOKS.md)。
 

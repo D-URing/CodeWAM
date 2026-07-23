@@ -1,3 +1,5 @@
+# FastWAM-compatible LeRobot derivative, not the official LIBERO HDF5 archive.
+# Preserve the official source separately as documented in docs/LIBERO_DATASET.md.
 train:
   _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
