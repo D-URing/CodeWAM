@@ -376,9 +376,6 @@ network:        resumable access to the official Google Cloud bucket
 - 固定物体/任务下的位置、尺度、光照和 camera 扰动。
 - `H-only / C-only / H+C` action probe。
 - 后续 C0/C1/C2 闭环策略比较。
-- 长期保存的是官方 130-task HDF5 归档;FastWAM 的
-  `libero_*_no_noops_lerobot` 仅作为独立派生格式,不能替代或覆盖源数据。
-- 固定版本下载、目录语义和 SHA256 验收见 `LIBERO_DATASET.md`。
 
 ## 11. 开发机接续点
 
@@ -387,12 +384,10 @@ network:        resumable access to the official Google Cloud bucket
 - canonical v1 架构已写入 `CODEWAM_V1_PLAN.md`。
 - legacy evaluator 仍保留;新的 manifest、pooled shard、causal descriptor、streaming
   K-Means/RQ、checkpoint 和 frozen artifact 已实现,见 `STREAMING_CODEBOOKS.md`。
-- Q2/Q3/Q5 synthetic GPU smoke 与 18 项本机测试已通过。
+- Q2/Q3/Q5 synthetic GPU smoke 与 17 项本机测试已通过。
 - 当前在线 EMA `state_codebook` 默认关闭。
-- LIBERO 官方 130-task HDF5 固定版本已归档到开发集群,130 项 SHA256 验收通过;详见
-  `LIBERO_DATASET.md`。
-- 尚未下载 DROID 或 BridgeData。
-- 除 LIBERO 数据、下载 cache、manifest 和日志目录外,尚未修改训练运行时或 8xA100 环境。
+- 数据下载与共享盘归档作为集群运维状态单独管理,不在代码仓库记录实时状态。
+- 尚未修改训练运行时或 8xA100 环境。
 
 ### 下一张工程单
 
