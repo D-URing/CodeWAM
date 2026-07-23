@@ -1,0 +1,40 @@
+# Canonical causal Q2/Q3/Q5 streaming RQ template.
+#
+# The input shards must follow codewam.pooled-feature-shard.v1 and contain
+# complete episodes, not overlapping anonymous windows.
+
+output_dir: runs/codebook_eval/droid_streaming_rq
+
+input:
+  pooled_shards:
+    - runs/codebook_eval/pooled/droid/*.pt
+  manifest: runs/codebook_eval/manifests/droid.jsonl
+  split: train
+  group_by: scene
+
+metadata:
+  dataset: droid
+  dataset_revision: REPLACE_ME
+  wan_model_id: Wan-AI/Wan2.2-TI2V-5B
+  wan_revision: REPLACE_ME
+  preprocess_revision: REPLACE_ME
+  # Optional. When omitted, the launcher computes SHA-256 for every shard.
+  source_checksums: []
+
+descriptor:
+  strides: [2, 3, 5]
+  pool: 4
+  max_gap_factor: 1.5
+
+training:
+  device: auto
+  batch_size: 8192
+  k: 32
+  levels: 3
+  max_iters: 50
+  tol: 1.0e-5
+  seed: 7
+  reservoir_size: 100000
+  initialization_chunk_size: 8192
+  center_block_size: 1024
+  resume: true

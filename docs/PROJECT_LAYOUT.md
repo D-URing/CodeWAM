@@ -4,7 +4,11 @@
 CodeWAM/
 ├── codewam/                   # CodeWAM package
 │   ├── codebook.py            # Legacy online-EMA codebook prototype; disabled
-│   ├── codebook_eval/         # Legacy in-memory evaluator; streaming migration target
+│   ├── codebook_eval/         # Legacy evaluator plus canonical streaming foundation
+│   │   ├── manifest.py        # Episode provenance and deterministic split
+│   │   ├── shards.py          # Pooled episode shard contract and streaming reader
+│   │   ├── streaming.py       # Causal descriptors, stats, K-Means/RQ, artifact
+│   │   └── pipeline.py        # One-command Q2/Q3/Q5 launcher
 │   ├── model.py               # Current FastWAM-compatible prototype
 │   ├── probe.py               # Early compatibility probe
 │   └── runtime.py             # Hydra factory
@@ -61,5 +65,6 @@ FastWAM remains the provider for:
 The chosen FastWAM subtree and model repositories are pinned in `upstreams.yaml`.
 
 Canonical architecture decisions are in `CODEWAM_V1_PLAN.md`. Dataset selection, DROID staging,
-streaming RQ and 8xA100 execution are in `DATASET_SCALE_PLAN.md`. Existing `codewam/codebook.py`
-and `codewam/model.py` must not be treated as the completed canonical implementation.
+streaming RQ and 8xA100 execution are in `DATASET_SCALE_PLAN.md`. Implemented streaming APIs and
+remaining boundaries are in `STREAMING_CODEBOOKS.md`. Existing `codewam/codebook.py` and
+`codewam/model.py` must not be treated as the completed canonical implementation.

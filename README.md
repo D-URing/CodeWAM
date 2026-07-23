@@ -35,13 +35,15 @@ public robot dataset
 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md)。
 公开数据选择、DROID 分阶段方案、海量 streaming RQ 和 8xA100 作业布局见
 [`docs/DATASET_SCALE_PLAN.md`](./docs/DATASET_SCALE_PLAN.md)。
+已实现的 manifest、pooled shard、causal descriptor、streaming RQ 和本机 smoke 见
+[`docs/STREAMING_CODEBOOKS.md`](./docs/STREAMING_CODEBOOKS.md)。
 
 ## 结构
 
 ```
 codewam/
 ├── codebook.py    # legacy online EMA 原型,默认关闭
-├── codebook_eval/ # 早期离线 evaluator,待迁移到 canonical causal contract
+├── codebook_eval/ # legacy evaluator + canonical streaming codebook foundation
 ├── model.py       # 当前 FastWAM-compatible 模型原型,不是最终 v1 topology
 ├── runtime.py     # create_codewam 工厂(hydra _target_)
 └── probe.py       # 早期兼容探针
@@ -99,19 +101,21 @@ python scripts/demo_package_scan_v6.py
 
 ## 离线码本评估
 
-本机先验证训练器:
+旧 window evaluator 的兼容链路:
 
 ```bash
 python scripts/codebook_eval.py synthetic-smoke
 ```
 
-从公开数据集的 Wan latent shards 一键训练候选码本:
+canonical causal Q2/Q3/Q5 streaming 链路:
 
 ```bash
-bash scripts/train_codebooks.sh configs/codebook_eval/public_latent_codebooks.yaml
+.venv/bin/python scripts/train_streaming_codebooks.py smoke \
+  --output runs/codebook_eval/streaming_smoke
 ```
 
-详见 [`docs/CODEBOOK_EVAL.md`](./docs/CODEBOOK_EVAL.md)。
+旧 cache 评估见 [`docs/CODEBOOK_EVAL.md`](./docs/CODEBOOK_EVAL.md);新 shard contract、训练命令与
+边界见 [`docs/STREAMING_CODEBOOKS.md`](./docs/STREAMING_CODEBOOKS.md)。
 
 ## 状态
 
@@ -122,8 +126,10 @@ bash scripts/train_codebooks.sh configs/codebook_eval/public_latent_codebooks.ya
 - 当前边界:`codewam/codebook.py` 的在线 EMA 单 token 原型已默认关闭;不能作为 v1 实验结果。
 - 数据决策:DROID 作为主码本数据,LIBERO 做受控验证,BridgeData V2 做跨域复核;AgiBot World、
   RoboMIND 和 Open X-Embodiment 后置。
-- 下一步:先实现 episode manifest、pooled-feature shards 和 distributed streaming RQ,再迁移
-  causal evaluator 与 Gate 0/1/2,最后实现模型接口与 mask 单测。
+- 已完成底座:episode manifest、pooled-feature shard contract、causal Q2/Q3/Q5 iterator、
+  train-only normalization、streaming K-Means/RQ、checkpoint/resume 和 frozen artifact。
+- 下一步:实现 Package Scan episode-aware pooled export 和 held-out streaming evaluator;随后用
+  同一接口接 DROID-100,再补 rank-aware 8-GPU orchestration。
 
 项目决策以 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md) 为准;早期兼容原型说明见
 [`docs/DESIGN.md`](./docs/DESIGN.md)。

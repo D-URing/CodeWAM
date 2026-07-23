@@ -382,7 +382,9 @@ network:        resumable access to the official Google Cloud bucket
 ### 当前仓库状态
 
 - canonical v1 架构已写入 `CODEWAM_V1_PLAN.md`。
-- 当前 `codewam/codebook_eval` 仍是内存式 legacy evaluator。
+- legacy evaluator 仍保留;新的 manifest、pooled shard、causal descriptor、streaming
+  K-Means/RQ、checkpoint 和 frozen artifact 已实现,见 `STREAMING_CODEBOOKS.md`。
+- Q2/Q3/Q5 synthetic GPU smoke 与 17 项本机测试已通过。
 - 当前在线 EMA `state_codebook` 默认关闭。
 - 尚未下载 DROID、LIBERO 或 BridgeData。
 - 尚未修改训练集群、共享存储或 8xA100 环境。
@@ -390,16 +392,16 @@ network:        resumable access to the official Google Cloud bucket
 ### 下一张工程单
 
 ```text
-Implement scalable data and clustering foundation:
+Complete the first real-data path and held-out evaluator:
 
-1. EpisodeManifest and deterministic scene-level splitter
-2. streaming pooled-feature shard reader/writer
-3. causal D2/D3/D5 descriptor iterator
-4. mergeable train-only normalization
-5. distributed StreamingKMeans and StreamingRQTrainer
-6. checkpoint/resume and frozen artifact schema
-7. equivalence tests against reference Lloyd on synthetic/Package Scan v6
-8. DROID-100 adapter and 8-GPU smoke config
+1. Package Scan episode-aware pooled exporter
+2. Package Scan held-out split and real Wan shape/cadence smoke
+3. streaming usage/perplexity/residual evaluator
+4. retrieval/geometry/action-probe report
+5. DROID-100 manifest and RLDS adapter
+6. scene/task/event balanced reservoir
+7. rank-aware shard partition and shared initialization artifact
+8. 1-GPU/8-GPU equivalence test and launcher
 ```
 
 验收不以“跑完”为准,而以这些条件为准:
