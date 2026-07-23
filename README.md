@@ -37,6 +37,8 @@ public robot dataset
 [`docs/DATASET_SCALE_PLAN.md`](./docs/DATASET_SCALE_PLAN.md)。
 LIBERO 官方完整 HDF5 归档、固定版本下载和全量校验见
 [`docs/LIBERO_DATASET.md`](./docs/LIBERO_DATASET.md)。
+DROID 官方 RLDS 版本选择、断点续传和逐对象校验见
+[`docs/DROID_DATASET.md`](./docs/DROID_DATASET.md)。
 已实现的 manifest、pooled shard、causal descriptor、streaming RQ 和本机 smoke 见
 [`docs/STREAMING_CODEBOOKS.md`](./docs/STREAMING_CODEBOOKS.md)。
 
