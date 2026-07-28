@@ -103,6 +103,56 @@ DROID 没有逐物体 mask,因此 P0 只能判断“可见场景运动是否进�
 camera motion 与物体自身运动完全分离。自动报告和 cluster montage 用于发现明显失败,不用于选择
 最终 K。
 
+#### P0 实测基线: 2026-07-28
+
+在单张 A800 上用官方 DROID-100 的前 12 个 episode 完成了真实 Wan2.2-VAE 探测。输入包括
+三路相机、3,063 个原始视频帧和 771 个 Wan latent tick;训练/验证/测试按 episode 分成
+8/2/2。checkpoint SHA-256 为
+`20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36`。
+
+运行事实:
+
+- 三相机编码单 episode 为 3.4--10.3 秒,最长 596 帧;峰值显存为 1.81--2.11 GiB。
+- 12-episode 增量导出为 101.5 秒;完整复用和逐 shard 契约/SHA 校验为 24.0 秒。
+- 135 次 K-Means 和 27 次 RQ-3 的优化后分析为 305.81 秒。缓存优化前为约 25.9 分钟;
+  新旧离散结果相同,centers 最大绝对差为 `9.54e-7`。
+- 自动产物位于 `runs/codebook_eval/droid100_wan_probe/{pooled,analysis}`;运行目录不提交 Git。
+
+Gate 0 结论是 **Wan latent 没有坍缩,且包含明确的可见运动信号**:
+
+| camera | g=2 effective rank / rank95 | g=2 image-motion rho Q2/Q3/Q5 | g=4 mean image-motion rho |
+|---|---:|---:|---:|
+| exterior-1 | 6.56 / 22 | 0.424 / 0.540 / 0.581 | 0.668 |
+| exterior-2 | 6.53 / 18 | 0.308 / 0.500 / 0.508 | 0.597 |
+| wrist | 8.03 / 36 | 0.539 / 0.587 / 0.608 | 0.685 |
+
+`g=2` 和 `g=4` 的 18 个 camera/stride 组合全部满足
+`adjacent distance < stride distance < far distance < cross-episode distance`。空间信息越完整,
+latent residual 与像素变化/proprio 变化的相关性越强;因此不能仅凭 48 维全局平均向量否定
+Wan latent,也不能在 P0 阶段直接丢弃 `g=4`。
+
+Gate 1 在这个样本量上 **没有通过**:
+
+| camera | train RQ-3 reduction | validation reduction | test reduction Q2/Q3/Q5 |
+|---|---:|---:|---:|
+| exterior-1 | 87.6% 至 88.0% | -10.3% 至 -6.8% | -0.3% / -0.9% / 0.3% |
+| exterior-2 | 90.3% 至 90.5% | -1.3% 至 -1.0% | 3.6% / 3.7% / 3.6% |
+| wrist | 72.3% 至 72.4% | 25.5% 至 33.4% | 29.5% / 24.5% / 22.9% |
+
+两个 exterior test episode 的 train-normalized initial MSE 为 2.64--2.75,远高于 train 的 1.0;
+montage 也显示 cluster 很容易按场景背景和机器人姿态分组。wrist 的 held-out reduction 更好,
+但其差分同时含大量相机自运动,不能解释成物体运动原语。RQ 第三层的 seed ARI 只有
+0.05--0.22,所以“固定三层 RQ”仍是假设,不是 P0 结论。
+
+容量 sweep 中,K 从 8 增到 16/32 往往没有改善 held-out distortion,反而提高死码率并降低
+seed 稳定性。P0 暂时保留 `K=16,g=2,RQ-3` 只为了统一诊断口径,不得据此冻结正式规格。
+early-stop 可先用 `tol=1e-3,patience=2`;三相机平均在 5.67--8.00 轮停止,验证误差仍在所测
+最佳值的 0.5% 内。
+
+因此下一步不是修改 CodeWAM 模型,而是先在 DROID-10k 用 scene/institution 隔离重做
+`g={2,4},K={8,16,32}` 和有效 RQ prefix。只有 exterior held-out residual、retrieval 和
+camera-identity probe 同时通过后,才把某个 codebook 规格接入模型。
+
 ### P1: DROID-10k
 
 从 full manifest 中按 scene/task/collector 分层抽取 10k episodes。用于:
