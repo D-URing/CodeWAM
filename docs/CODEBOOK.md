@@ -79,6 +79,30 @@ DROID RLDS 版本约 1.7TB,包含 180x320 的 wrist、exterior-1、exterior-2 RG
 
 不得用 P0 选择正式 K 或报告研究结论。
 
+在进入 DROID-10k 前先运行 Wan latent 小样本探测:
+
+```bash
+export DATA_ROOT=/path/to/datasets
+export WAN_VAE_PATH=/path/to/Wan2.2_VAE.pth
+export FASTWAM_SRC=/path/to/FastWAM/src
+
+python scripts/probe_wan_latents.py run \
+  --config configs/codebook_eval/droid100_wan_latent_probe.yaml
+```
+
+该探测把四件事分开报告:
+
+1. 绝对 `u_t` 的方差、有效秩与跨 episode 距离,检查 Wan latent 是否坍缩。
+2. `u_t-u_{t-s}` 与缩略图变化、proprio/action 变化的相关性。残差仅作运动诊断,
+   正式 RQ 输入仍是 `[u_{t-2s},u_{t-s},u_t]`。
+3. `g in {1,2,4}`、`K in {8,16,32}` 的使用率、held-out distortion 和多 seed ARI。
+4. `tol in {1e-3,1e-4,1e-5}`、`patience in {2,3}` 的逐轮 inertia、中心位移、
+   assignment change 和 early-stop 建议。
+
+DROID 没有逐物体 mask,因此 P0 只能判断“可见场景运动是否进入 latent residual”,不能把背景、
+camera motion 与物体自身运动完全分离。自动报告和 cluster montage 用于发现明显失败,不用于选择
+最终 K。
+
 ### P1: DROID-10k
 
 从 full manifest 中按 scene/task/collector 分层抽取 10k episodes。用于:
@@ -473,10 +497,10 @@ BridgeData V2。
 下一阶段只完成真实数据 Gate 0/1,不提前修改完整模型:
 
 ```text
-1. DROID RLDS 与 LIBERO HDF5 -> EpisodeManifest adapters
-2. episode-aware prefix-only Wan-VAE -> pooled_g4 exporter
+1. 扩展 DROID RLDS adapter 从 P0 probe contract 到正式 scene/institution manifest
+2. 将 prefix-only Wan-VAE pooled exporter 扩展为 rank-aware shard/resume
 3. DROID-100 + LIBERO 小规模 cadence/shape/future-leak audit
-4. held-out usage/perplexity/residual evaluator
+4. 将 P0 held-out usage/perplexity/residual 判据接入正式 streaming evaluator
 5. retrieval/geometry/camera/action-probe report
 6. scene/task/event balanced reservoir
 7. DROID-10k 顺序规格搜索

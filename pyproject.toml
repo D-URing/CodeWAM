@@ -29,6 +29,10 @@ local-dev = [
   "torchvision",
   "transformers",
 ]
+droid = [
+  "tensorflow-cpu==2.21.0",
+  "tensorflow-datasets==4.9.10",
+]
 dev = [
   "ruff",
   "pytest",

@@ -1,0 +1,46 @@
+# P0 only: reject broken Wan features or unstable clustering before DROID-10k.
+# Run from the repository root:
+#   python scripts/probe_wan_latents.py run \
+#     --config configs/codebook_eval/droid100_wan_latent_probe.yaml
+
+export:
+  data_dir: ${oc.env:DATA_ROOT}/droid_100/1.0.0
+  output_dir: runs/codebook_eval/droid100_wan_probe/pooled
+  vae_path: ${oc.env:WAN_VAE_PATH,checkpoints/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth}
+  fastwam_src: ${oc.env:FASTWAM_SRC,external/FastWAM/src}
+  max_episodes: 12
+  cameras:
+    - exterior_image_1_left
+    - exterior_image_2_left
+    - wrist_image_left
+  nominal_fps: 15.0
+  image_height: 224
+  image_width: 224
+  thumbnail_size: 64
+  device: cuda
+  dtype: bfloat16
+  resume: true
+  hash_source_shards: true
+
+analysis:
+  pooled_shards:
+    - ${export.output_dir}/episode-*.pt
+  output_dir: runs/codebook_eval/droid100_wan_probe/analysis
+  cameras: ${export.cameras}
+  pools: [1, 2, 4]
+  strides: [2, 3, 5]
+  k_values: [8, 16, 32]
+  seeds: [0, 1, 2]
+  tolerances: [1.0e-3, 1.0e-4, 1.0e-5]
+  patiences: [2, 3]
+  sweep_stride: 3
+  selected_pool: 2
+  selected_k: 16
+  default_tolerance: 1.0e-4
+  default_patience: 3
+  max_iters: 50
+  min_iters: 3
+  rq_levels: 3
+  device: cuda
+  chunk_size: 8192
+
