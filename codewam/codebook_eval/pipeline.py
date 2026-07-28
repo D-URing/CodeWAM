@@ -79,6 +79,8 @@ def _write_contract(path: Path, contract: dict[str, Any], resume: bool) -> None:
             json.dumps(contract, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        mode = (path.stat().st_mode & 0o777) if path.exists() else 0o644
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

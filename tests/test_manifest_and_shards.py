@@ -83,6 +83,7 @@ class EpisodeManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "manifest.jsonl"
             manifest.write_jsonl(path)
+            self.assertEqual(path.stat().st_mode & 0o044, 0o044)
             loaded = EpisodeManifest.read_jsonl(path)
         self.assertEqual(manifest.fingerprint(), loaded.fingerprint())
         self.assertEqual(manifest.stats(), loaded.stats())
@@ -115,6 +116,7 @@ class PooledFeatureShardTests(unittest.TestCase):
                     "source_checksums": ["synthetic-checksum"],
                 },
             )
+            self.assertEqual(path.stat().st_mode & 0o044, 0o044)
             loaded = list(iter_pooled_feature_episodes([path], split="train"))
 
         self.assertEqual(info.episodes, 2)

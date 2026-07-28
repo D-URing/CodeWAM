@@ -31,6 +31,8 @@ def atomic_torch_save(payload: Any, path: str | Path) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         torch.save(payload, temporary)
+        mode = (path.stat().st_mode & 0o777) if path.exists() else 0o644
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

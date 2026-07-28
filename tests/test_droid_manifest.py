@@ -178,6 +178,10 @@ class DroidManifestBuildTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.report["raw_vs_rlds_length_mismatches"], 1)
+        self.assertEqual(
+            result.report["raw_vs_rlds_length_delta_counts"],
+            {"-1": 1, "0": 5},
+        )
         record = next(item for item in result.manifest if item.metadata["raw_num_steps"] == 25)
         self.assertEqual(record.num_steps, 24)
         self.assertEqual(record.metadata["eligible_steps"], 16)
@@ -210,7 +214,7 @@ class BalancedSceneSampleTests(unittest.TestCase):
                             episode_id=f"{split}-s{scene}-e{episode}",
                             num_steps=32,
                             source_uri=f"memory://{split}/{scene}/{episode}",
-                            institution_id="site",
+                            institution_id=f"site-{scene % 2}",
                             building_id=f"building-{scene % 2}",
                             scene_id=f"{split}-scene-{scene}",
                             task_ids=(f"task-{episode % 3}",),
@@ -245,6 +249,14 @@ class BalancedSceneSampleTests(unittest.TestCase):
             record.scene_id for record in first if record.split == "train"
         )
         self.assertEqual(set(train_scene_counts.values()), {4})
+        self.assertEqual(
+            Counter(
+                record.institution_id
+                for record in first
+                if record.split == "train"
+            ),
+            {"site-0": 8, "site-1": 8},
+        )
 
     def test_shard_aware_sample_limits_source_reads(self) -> None:
         result = shard_aware_balanced_sample(
@@ -261,6 +273,10 @@ class BalancedSceneSampleTests(unittest.TestCase):
         self.assertEqual(
             Counter(record.split for record in result.manifest),
             {"train": 16, "val": 2, "test": 2},
+        )
+        self.assertEqual(
+            result.report["institution_candidate_targets"]["train"],
+            {"site-0": 8, "site-1": 8},
         )
 
 

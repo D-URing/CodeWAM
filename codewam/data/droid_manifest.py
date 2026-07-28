@@ -74,6 +74,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(text, encoding="utf-8")
+    mode = (path.stat().st_mode & 0o777) if path.exists() else 0o644
+    os.chmod(temporary, mode)
     os.replace(temporary, path)
 
 
@@ -253,7 +255,7 @@ def build_droid_manifest(
 
     exclusion_counts: Counter[str] = Counter()
     records: list[EpisodeRecord] = []
-    raw_length_mismatches = 0
+    raw_length_deltas: Counter[int] = Counter()
     missing_shard_checksums = 0
 
     for episode_path, keep_row in sorted(keep_by_path.items()):
@@ -293,8 +295,7 @@ def build_droid_manifest(
         if num_steps <= 0 or ranges[-1][1] > num_steps:
             exclusion_counts["keep_range_exceeds_rlds_length"] += 1
             continue
-        if int(metadata["num_steps"]) != num_steps:
-            raw_length_mismatches += 1
+        raw_length_deltas[num_steps - int(metadata["num_steps"])] += 1
 
         institution_id = str(metadata.get("institution_id", ""))
         building_id = str(metadata.get("building_id", ""))
@@ -397,7 +398,13 @@ def build_droid_manifest(
             "language_annotated_ids": len(annotations),
         },
         "excluded": dict(sorted(exclusion_counts.items())),
-        "raw_vs_rlds_length_mismatches": raw_length_mismatches,
+        "raw_vs_rlds_length_mismatches": (
+            len(manifest) - raw_length_deltas.get(0, 0)
+        ),
+        "raw_vs_rlds_length_delta_counts": {
+            str(delta): count
+            for delta, count in sorted(raw_length_deltas.items())
+        },
         "manifest": {
             **manifest.stats(),
             "institutions": len({record.institution_id for record in manifest}),
@@ -453,17 +460,55 @@ def _record_balance_labels(record: EpisodeRecord) -> tuple[str, str]:
     return collector, task
 
 
-def _sample_one_split(
+def _balanced_group_targets(
+    total: int,
+    capacities: Mapping[str, int],
+    *,
+    salt: str,
+) -> dict[str, int]:
+    if total < 0:
+        raise ValueError("Balanced target total must be non-negative.")
+    normalized = {str(key): int(value) for key, value in capacities.items()}
+    if any(value < 0 for value in normalized.values()):
+        raise ValueError("Balanced target capacities must be non-negative.")
+    if total > sum(normalized.values()):
+        raise ValueError(
+            f"Requested {total} balanced records but only "
+            f"{sum(normalized.values())} are available."
+        )
+
+    targets = {key: 0 for key in normalized}
+    for _ in range(total):
+        eligible = [
+            key for key, capacity in normalized.items() if targets[key] < capacity
+        ]
+        selected = min(
+            eligible,
+            key=lambda key: (
+                targets[key],
+                _stable_score(f"{salt}|quota|{key}"),
+            ),
+        )
+        targets[selected] += 1
+    return targets
+
+
+def _sample_scene_pool(
     records: Iterable[EpisodeRecord],
     target: int,
     salt: str,
     split: SplitName,
+    collector_counts: Counter[str],
+    task_counts: Counter[str],
 ) -> list[EpisodeRecord]:
     candidates = list(records)
     if target > len(candidates):
         raise ValueError(
             f"Requested {target} `{split}` episodes but only {len(candidates)} are available."
         )
+    if target == 0:
+        return []
+
     by_scene: dict[str, list[EpisodeRecord]] = defaultdict(list)
     for record in candidates:
         by_scene[record.group_key("scene")].append(record)
@@ -476,8 +521,6 @@ def _sample_one_split(
         by_scene,
         key=lambda scene: _stable_score(f"{salt}|{split}|scene|{scene}"),
     )
-    collector_counts: Counter[str] = Counter()
-    task_counts: Counter[str] = Counter()
     selected: list[EpisodeRecord] = []
     round_index = 0
     while len(selected) < target:
@@ -509,6 +552,50 @@ def _sample_one_split(
         if not progressed:
             raise RuntimeError(f"Could not fill `{split}` sample target {target}.")
         round_index += 1
+    return selected
+
+
+def _sample_one_split(
+    records: Iterable[EpisodeRecord],
+    target: int,
+    salt: str,
+    split: SplitName,
+) -> list[EpisodeRecord]:
+    candidates = list(records)
+    if target > len(candidates):
+        raise ValueError(
+            f"Requested {target} `{split}` episodes but only "
+            f"{len(candidates)} are available."
+        )
+
+    by_institution: dict[str, list[EpisodeRecord]] = defaultdict(list)
+    for record in candidates:
+        by_institution[str(record.institution_id or "_")].append(record)
+    institution_targets = _balanced_group_targets(
+        target,
+        {key: len(value) for key, value in by_institution.items()},
+        salt=f"{salt}|{split}|institution",
+    )
+    institution_order = sorted(
+        by_institution,
+        key=lambda institution: _stable_score(
+            f"{salt}|{split}|institution|{institution}"
+        ),
+    )
+    collector_counts: Counter[str] = Counter()
+    task_counts: Counter[str] = Counter()
+    selected: list[EpisodeRecord] = []
+    for institution in institution_order:
+        selected.extend(
+            _sample_scene_pool(
+                by_institution[institution],
+                institution_targets[institution],
+                f"{salt}|institution|{institution}",
+                split,
+                collector_counts,
+                task_counts,
+            )
+        )
     return selected
 
 
@@ -567,6 +654,28 @@ def shard_aware_balanced_sample(
         )
         for split, target in targets.items()
     }
+    institution_availability: dict[SplitName, Counter[str]] = {
+        split: Counter(
+            str(record.institution_id or "_")
+            for record in manifest
+            if record.split == split
+        )
+        for split in ("train", "val", "test")
+    }
+    institution_candidate_targets: dict[SplitName, dict[str, int]] = {
+        split: _balanced_group_targets(
+            candidate_targets[split],
+            institution_availability[split],
+            salt=f"{salt}|{split}|candidate-institution",
+        )
+        for split in ("train", "val", "test")
+    }
+    cell_targets = {
+        (split, institution): target
+        for split, institution_targets in institution_candidate_targets.items()
+        for institution, target in institution_targets.items()
+        if target > 0
+    }
 
     by_shard: dict[str, list[EpisodeRecord]] = defaultdict(list)
     for record in manifest:
@@ -575,30 +684,32 @@ def shard_aware_balanced_sample(
             raise ValueError(f"Episode `{record.key}` has no RLDS shard identity.")
         by_shard[shard_name].append(record)
 
-    shard_split_counts = {
-        shard: Counter(record.split for record in records)
+    shard_cell_counts = {
+        shard: Counter(
+            (record.split, str(record.institution_id or "_"))
+            for record in records
+        )
         for shard, records in by_shard.items()
     }
     selected_shards: set[str] = set()
-    candidate_counts: Counter[str] = Counter()
+    candidate_cell_counts: Counter[tuple[SplitName, str]] = Counter()
     covered_scenes: set[str] = set()
     while any(
-        candidate_counts[split] < target
-        for split, target in candidate_targets.items()
+        candidate_cell_counts[cell] < target
+        for cell, target in cell_targets.items()
     ):
         deficits = {
-            split: max(0, target - candidate_counts[split])
-            for split, target in candidate_targets.items()
+            cell: max(0, target - candidate_cell_counts[cell])
+            for cell, target in cell_targets.items()
         }
         choices: list[tuple[tuple[Any, ...], str]] = []
         for shard, records in by_shard.items():
             if shard in selected_shards:
                 continue
-            counts = shard_split_counts[shard]
+            counts = shard_cell_counts[shard]
             coverage_gain = sum(
-                min(counts[split], deficits[split]) / candidate_targets[split]
-                for split in candidate_targets
-                if candidate_targets[split] > 0
+                min(counts[cell], deficits[cell]) / cell_targets[cell]
+                for cell in cell_targets
             )
             if coverage_gain <= 0.0:
                 continue
@@ -606,11 +717,15 @@ def shard_aware_balanced_sample(
                 {
                     record.group_key("scene")
                     for record in records
+                    if deficits.get(
+                        (record.split, str(record.institution_id or "_")), 0
+                    )
+                    > 0
                     if record.group_key("scene") not in covered_scenes
                 }
             )
             usable = sum(
-                min(counts[split], deficits[split]) for split in candidate_targets
+                min(counts[cell], deficits[cell]) for cell in cell_targets
             )
             choices.append(
                 (
@@ -625,15 +740,23 @@ def shard_aware_balanced_sample(
             )
         if not choices:
             raise RuntimeError(
-                f"Could not satisfy shard candidate targets {candidate_targets}; "
-                f"reached {dict(candidate_counts)}."
+                "Could not satisfy institution-aware shard candidate targets; "
+                f"remaining deficits={dict(deficits)}."
             )
         _, selected = min(choices)
         selected_shards.add(selected)
-        candidate_counts.update(shard_split_counts[selected])
+        candidate_cell_counts.update(shard_cell_counts[selected])
         covered_scenes.update(
             record.group_key("scene") for record in by_shard[selected]
         )
+
+    candidate_counts: Counter[SplitName] = Counter()
+    institution_candidate_counts: dict[SplitName, dict[str, int]] = {
+        split: {} for split in ("train", "val", "test")
+    }
+    for (split, institution), count in candidate_cell_counts.items():
+        candidate_counts[split] += count
+        institution_candidate_counts[split][institution] = count
 
     candidates = EpisodeManifest.from_records(
         record
@@ -671,6 +794,11 @@ def shard_aware_balanced_sample(
         "candidate_counts": {
             split: candidate_counts[split] for split in ("train", "val", "test")
         },
+        "institution_candidate_targets": institution_candidate_targets,
+        "institution_candidate_counts": {
+            split: dict(sorted(institution_candidate_counts[split].items()))
+            for split in ("train", "val", "test")
+        },
         "source_shards_available": len(by_shard),
         "source_shards_selected": len(selected_shards),
         "selected_source_bytes": selected_source_bytes,
@@ -683,6 +811,9 @@ def shard_aware_balanced_sample(
 def manifest_distribution(manifest: EpisodeManifest) -> dict[str, Any]:
     split_counts = Counter(record.split or "unassigned" for record in manifest)
     scene_counts = Counter(record.group_key("scene") for record in manifest)
+    institution_counts = Counter(
+        str(record.institution_id or "_") for record in manifest
+    )
     collector_counts = Counter(
         str(record.metadata.get("collector_id") or "_") for record in manifest
     )
@@ -710,7 +841,9 @@ def manifest_distribution(manifest: EpisodeManifest) -> dict[str, Any]:
         "scenes": len(scene_counts),
         "scene_episode_min": min(scene_counts.values(), default=0),
         "scene_episode_max": max(scene_counts.values(), default=0),
+        "institution_episode_counts": dict(sorted(institution_counts.items())),
         "collectors": len(collector_counts),
+        "collector_episode_counts": dict(sorted(collector_counts.items())),
         "collector_episode_min": min(collector_counts.values(), default=0),
         "collector_episode_max": max(collector_counts.values(), default=0),
         "tasks": len(task_counts),

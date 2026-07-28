@@ -23,6 +23,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(text, encoding="utf-8")
+    mode = (path.stat().st_mode & 0o777) if path.exists() else 0o644
+    os.chmod(temporary, mode)
     os.replace(temporary, path)
 
 
