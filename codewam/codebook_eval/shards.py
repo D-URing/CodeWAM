@@ -75,6 +75,7 @@ class PooledFeatureEpisode:
     valid_mask: torch.Tensor | None = None
     action: torch.Tensor | None = None
     proprio: torch.Tensor | None = None
+    action_components: dict[str, torch.Tensor] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -110,6 +111,22 @@ class PooledFeatureEpisode:
             raise ValueError(f"Pooled features must be finite in `{self.episode_id}`.")
         if ticks > 1 and not torch.all(self.timestamps[1:] > self.timestamps[:-1]):
             raise ValueError(f"Timestamps must be strictly increasing in `{self.episode_id}`.")
+        for name, value in (
+            ("action", self.action),
+            ("proprio", self.proprio),
+            *self.action_components.items(),
+        ):
+            if value is None:
+                continue
+            if value.ndim != 2 or int(value.shape[0]) != ticks:
+                raise ValueError(
+                    f"`{name}` must be [T,D] with T={ticks}, "
+                    f"got {tuple(value.shape)}."
+                )
+            if not torch.isfinite(value).all():
+                raise ValueError(
+                    f"`{name}` must be finite in `{self.episode_id}`."
+                )
 
         valid_mask = self.valid_mask
         if valid_mask is None:
@@ -120,6 +137,7 @@ class PooledFeatureEpisode:
             )
         object.__setattr__(self, "camera_ids", tuple(str(value) for value in self.camera_ids))
         object.__setattr__(self, "valid_mask", valid_mask.to(dtype=torch.bool))
+        object.__setattr__(self, "action_components", dict(self.action_components))
         object.__setattr__(self, "metadata", dict(self.metadata))
 
     @property
@@ -157,6 +175,9 @@ class PooledFeatureEpisode:
             "valid_mask": cpu(self.valid_mask),
             "action": cpu(self.action),
             "proprio": cpu(self.proprio),
+            "action_components": {
+                name: cpu(value) for name, value in self.action_components.items()
+            },
             "metadata": self.metadata,
         }
 
@@ -171,6 +192,7 @@ class PooledFeatureEpisode:
             valid_mask=payload.get("valid_mask"),
             action=payload.get("action"),
             proprio=payload.get("proprio"),
+            action_components=dict(payload.get("action_components", {})),
             metadata=dict(payload.get("metadata", {})),
         )
 

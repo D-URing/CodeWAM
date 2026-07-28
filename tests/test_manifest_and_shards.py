@@ -34,6 +34,9 @@ def make_episode(
         camera_ids=("exterior", "wrist"),
         action=torch.zeros((ticks, 7)),
         proprio=torch.ones((ticks, 7)),
+        action_components={
+            "joint_velocity": torch.full((ticks, 7), 2.0),
+        },
         metadata={"source": "synthetic"},
     )
 
@@ -125,6 +128,10 @@ class PooledFeatureShardTests(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].episode_id, train.episode_id)
         torch.testing.assert_close(loaded[0].pooled_g4, train.pooled_g4)
+        torch.testing.assert_close(
+            loaded[0].action_components["joint_velocity"],
+            train.action_components["joint_velocity"],
+        )
         self.assertEqual(tuple(loaded[0].pooled(2).shape), (8, 2, 3, 2, 2))
         torch.testing.assert_close(
             loaded[0].pooled(1).float().flatten(),
