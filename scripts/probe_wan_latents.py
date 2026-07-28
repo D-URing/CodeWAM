@@ -35,13 +35,22 @@ def main() -> None:
         help="Run only latent export, only analysis, or both stages.",
     )
     parser.add_argument("--config", required=True, help="Path to the probe YAML config.")
+    parser.add_argument(
+        "--max-episodes",
+        type=int,
+        default=None,
+        help="Override export.max_episodes (useful for a one-episode export audit).",
+    )
     args = parser.parse_args()
 
     payload = _load_mapping(args.config)
     if args.command in {"export", "run"}:
         if "export" not in payload:
             raise ValueError("Probe config has no `export` section.")
-        result = export_droid_wan_probe(export_config_from_mapping(payload["export"]))
+        export_mapping = dict(payload["export"])
+        if args.max_episodes is not None:
+            export_mapping["max_episodes"] = args.max_episodes
+        result = export_droid_wan_probe(export_config_from_mapping(export_mapping))
         exported = sum(
             row.get("status") == "exported" for row in result.get("episodes", ())
         )
@@ -66,4 +75,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

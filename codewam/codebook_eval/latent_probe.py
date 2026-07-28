@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -192,7 +193,13 @@ def _motion_scalars(
     if episode.action is None:
         action_magnitude = torch.full_like(image_motion, float("nan"))
     else:
-        action_magnitude = episode.action.float()[current].square().mean(dim=1).sqrt()
+        action = episode.action.float()
+        action_magnitude = torch.stack(
+            [
+                action[int(start) + 1 : int(end) + 1].square().mean().sqrt()
+                for start, end in zip(previous.tolist(), current.tolist())
+            ]
+        )
     return image_motion, proprio_motion, action_magnitude
 
 
@@ -426,6 +433,8 @@ def motion_metrics(
         stride_distances: list[torch.Tensor] = []
         far_distances: list[torch.Tensor] = []
         episode_vectors: list[torch.Tensor] = []
+        episode_image_correlations: list[float] = []
+        episode_proprio_correlations: list[float] = []
 
         for episode in episodes:
             view = _camera_index(episode, camera)
@@ -449,6 +458,12 @@ def motion_metrics(
             image_motions.append(image_motion)
             proprio_motions.append(proprio_motion)
             action_magnitudes.append(action_magnitude)
+            image_correlation = spearman_correlation(latent_motion, image_motion)
+            proprio_correlation = spearman_correlation(latent_motion, proprio_motion)
+            if math.isfinite(image_correlation):
+                episode_image_correlations.append(image_correlation)
+            if math.isfinite(proprio_correlation):
+                episode_proprio_correlations.append(proprio_correlation)
             stride_distances.append(latent_motion)
             far = 2 * stride
             if episode.ticks > far:
@@ -485,6 +500,22 @@ def motion_metrics(
                 "spearman_latent_image": spearman_correlation(residual, image),
                 "spearman_latent_proprio": spearman_correlation(residual, proprio),
                 "spearman_latent_action": spearman_correlation(residual, action),
+                "median_episode_spearman_latent_image": (
+                    float(torch.tensor(episode_image_correlations).median().item())
+                    if episode_image_correlations
+                    else float("nan")
+                ),
+                "positive_episode_fraction_latent_image": (
+                    sum(value > 0 for value in episode_image_correlations)
+                    / len(episode_image_correlations)
+                    if episode_image_correlations
+                    else float("nan")
+                ),
+                "median_episode_spearman_latent_proprio": (
+                    float(torch.tensor(episode_proprio_correlations).median().item())
+                    if episode_proprio_correlations
+                    else float("nan")
+                ),
                 "low_image_motion_latent_median": low_median,
                 "high_image_motion_latent_median": high_median,
                 "motion_separation_ratio": high_median / max(low_median, 1e-12),
@@ -707,7 +738,6 @@ def _cluster_montage(
 def _run_kmeans_sweeps(
     episodes: Sequence[PooledFeatureEpisode],
     config: LatentProbeConfig,
-    output_dir: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     device = _resolve_device(config.device)
     rows: list[dict[str, Any]] = []
@@ -836,6 +866,48 @@ def _run_kmeans_sweeps(
         assignments.setdefault(key, []).append((seed, test_codes))
 
     return rows, iterations, _pairwise_stability(assignments, "kmeans")
+
+
+def _capacity_summary(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
+    for row in rows:
+        if row["run_type"] != "capacity_pool":
+            continue
+        key = (str(row["camera"]), int(row["pool"]), int(row["k"]))
+        grouped.setdefault(key, []).append(row)
+    summaries = []
+    for (camera, pool, k), group in sorted(grouped.items()):
+        summaries.append(
+            {
+                "camera": camera,
+                "pool": pool,
+                "k": k,
+                "seeds": len(group),
+                "mean_iterations": sum(float(row["iterations"]) for row in group)
+                / len(group),
+                "mean_validation_mse_per_dimension": sum(
+                    float(row["validation_mse_per_dimension"]) for row in group
+                )
+                / len(group),
+                "mean_test_mse_per_dimension": sum(
+                    float(row["test_mse_per_dimension"]) for row in group
+                )
+                / len(group),
+                "mean_test_dead_fraction": sum(
+                    float(row["dead_fraction"]) for row in group
+                )
+                / len(group),
+                "mean_test_perplexity_fraction": sum(
+                    float(row["perplexity_fraction"]) for row in group
+                )
+                / len(group),
+                "mean_test_maximum_cluster_fraction": sum(
+                    float(row["maximum_cluster_fraction"]) for row in group
+                )
+                / len(group),
+            }
+        )
+    return summaries
 
 
 def _reductions(values: Sequence[float]) -> list[float]:
@@ -1026,7 +1098,8 @@ def _write_markdown_report(
     episodes: Sequence[PooledFeatureEpisode],
     state_rows: Sequence[dict[str, Any]],
     motion_rows: Sequence[dict[str, Any]],
-    kmeans_rows: Sequence[dict[str, Any]],
+    capacity_rows: Sequence[dict[str, Any]],
+    kmeans_run_count: int,
     rq_rows: Sequence[dict[str, Any]],
     recommendations: Sequence[dict[str, Any]],
     config: LatentProbeConfig,
@@ -1059,8 +1132,8 @@ def _write_markdown_report(
             "",
             "## Residual-motion alignment",
             "",
-            "| camera | g | s | latent-image rho | latent-proprio rho | high/low motion | ordered distances |",
-            "|---|---:|---:|---:|---:|---:|---|",
+            "| camera | g | s | pooled rho | episode rho | positive episodes | latent-proprio rho | high/low motion |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in motion_rows:
@@ -1069,8 +1142,28 @@ def _write_markdown_report(
         lines.append(
             f"| {row['camera']} | {row['pool']} | {row['stride']} | "
             f"{row['spearman_latent_image']:.3f} | "
-            f"{row['spearman_latent_proprio']:.3f} | "
-            f"{row['motion_separation_ratio']:.3f} | {row['distance_ordered']} |"
+            f"{row['median_episode_spearman_latent_image']:.3f} | "
+            f"{row['positive_episode_fraction_latent_image']:.3f} | "
+            f"{row['median_episode_spearman_latent_proprio']:.3f} | "
+            f"{row['motion_separation_ratio']:.3f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Capacity and pooling sweep",
+            "",
+            "| camera | g | K | val MSE/dim | test MSE/dim | dead fraction | perplexity/K | max cluster |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in capacity_rows:
+        lines.append(
+            f"| {row['camera']} | {row['pool']} | {row['k']} | "
+            f"{row['mean_validation_mse_per_dimension']:.6f} | "
+            f"{row['mean_test_mse_per_dimension']:.6f} | "
+            f"{row['mean_test_dead_fraction']:.3f} | "
+            f"{row['mean_test_perplexity_fraction']:.3f} | "
+            f"{row['mean_test_maximum_cluster_fraction']:.3f} |"
         )
     lines.extend(
         [
@@ -1117,7 +1210,7 @@ def _write_markdown_report(
             "It cannot choose the final K from DROID-100, prove object semantics without masks, "
             "or replace DROID-10k held-out retrieval/action probes.",
             "",
-            f"Detailed runs: {len(kmeans_rows)} K-Means fits and {len(rq_rows)} RQ fits.",
+            f"Detailed runs: {kmeans_run_count} K-Means fits and {len(rq_rows)} RQ fits.",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1153,8 +1246,8 @@ def run_latent_probe(config: LatentProbeConfig) -> dict[str, Any]:
     kmeans_rows, iteration_rows, kmeans_stability = _run_kmeans_sweeps(
         episodes,
         config,
-        output_dir,
     )
+    capacity_rows = _capacity_summary(kmeans_rows)
     rq_rows, rq_stability = _run_rq(episodes, config, output_dir)
     stability_rows = [*kmeans_stability, *rq_stability]
     recommendations = _recommend_early_stop(kmeans_rows)
@@ -1162,6 +1255,7 @@ def run_latent_probe(config: LatentProbeConfig) -> dict[str, Any]:
     write_rows_tsv(output_dir / "state_metrics.tsv", list(state_rows))
     write_rows_tsv(output_dir / "motion_metrics.tsv", list(motion_rows))
     write_rows_tsv(output_dir / "kmeans_runs.tsv", list(kmeans_rows))
+    write_rows_tsv(output_dir / "capacity_summary.tsv", list(capacity_rows))
     write_rows_tsv(output_dir / "kmeans_iterations.tsv", list(iteration_rows))
     write_rows_tsv(output_dir / "rq_runs.tsv", list(rq_rows))
     write_rows_tsv(output_dir / "seed_stability.tsv", list(stability_rows))
@@ -1176,6 +1270,7 @@ def run_latent_probe(config: LatentProbeConfig) -> dict[str, Any]:
         "state_metrics": state_rows,
         "motion_metrics": motion_rows,
         "kmeans_runs": kmeans_rows,
+        "capacity_summary": capacity_rows,
         "rq_runs": rq_rows,
         "seed_stability": stability_rows,
         "early_stop_recommendations": recommendations,
@@ -1186,7 +1281,8 @@ def run_latent_probe(config: LatentProbeConfig) -> dict[str, Any]:
         episodes,
         state_rows,
         motion_rows,
-        kmeans_rows,
+        capacity_rows,
+        len(kmeans_rows),
         rq_rows,
         recommendations,
         config,

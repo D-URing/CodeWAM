@@ -97,10 +97,11 @@ def _load_wan_vae(config: WanProbeExportConfig):
     if not vae_path.is_file():
         raise FileNotFoundError(f"Missing Wan VAE checkpoint: {vae_path}.")
     dtype = _torch_dtype(config.dtype)
-    model = WanVideoVAE38()
+    with torch.device("meta"):
+        model = WanVideoVAE38()
     state_dict = load_state_dict(str(vae_path), torch_dtype=dtype, device="cpu")
     converted = wan_video_vae_state_dict_converter(state_dict)
-    incompatibility = model.load_state_dict(converted, strict=True)
+    incompatibility = model.load_state_dict(converted, strict=True, assign=True)
     if incompatibility.missing_keys or incompatibility.unexpected_keys:
         raise RuntimeError(f"Wan VAE state-dict mismatch: {incompatibility}.")
     del state_dict, converted
@@ -287,6 +288,11 @@ def export_droid_wan_probe(config: WanProbeExportConfig) -> dict[str, Any]:
             continue
         if path.exists() and not config.resume:
             raise FileExistsError(f"Probe shard already exists: {path}.")
+        device = torch.device(config.device)
+        if device.type == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("Wan probe requested CUDA, but PyTorch cannot see CUDA.")
+            torch.cuda.reset_peak_memory_stats(device)
         if vae is None:
             vae = _load_wan_vae(config)
         episode_started = time.time()
@@ -312,11 +318,23 @@ def export_droid_wan_probe(config: WanProbeExportConfig) -> dict[str, Any]:
                 "split": pooled_episode.split,
                 "source_frames": episode.steps,
                 "latent_ticks": pooled_episode.ticks,
+                "latent_shape": pooled_episode.metadata["latent_shape"],
                 "path": str(path),
                 "sha256": info.sha256,
                 "elapsed_seconds": time.time() - episode_started,
+                "peak_cuda_memory_gib": (
+                    float(torch.cuda.max_memory_allocated(device) / 1024**3)
+                    if device.type == "cuda"
+                    else None
+                ),
                 "status": "exported",
             }
+        )
+        print(
+            f"Exported {episode.episode_id}: frames={episode.steps}, "
+            f"ticks={pooled_episode.ticks}, elapsed={rows[-1]['elapsed_seconds']:.1f}s, "
+            f"peak_cuda_gib={rows[-1]['peak_cuda_memory_gib']}",
+            flush=True,
         )
         del pooled_episode
         gc.collect()
