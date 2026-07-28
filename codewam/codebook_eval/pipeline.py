@@ -216,6 +216,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
         k=int(training.get("k", 32)),
         max_iters=int(training.get("max_iters", 50)),
         tol=float(training.get("tol", 1e-5)),
+        patience=int(training.get("patience", 2)),
         seed=int(training.get("seed", 0)),
         reservoir_size=int(training.get("reservoir_size", 100_000)),
         initialization_chunk_size=int(training.get("initialization_chunk_size", 8192)),
@@ -264,6 +265,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             "levels": levels,
             "batch_size": batch_size,
             "tol": kmeans_config.tol,
+            "patience": kmeans_config.patience,
             "seed": kmeans_config.seed,
             "reservoir_size": kmeans_config.reservoir_size,
             "initialization_chunk_size": kmeans_config.initialization_chunk_size,
@@ -329,6 +331,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
                 / max(rq_result.residual_mse[0], 1e-12)
             ),
             "iterations_per_level": list(rq_result.iterations_per_level),
+            "patience": kmeans_config.patience,
             "cpu_threads": cpu_threads,
             "artifact": str(artifact_path),
         }

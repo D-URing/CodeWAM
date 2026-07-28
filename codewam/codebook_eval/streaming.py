@@ -546,6 +546,7 @@ class StreamingKMeansConfig:
     k: int
     max_iters: int = 50
     tol: float = 1e-5
+    patience: int = 1
     seed: int = 0
     reservoir_size: int = 100_000
     initialization_chunk_size: int = 8192
@@ -559,6 +560,10 @@ class StreamingKMeansConfig:
             raise ValueError(f"`max_iters` must be positive, got {self.max_iters}.")
         if float(self.tol) < 0:
             raise ValueError(f"`tol` must be non-negative, got {self.tol}.")
+        if int(self.patience) <= 0:
+            raise ValueError(
+                f"`patience` must be positive, got {self.patience}."
+            )
         if int(self.reservoir_size) < int(self.k):
             raise ValueError("`reservoir_size` must be at least K.")
         if int(self.initialization_chunk_size) <= 0:
@@ -638,7 +643,7 @@ class StreamingKMeans:
         self,
         path: Path,
         device: torch.device,
-    ) -> tuple[torch.Tensor, int, float | None, list[float], bool]:
+    ) -> tuple[torch.Tensor, int, float | None, list[float], int, bool]:
         payload = load_torch_payload(path, map_location="cpu")
         if payload.get("schema") != KMEANS_CHECKPOINT_SCHEMA:
             raise ValueError(f"Unsupported K-Means checkpoint schema in {path}.")
@@ -646,11 +651,19 @@ class StreamingKMeans:
             raise ValueError(
                 f"Checkpoint K={payload['k']} does not match configured K={self.config.k}."
             )
+        checkpoint_patience = int(payload.get("patience", 1))
+        if checkpoint_patience != self.config.patience:
+            raise ValueError(
+                "Checkpoint patience="
+                f"{checkpoint_patience} does not match configured "
+                f"patience={self.config.patience}."
+            )
         return (
             payload["centers"].to(device=device, dtype=torch.float32),
             int(payload["next_iteration"]),
             payload.get("previous_inertia"),
             [float(value) for value in payload.get("history", ())],
+            int(payload.get("plateau_steps", 0)),
             bool(payload.get("converged", False)),
         )
 
@@ -661,6 +674,7 @@ class StreamingKMeans:
         next_iteration: int,
         previous_inertia: float | None,
         history: Sequence[float],
+        plateau_steps: int,
         converged: bool,
     ) -> None:
         if not _is_primary_rank():
@@ -673,6 +687,9 @@ class StreamingKMeans:
                 "next_iteration": int(next_iteration),
                 "previous_inertia": previous_inertia,
                 "history": [float(value) for value in history],
+                "tol": float(self.config.tol),
+                "patience": int(self.config.patience),
+                "plateau_steps": int(plateau_steps),
                 "converged": bool(converged),
             },
             path,
@@ -736,6 +753,7 @@ class StreamingKMeans:
         history: list[float] = []
         previous_inertia: float | None = None
         start_iteration = 0
+        plateau_steps = 0
         converged = False
 
         if resume and checkpoint is not None and checkpoint.exists():
@@ -744,6 +762,7 @@ class StreamingKMeans:
                 start_iteration,
                 previous_inertia,
                 history,
+                plateau_steps,
                 converged,
             ) = self._load_checkpoint(checkpoint, device=device)
         else:
@@ -849,11 +868,13 @@ class StreamingKMeans:
                 )
             centers = new_centers
             previous_inertia = mean_inertia
-            converged = (
+            below_tolerance = (
                 improvement is not None
                 and improvement < self.config.tol
                 and empty_indices.numel() == 0
             )
+            plateau_steps = plateau_steps + 1 if below_tolerance else 0
+            converged = plateau_steps >= self.config.patience
             if checkpoint is not None:
                 self._save_checkpoint(
                     checkpoint,
@@ -861,6 +882,7 @@ class StreamingKMeans:
                     next_iteration=iteration + 1,
                     previous_inertia=previous_inertia,
                     history=history,
+                    plateau_steps=plateau_steps,
                     converged=converged,
                 )
             if converged:

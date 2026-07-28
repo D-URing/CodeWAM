@@ -33,7 +33,8 @@ training:
   k: 32
   levels: 3
   max_iters: 50
-  tol: 1.0e-5
+  tol: 1.0e-3
+  patience: 2
   seed: 7
   reservoir_size: 100000
   initialization_chunk_size: 8192

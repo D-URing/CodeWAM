@@ -304,6 +304,49 @@ class StreamingClusteringTests(unittest.TestCase):
         self.assertEqual(resumed.history, first.history)
         torch.testing.assert_close(resumed.centers, first.centers)
 
+    def test_patience_state_survives_checkpoint_resume(self) -> None:
+        values, initial = self.synthetic_clusters()
+        factory = tensor_batch_factory(values, batch_size=23)
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint = Path(temporary) / "patience.pt"
+            first = StreamingKMeans(
+                StreamingKMeansConfig(
+                    k=3,
+                    max_iters=3,
+                    tol=1.0,
+                    patience=3,
+                    device="cpu",
+                )
+            ).fit(
+                factory,
+                initial_centers=initial,
+                checkpoint_path=checkpoint,
+            )
+            resumed = StreamingKMeans(
+                StreamingKMeansConfig(
+                    k=3,
+                    max_iters=20,
+                    tol=1.0,
+                    patience=3,
+                    device="cpu",
+                )
+            ).fit(factory, checkpoint_path=checkpoint, resume=True)
+            uninterrupted = StreamingKMeans(
+                StreamingKMeansConfig(
+                    k=3,
+                    max_iters=20,
+                    tol=1.0,
+                    patience=3,
+                    device="cpu",
+                )
+            ).fit(factory, initial_centers=initial)
+
+        self.assertFalse(first.converged)
+        self.assertTrue(resumed.converged)
+        self.assertEqual(resumed.iterations, 4)
+        self.assertEqual(resumed.history, uninterrupted.history)
+        torch.testing.assert_close(resumed.centers, uninterrupted.centers)
+
     def test_three_level_rq_reduces_residual_and_freezes_artifact(self) -> None:
         generator = torch.Generator().manual_seed(37)
         values = torch.randn((256, 6), generator=generator)
