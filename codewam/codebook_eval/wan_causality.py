@@ -243,10 +243,34 @@ def run_wan_causality_audit(
         rtol=config.rtol,
     )
 
-    fastwam_implementation = (
-        Path(config.fastwam_src)
-        / "fastwam/models/wan22/wan_video_vae.py"
-    )
+    fastwam_root = Path(config.fastwam_src)
+    implementation_paths = {
+        "codewam_wan_probe_export": Path(__file__).with_name(
+            "wan_probe_export.py"
+        ),
+        "fastwam_state_dict_converter": (
+            fastwam_root
+            / "fastwam/models/wan22/helpers/state_dict_converters.py"
+        ),
+        "fastwam_state_dict_io": (
+            fastwam_root
+            / "fastwam/models/wan22/helpers/io.py"
+        ),
+        "fastwam_wan_video_vae": (
+            fastwam_root
+            / "fastwam/models/wan22/wan_video_vae.py"
+        ),
+    }
+    missing_implementations = [
+        str(path)
+        for path in implementation_paths.values()
+        if not path.is_file()
+    ]
+    if missing_implementations:
+        raise FileNotFoundError(
+            "Missing Wan causality-audit implementation files: "
+            f"{missing_implementations}."
+        )
     report = {
         "schema": WAN_CAUSALITY_AUDIT_SCHEMA,
         "passed": comparison["passed"],
@@ -264,9 +288,10 @@ def run_wan_causality_audit(
             "model_id": "Wan-AI/Wan2.2-TI2V-5B",
             "vae_path": str(Path(config.vae_path).resolve()),
             "vae_sha256": file_sha256(config.vae_path),
-            "fastwam_implementation_sha256": file_sha256(
-                fastwam_implementation
-            ),
+            "implementation_sha256": {
+                name: file_sha256(path)
+                for name, path in sorted(implementation_paths.items())
+            },
         },
         "preprocess": {
             "cameras": list(config.cameras),
