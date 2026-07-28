@@ -19,8 +19,10 @@ from codewam.data.droid_rlds import (
 
 from .io import ensure_dir, save_json
 from .shards import (
+    POOLED_SHARD_SCHEMA,
     PooledFeatureEpisode,
     file_sha256,
+    load_torch_payload,
     write_pooled_feature_shard,
 )
 
@@ -253,17 +255,93 @@ def _encode_episode(
     )
 
 
-def _existing_episode_ids(output_dir: Path) -> set[str]:
-    ids: set[str] = set()
-    for path in sorted(output_dir.glob("episode-*.pt")):
-        try:
-            payload = torch.load(path, map_location="cpu", weights_only=True)
-        except (OSError, RuntimeError):
-            continue
-        for episode in payload.get("episodes", ()):
-            if "episode_id" in episode:
-                ids.add(str(episode["episode_id"]))
-    return ids
+def _probe_shard_metadata(
+    config: WanProbeExportConfig,
+    vae_sha256: str,
+    source_checksums: list[str],
+) -> dict[str, Any]:
+    return {
+        "dataset_revision": "droid-r2d2-faceblur-1.0.0",
+        "wan_model_id": "Wan-AI/Wan2.2-TI2V-5B",
+        "wan_revision": vae_sha256,
+        "preprocess_revision": (
+            f"rgb-direct-bilinear-{config.image_height}x{config.image_width}"
+            "-minus1-plus1-v1"
+        ),
+        "source_checksums": source_checksums,
+    }
+
+
+def _reused_episode_row(
+    path: Path,
+    episode: DroidRLDSEpisode,
+    expected_metadata: dict[str, Any],
+    expected_cameras: tuple[str, ...],
+) -> dict[str, Any]:
+    payload = load_torch_payload(path, map_location="cpu")
+    if not isinstance(payload, dict) or payload.get("schema") != POOLED_SHARD_SCHEMA:
+        raise RuntimeError(f"Cannot resume from unsupported pooled shard `{path}`.")
+    shard_metadata = payload.get("metadata")
+    if not isinstance(shard_metadata, dict):
+        raise RuntimeError(f"Resume shard `{path}` has no metadata mapping.")
+    mismatched_metadata = [
+        key
+        for key, value in expected_metadata.items()
+        if shard_metadata.get(key) != value
+    ]
+    if mismatched_metadata:
+        raise RuntimeError(
+            f"Resume shard `{path}` does not match the current export contract: "
+            f"{mismatched_metadata}."
+        )
+    episode_payloads = payload.get("episodes")
+    if not isinstance(episode_payloads, list) or len(episode_payloads) != 1:
+        raise RuntimeError(f"Resume shard `{path}` must contain exactly one episode.")
+    pooled_episode = PooledFeatureEpisode.from_payload(episode_payloads[0])
+    expected_values = {
+        "episode_id": episode.episode_id,
+        "split": probe_split(episode.index),
+        "camera_ids": expected_cameras,
+        "source_index": episode.index,
+        "source_frame_count": episode.steps,
+        "source_file": episode.source_file,
+        "recording_folder": episode.recording_folder,
+    }
+    observed_values = {
+        "episode_id": pooled_episode.episode_id,
+        "split": pooled_episode.split,
+        "camera_ids": pooled_episode.camera_ids,
+        "source_index": pooled_episode.metadata.get("source_index"),
+        "source_frame_count": pooled_episode.metadata.get("source_frame_count"),
+        "source_file": pooled_episode.metadata.get("source_file"),
+        "recording_folder": pooled_episode.metadata.get("recording_folder"),
+    }
+    mismatched_episode = [
+        key
+        for key, value in expected_values.items()
+        if observed_values.get(key) != value
+    ]
+    if mismatched_episode:
+        raise RuntimeError(
+            f"Resume shard `{path}` does not match source episode "
+            f"`{episode.episode_id}`: {mismatched_episode}."
+        )
+    latent_shape = pooled_episode.metadata.get("latent_shape")
+    if not isinstance(latent_shape, list):
+        raise RuntimeError(f"Resume shard `{path}` has no latent shape metadata.")
+    return {
+        "episode_id": episode.episode_id,
+        "source_index": episode.index,
+        "split": pooled_episode.split,
+        "source_frames": episode.steps,
+        "latent_ticks": pooled_episode.ticks,
+        "latent_shape": latent_shape,
+        "path": str(path),
+        "sha256": file_sha256(path),
+        "elapsed_seconds": 0.0,
+        "peak_cuda_memory_gib": None,
+        "status": "reused",
+    }
 
 
 def export_droid_wan_probe(config: WanProbeExportConfig) -> dict[str, Any]:
@@ -276,7 +354,7 @@ def export_droid_wan_probe(config: WanProbeExportConfig) -> dict[str, Any]:
         include_tfrecords=bool(config.hash_source_shards),
     )
     vae_sha256 = file_sha256(vae_path)
-    existing = _existing_episode_ids(output_dir) if config.resume else set()
+    shard_metadata = _probe_shard_metadata(config, vae_sha256, source_checksums)
 
     # Constructing the iterator disables TensorFlow CUDA before the Wan model is loaded.
     episode_iterator: Iterator[DroidRLDSEpisode] = iter_droid_rlds_episodes(
@@ -288,14 +366,19 @@ def export_droid_wan_probe(config: WanProbeExportConfig) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for episode in episode_iterator:
         path = output_dir / f"episode-{episode.index:05d}.pt"
-        if config.resume and episode.episode_id in existing and path.is_file():
+        if config.resume and path.is_file():
             rows.append(
-                {
-                    "episode_id": episode.episode_id,
-                    "source_index": episode.index,
-                    "path": str(path),
-                    "status": "reused",
-                }
+                _reused_episode_row(
+                    path,
+                    episode,
+                    expected_metadata=shard_metadata,
+                    expected_cameras=config.cameras,
+                )
+            )
+            print(
+                f"Reused {episode.episode_id}: frames={episode.steps}, "
+                f"ticks={rows[-1]['latent_ticks']}, sha256={rows[-1]['sha256'][:12]}",
+                flush=True,
             )
             continue
         if path.exists() and not config.resume:
@@ -312,16 +395,7 @@ def export_droid_wan_probe(config: WanProbeExportConfig) -> dict[str, Any]:
         info = write_pooled_feature_shard(
             path,
             [pooled_episode],
-            metadata={
-                "dataset_revision": "droid-r2d2-faceblur-1.0.0",
-                "wan_model_id": "Wan-AI/Wan2.2-TI2V-5B",
-                "wan_revision": vae_sha256,
-                "preprocess_revision": (
-                    f"rgb-direct-bilinear-{config.image_height}x{config.image_width}"
-                    "-minus1-plus1-v1"
-                ),
-                "source_checksums": source_checksums,
-            },
+            metadata=shard_metadata,
         )
         rows.append(
             {

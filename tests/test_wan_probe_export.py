@@ -1,18 +1,80 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 
 from codewam.codebook_eval.wan_probe_export import (
     _construct_wan_vae,
     _preprocess_video,
+    _reused_episode_row,
     latent_frame_indices,
 )
-from codewam.data.droid_rlds import probe_split
+from codewam.codebook_eval.shards import (
+    PooledFeatureEpisode,
+    write_pooled_feature_shard,
+)
+from codewam.data.droid_rlds import DroidRLDSEpisode, probe_split
 
 
 class WanProbeExportTests(unittest.TestCase):
+    def test_resume_validates_contract_and_preserves_manifest_fields(self) -> None:
+        source = DroidRLDSEpisode(
+            episode_id="episode-0",
+            index=0,
+            frames={
+                "camera": torch.zeros((5, 16, 16, 3), dtype=torch.uint8),
+            },
+            action=torch.zeros((5, 7)),
+            proprio=torch.zeros((5, 14)),
+            language_instruction="test",
+            source_file="source.h5",
+            recording_folder="recordings",
+        )
+        pooled = PooledFeatureEpisode(
+            episode_id=source.episode_id,
+            split="val",
+            timestamps=torch.tensor([0.0, 1.0]),
+            pooled_g4=torch.zeros((2, 1, 48, 4, 4)),
+            camera_ids=("camera",),
+            metadata={
+                "source_index": 0,
+                "source_frame_count": 5,
+                "source_file": "source.h5",
+                "recording_folder": "recordings",
+                "latent_shape": [48, 2, 1, 1],
+            },
+        )
+        shard_metadata = {
+            "dataset_revision": "dataset",
+            "wan_model_id": "wan",
+            "wan_revision": "revision",
+            "preprocess_revision": "preprocess",
+            "source_checksums": ["source:checksum"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "episode-00000.pt"
+            info = write_pooled_feature_shard(path, [pooled], shard_metadata)
+            row = _reused_episode_row(
+                path,
+                source,
+                expected_metadata=shard_metadata,
+                expected_cameras=("camera",),
+            )
+            self.assertEqual(row["sha256"], info.sha256)
+            self.assertEqual(row["latent_shape"], [48, 2, 1, 1])
+            self.assertEqual(row["latent_ticks"], 2)
+            self.assertEqual(row["split"], "val")
+            with self.assertRaisesRegex(RuntimeError, "export contract"):
+                _reused_episode_row(
+                    path,
+                    source,
+                    expected_metadata={**shard_metadata, "wan_revision": "stale"},
+                    expected_cameras=("camera",),
+                )
+
     def test_wan_constructor_materializes_unregistered_statistics(self) -> None:
         class FakeWanVAE(torch.nn.Module):
             def __init__(self) -> None:
