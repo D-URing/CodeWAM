@@ -121,7 +121,7 @@ class CodeWAM(torch.nn.Module):
         self.decision_gripper_dim = int(cfg.get("gripper_dim", -1))
 
         # Legacy online-EMA codebook prototype. It is disabled by default and is not the
-        # canonical CodeWAM v1 architecture in docs/CODEWAM_V1_PLAN.md. Enabling it keeps
+        # canonical CodeWAM architecture in docs/ARCHITECTURE.md. Enabling it keeps
         # the earlier FastWAM-compatible experiment behavior:
         #   A: build_inputs 把首帧 latent 量化成状态码, 作为额外 token 拼进 context(动作专家 cross-attend)。
         #   B: training_loss 加"从当前状态码预测未来帧状态码"的离散动力学损失 + vq 损失。

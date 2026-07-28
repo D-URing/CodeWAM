@@ -1,10 +1,10 @@
-# CodeWAM Dataset and 8xA100 Scale Plan
+# Codebook Data, Training, and Evaluation
 
-Status: canonical data-selection and offline-codebook execution plan.
+Status: canonical codebook execution specification and implementation status.
 
-本文件规定 CodeWAM v1 在公开数据、Wan feature 导出、海量离线聚类和 8xA100 集群上的
-推进方式。模型结构与 mask 仍以 `CODEWAM_V1_PLAN.md` 为准;当前 evaluator 的 legacy 行为见
-`CODEBOOK_EVAL.md`。
+本文件统一规定 CodeWAM 的公开数据选择、Wan feature 导出、离线 RQ、评估门和 8xA100
+执行方式。模型结构与 mask 以 `ARCHITECTURE.md` 为准;环境和通用运行命令见
+`DEVELOPMENT.md`。旧 window evaluator 只保留为兼容代码,不能生成正式 artifact。
 
 ## 1. 决策摘要
 
@@ -33,7 +33,7 @@ Q3  code 是否给 continuous latent 带来可复现的控制增量?
 |---|---|---|---|
 | DROID | 76k trajectories,350h,564 scenes,统一 Franka,三路相机、action/proprio | 主码本训练与真实场景 Gate 1/2 | 1.7TB RLDS、相机/场景分布很宽 |
 | LIBERO | 130 个受控任务,workspace+wrist RGB、proprio、language | 受控几何/任务 probe 和后续闭环 | 仿真且规模较小,标准结果可能饱和 |
-| BridgeData V2 | 60,096 trajectories,24 environments,统一 WidowX | 跨机器人复核和同规格独立 refit | 视角与任务分布比 DROID 窄 |
+| BridgeData V2 | 60,064 trajectories,24 environments,统一 WidowX | 跨机器人复核和同规格独立 refit | 视角与任务分布比 DROID 窄 |
 | AgiBot World | Beta 约 1M trajectories/43.8TB;Alpha 约 92k/8.5TB | 双臂、接触和长程压力测试 | 数据极大、CC BY-NC-SA、系统变量多 |
 | RoboMIND | 107k trajectories,479 tasks,4 embodiments,含 failure data | 多 embodiment/失败状态扩展 | action/camera schema 更复杂 |
 | Open X-Embodiment | 1M+ episodes,22 embodiments,RLDS 聚合 | 最终跨 embodiment scale study | 容易先学到数据集身份和 robot identity |
@@ -352,6 +352,18 @@ network:        resumable access to the official Google Cloud bucket
 
 ## 10. 评估矩阵
 
+所有数据集共享三层判断,不能只用重构误差选择码本:
+
+1. **量化健康度**:usage、dead fraction、perplexity、最大簇占比、每层 residual reduction、
+   center-distance error 和多 seed 稳定性。
+2. **视觉状态语义**:时间稳定性与 transition entropy、translation/scale sensitivity、
+   photometric invariance、跨相机一致性、retrieval montage、camera/task/event concentration。
+3. **控制增量**:固定 probe 容量比较 `proprio-only`、`H-only`、`C-only` 和 `H+C`,并做
+   family shuffle、RQ suffix dropout、nearest/far-center replacement。
+
+三套联合 probe 必须优于最佳单 family;无独立贡献的 family 删除。RQ 某层若不能在 held-out
+数据上稳定降低 residual 或改善 probe,就缩短合法 prefix,不因预设为 RQ-3 强行保留。
+
 ### DROID in-domain
 
 - held-out scene/building/institution usage、dead fraction、perplexity。
@@ -377,34 +389,101 @@ network:        resumable access to the official Google Cloud bucket
 - `H-only / C-only / H+C` action probe。
 - 后续 C0/C1/C2 闭环策略比较。
 
-## 11. 开发机接续点
+## 11. 已实现的底座
 
-### 当前仓库状态
+当前 canonical 路径由 `codewam/codebook_eval/` 提供:
 
-- canonical v1 架构已写入 `CODEWAM_V1_PLAN.md`。
-- legacy evaluator 仍保留;新的 manifest、pooled shard、causal descriptor、streaming
-  K-Means/RQ、checkpoint 和 frozen artifact 已实现,见 `STREAMING_CODEBOOKS.md`。
-- Q2/Q3/Q5 synthetic GPU smoke 与 17 项本机测试已通过。
-- 当前在线 EMA `state_codebook` 默认关闭。
-- 数据下载与共享盘归档作为集群运维状态单独管理,不在代码仓库记录实时状态。
-- 尚未修改训练运行时或 8xA100 环境。
+- `manifest.py`:episode provenance、稳定 fingerprint、scene/building/institution group split 和
+  split-isolation 检查。
+- `shards.py`:`codewam.pooled-feature-shard.v1` 原子 writer、SHA-256、逐 shard/episode reader 和
+  `g=4 -> g=2/1` nested pooling。
+- `streaming.py`:因果 Q2/Q3/Q5 descriptor、train-only Welford normalization、uniform reservoir、
+  deterministic K-Means++、blocked Lloyd、三级 RQ、checkpoint/resume 和 frozen artifact。
+- `pipeline.py`:一次顺序训练 Q2/Q3/Q5,校验 manifest fingerprint、source checksums、config contract
+  和恢复参数。
 
-### 下一张工程单
+input/cache 使用 fp16 或 bf16;normalization、distance、centers 和统计累积使用 fp32。descriptor、
+residual 和全量 code assignment 都只在当前 batch 中产生,不作为默认永久 cache。
 
-```text
-Complete the first real-data path and held-out evaluator:
+底层已经具备 distributed collective primitive,但 launcher 会主动拒绝 `world_size > 1`。在
+rank-aware shard partition 与共享初始化 artifact 完成前,正式任务只能使用一个进程;8 张 GPU
+可以先并行不同候选,不能伪装成一个分布式 RQ run。
 
-1. Package Scan episode-aware pooled exporter
-2. Package Scan held-out split and real Wan shape/cadence smoke
-3. streaming usage/perplexity/residual evaluator
-4. retrieval/geometry/action-probe report
-5. DROID-100 manifest and RLDS adapter
-6. scene/task/event balanced reservoir
-7. rank-aware shard partition and shared initialization artifact
-8. 1-GPU/8-GPU equivalence test and launcher
+当前 17 项单元测试覆盖 manifest round-trip、scene isolation、invalid tick、train-only
+normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
+RQ residual 下降、artifact round-trip 和 Q2/Q3/Q5 一键训练。
+
+## 12. 命令与产物
+
+不需要 Wan 权重或公开数据的回归测试:
+
+```bash
+python -m unittest discover -s tests -v
+python scripts/train_streaming_codebooks.py smoke \
+  --output runs/codebook_eval/streaming_smoke
 ```
 
-验收不以“跑完”为准,而以这些条件为准:
+正式 pooled shards 和 manifest 就绪后:
+
+```bash
+python scripts/train_streaming_codebooks.py train \
+  --config configs/codebook_eval/streaming_rq_template.yaml
+```
+
+每个 family 的标准输出:
+
+```text
+output/Q2|Q3|Q5/
+  contract.json
+  normalization.pt
+  checkpoints/
+    level_1_kmeans.pt
+    level_2_kmeans.pt
+    level_3_kmeans.pt
+    rq_state.pt
+  codebook.pt
+  train_summary.json
+```
+
+同一 output resume 前会重新核对 descriptor、K/L、source checksums、manifest fingerprint 和
+运行参数。contract 不一致时必须使用新目录,不能串用 checkpoint。
+
+`scripts/codebook_eval.py`、`configs/codebook_eval/package_scan_v6_*.yaml` 和
+`public_latent_codebooks.yaml` 属于旧 window evaluator。它们可用于本机回归或历史结果复算,
+不能生成 canonical artifact。
+
+## 13. 旧 cache 的边界
+
+旧 Package Scan cache 使用匿名重叠 window:
+
+```text
+latents: [N,48,7,7,14]
+meta:    window index and prompt only
+```
+
+它不能转成正式 cache:Q5 至少需要 11 个连续 latent ticks;window 没有可靠的 episode、timestamp
+和 split provenance;重叠 tick 无法去重;并且保存的是 full window latent 而不是逐 episode
+`pooled_g4`。不得给旧 window 人造 episode id 后报告正式结果。
+
+Package Scan v6 只用于本机链路、可视化和回归测试。研究结论使用 DROID、LIBERO 和
+BridgeData V2。
+
+## 14. 下一张工程单
+
+下一阶段只完成真实数据 Gate 0/1,不提前修改完整模型:
+
+```text
+1. DROID RLDS 与 LIBERO HDF5 -> EpisodeManifest adapters
+2. episode-aware prefix-only Wan-VAE -> pooled_g4 exporter
+3. DROID-100 + LIBERO 小规模 cadence/shape/future-leak audit
+4. held-out usage/perplexity/residual evaluator
+5. retrieval/geometry/camera/action-probe report
+6. scene/task/event balanced reservoir
+7. DROID-10k 顺序规格搜索
+8. rank-aware shard partition、共享初始化与 1-GPU/8-GPU 等价测试
+```
+
+验收不以“程序跑完”为准:
 
 - peak RAM/VRAM 只随 batch/K/D 变化,不随总 vectors 变化。
 - 固定 initialization 时,streaming 与 reference centers/metrics 在小数据上数值一致。
@@ -412,17 +491,3 @@ Complete the first real-data path and held-out evaluator:
 - 任意 iteration/level 中断后可恢复。
 - train/val/test 与 source checksums 可从 artifact 反查。
 - future frame、跨 episode frame 和 held-out statistics 无法进入训练。
-
-### 开发机开始命令
-
-```bash
-git checkout main
-git pull --ff-only origin main
-sed -n '1,260p' docs/DATASET_SCALE_PLAN.md
-```
-
-继续对话时可直接引用:
-
-```text
-继续 CodeWAM 的 DATASET_SCALE_PLAN,从 EpisodeManifest 和 streaming shard contract 开始实现。
-```

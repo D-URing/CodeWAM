@@ -1,10 +1,10 @@
-# CodeWAM v1: Canonical Architecture and Mask Program
+# CodeWAM Architecture
 
-Status: canonical planning and implementation specification.
+Status: canonical architecture and experiment specification.
 
-本文件是 CodeWAM v1 的唯一结构规范。它同时约束离线码本、模型接口、训练模式、attention
-可见性和实验门。研究背景与备选方案仍保留在 `CODEWAM_HYBRID_ARCHITECTURE.md` 和
-`CODEWAM_NATIVE_DESIGN.md`,但若表述冲突,以本文件为准。
+本文件是 CodeWAM 的唯一结构规范,约束模型接口、训练模式、attention 可见性和实验门。
+码本数据、离线训练与评估见 `CODEBOOK.md`;环境、目录和运行命令见 `DEVELOPMENT.md`。
+历史兼容原型只用于回归和外部基线,不构成另一套并行设计。
 
 ## 0. 一句话定义
 
@@ -543,10 +543,10 @@ error、future-code accuracy、扰动鲁棒性、延迟和显存。若 C1 不胜
 single token` 是早期兼容原型,不是 canonical v1。配置必须默认关闭该路径。
 
 公开数据角色、DROID 数据阶梯、pooled feature cache、distributed streaming RQ 和 8xA100
-作业布局以 `DATASET_SCALE_PLAN.md` 为准。
+作业布局以 `CODEBOOK.md` 为准。
 截至当前提交,步骤 1 和步骤 2 的单机底座、GPU smoke 与 reference-equivalence tests 已实现;
 真实 episode exporter、held-out evaluator 和 rank-aware DDP orchestration 仍待完成。实现边界见
-`STREAMING_CODEBOOKS.md`。
+`CODEBOOK.md`。
 
 | 早期实现 | canonical v1 |
 |---|---|

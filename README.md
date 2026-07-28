@@ -1,14 +1,10 @@
-# CodeWAM — Codebook World-Action Model
+# CodeWAM
 
-CodeWAM 是一个独立的世界动作模型(world-action model)方法。它复用 Wan-VAE、Video DiT、
-ActionDiT 和 flow-matching 等基座能力,但不把 FastWAM 的对称 MoT 拓扑当作结构边界。核心是用
-冻结的离散视觉状态码本,为连续 Wan latent 建立可度量、可预测、可干预的机器人状态坐标。
+CodeWAM 是一个连续视觉状态与离散视觉坐标并存的 world-action model。它复用 Wan-VAE、
+Video DiT、ActionDiT 和 flow matching 等基座能力,但不把 FastWAM 的对称 MoT 拓扑当作结构
+边界。FastWAM 是依赖与外部对照,CodeWAM 是独立方法。
 
-CodeWAM 不是对 FastWAM 的补丁或子类;它是一个平行方法,最终与 FastWAM **做对照**。
-
-## 核心思想
-
-CodeWAM v1 已锁定为连续与离散双路径:
+## 核心结构
 
 ```text
 unquantized Wan latent -> continuous state H -> 精确几何与动作微调
@@ -17,119 +13,111 @@ H + code + L/P        -> belief B          -> continuous action policy
 shared state + action -> world expert      -> training-only future-code objective
 ```
 
-三套码本基于因果窗口 `[t-2s,t-s,t]`,其中 `s in {2,3,5}`。它们彼此独立,三级 residual
-centers 不共享,九个 code measurement tokens 不求和、不流式更新。Policy、Forward Dynamics
-和 Video Prior 使用显式不同的 mask program,动作分支永远看不到未来 target。
-
-实现仍按实验门推进,先建立可信的离线 codebook evaluation:
+三套码本使用严格因果窗口:
 
 ```text
-public robot dataset
--> Wan-VAE latent cache
--> causal temporal descriptors at stride 2/3/5
--> three independent 3-level RQ codebooks
--> usage / reconstruction / temporal / action relevance metrics
+Q2(t) = RQ2([u(t-4),  u(t-2), u(t)])
+Q3(t) = RQ3([u(t-6),  u(t-3), u(t)])
+Q5(t) = RQ5([u(t-10), u(t-5), u(t)])
 ```
 
-完整结构、已知/未知信息边界和实现顺序见
-[`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md)。
-公开数据选择、DROID 分阶段方案、海量 streaming RQ 和 8xA100 作业布局见
-[`docs/DATASET_SCALE_PLAN.md`](./docs/DATASET_SCALE_PLAN.md)。
-已实现的 manifest、pooled shard、causal descriptor、streaming RQ 和本机 smoke 见
-[`docs/STREAMING_CODEBOOKS.md`](./docs/STREAMING_CODEBOOKS.md)。
+它们彼此独立,三级 residual centers 不共享。九个 code measurement 不求和、不替代连续
+latent,也不在 policy 训练中更新。Policy、Forward Dynamics 和 Video Prior 使用不同的输入
+contract 与 mask,动作分支永远看不到未来 target。
 
-## 结构
+## 文档
 
-```
+仓库只维护三份权威文档:
+
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md):模型结构、信息身份、mask、loss 和实验门。
+- [`docs/CODEBOOK.md`](./docs/CODEBOOK.md):数据、pooled latent、streaming RQ、评估和 8xA100。
+- [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md):仓库边界、环境、模型文件和运行命令。
+
+## 代码结构
+
+```text
 codewam/
-├── codebook.py    # legacy online EMA 原型,默认关闭
-├── codebook_eval/ # legacy evaluator + canonical streaming codebook foundation
-├── model.py       # 当前 FastWAM-compatible 模型原型,不是最终 v1 topology
-├── runtime.py     # create_codewam 工厂(hydra _target_)
-└── probe.py       # 早期兼容探针
-configs/          # model / task 配置(与 FastWAM 共享数据管线以便对照)
-docs/CODEWAM_V1_PLAN.md # canonical architecture + mask program
+├── codebook.py    # legacy online-EMA prototype; disabled by default
+├── codebook_eval/ # canonical manifest, pooled shards, streaming RQ and pipeline
+├── model.py       # current FastWAM-compatible prototype
+├── runtime.py     # Hydra factory
+└── probe.py       # legacy compatibility probe
+configs/           # model, data, task, and codebook configs
+scripts/           # setup, checks, export, clustering, and training
+tests/             # canonical codebook contracts and numerical equivalence
 ```
 
-## 依赖与安装
+`codewam/codebook.py` 和当前 `codewam/model.py` 中的单 token online-EMA 路径不是 canonical
+CodeWAM,配置必须保持默认关闭。
 
-CodeWAM 复用 Wan 基座专家的构件,由 FastWAM 参考实现提供:
+## 开始开发
+
+本机:
 
 ```bash
-bash scripts/bootstrap_fastwam.sh   # sparse checkout FastWAM 到 external/FastWAM 并 editable install
-pip install -e .                    # codewam; bootstrap 脚本默认也会执行
+bash scripts/setup_local_env.sh
+source .venv/bin/activate
+python scripts/check_environment.py --mode local
+python -m unittest discover -s tests -v
 ```
 
-二者共享数据与评测,便于 **CodeWAM vs FastWAM** 的 apples-to-apples 对照。
-
-推荐的完整准备顺序:
+固定 FastWAM 依赖:
 
 ```bash
-# 1) 拉取固定版本 FastWAM 依赖
 bash scripts/bootstrap_fastwam.sh
-
-# 2) 下载 Wan/FastWAM 模型文件到 checkpoints/
-bash scripts/download_models.sh
-
-# 3) 从 Wan DiT 预生成 ActionDiT backbone
-bash scripts/prepare_action_dit.sh
-
-# 4) 检查环境与模型文件
-python3 scripts/check_environment.py --mode local
-
-# 5) 训练示例
-bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
 ```
 
-外部依赖和模型固定在 [`upstreams.yaml`](./upstreams.yaml)。更多说明见
-[`docs/BOOTSTRAP.md`](./docs/BOOTSTRAP.md) 和 [`docs/TRAINING.md`](./docs/TRAINING.md)。
-CodeWAM 从 compatible 接入走向 native 架构的规划见
-[`docs/CODEWAM_NATIVE_DESIGN.md`](./docs/CODEWAM_NATIVE_DESIGN.md)。当前推荐的 hybrid 架构见
-[`docs/CODEWAM_HYBRID_ARCHITECTURE.md`](./docs/CODEWAM_HYBRID_ARCHITECTURE.md)。当前唯一的 v1
-结构与实验决策规范见 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md)。
+集群复用现有 Python/CUDA 时:
 
-## 本机 Package Scan v6 Demo
+```bash
+PYTHON=python \
+INSTALL_TORCH_STACK=false \
+bash scripts/setup_cluster_env.sh
+python scripts/check_environment.py --mode cluster
+```
 
-`package_scan_v6/` 是当前本机真机小 demo 数据目录,不入库。链路检查:
+完整环境和模型说明见 [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md)。
+
+## Codebook 验证
+
+不需要模型权重的 streaming smoke:
+
+```bash
+python scripts/train_streaming_codebooks.py smoke \
+  --output runs/codebook_eval/streaming_smoke
+```
+
+正式 episode-aware pooled shards 就绪后:
+
+```bash
+python scripts/train_streaming_codebooks.py train \
+  --config configs/codebook_eval/streaming_rq_template.yaml
+```
+
+Package Scan v6 只用于本机数据链路和回归:
 
 ```bash
 python scripts/demo_package_scan_v6.py
 ```
 
-脚本会读取 LeRobot v3 parquet 元数据、解码 top/wrist 两路 AV1 视频、构造 CodeWAM 风格窗口,并在
-`runs/package_scan_v6_demo/` 下保存预览条。
+研究数据角色固定为:
 
-## 离线码本评估
-
-旧 window evaluator 的兼容链路:
-
-```bash
-python scripts/codebook_eval.py synthetic-smoke
+```text
+DROID        main codebook training and in-domain evaluation
+LIBERO       controlled geometry/task validation
+BridgeData V2 frozen-transfer and independent-refit replication
 ```
 
-canonical causal Q2/Q3/Q5 streaming 链路:
+## 当前状态
 
-```bash
-.venv/bin/python scripts/train_streaming_codebooks.py smoke \
-  --output runs/codebook_eval/streaming_smoke
-```
-
-旧 cache 评估见 [`docs/CODEBOOK_EVAL.md`](./docs/CODEBOOK_EVAL.md);新 shard contract、训练命令与
-边界见 [`docs/STREAMING_CODEBOOKS.md`](./docs/STREAMING_CODEBOOKS.md)。
-
-## 状态
-
-- 已准备:外部上游 sparse checkout、模型下载脚本、ActionDiT 预处理、Hydra 训练配置、
-  本机 Package Scan v6 demo reader。
-- 已锁定:三套独立 causal RQ、九个只读 code measurements、连续状态路径、belief 聚合器、
-  mode-specific Policy/FD/Prior masks 和可选 MemoryPort。
-- 当前边界:`codewam/codebook.py` 的在线 EMA 单 token 原型已默认关闭;不能作为 v1 实验结果。
-- 数据决策:DROID 作为主码本数据,LIBERO 做受控验证,BridgeData V2 做跨域复核;AgiBot World、
-  RoboMIND 和 Open X-Embodiment 后置。
-- 已完成底座:episode manifest、pooled-feature shard contract、causal Q2/Q3/Q5 iterator、
+- 已锁定:连续状态路径、三套独立 causal RQ、九个只读 code measurements、belief aggregator、
+  mode-specific masks 和可选 MemoryPort。
+- 已实现:episode manifest、scene-level split、pooled-feature shard、Q2/Q3/Q5 causal iterator、
   train-only normalization、streaming K-Means/RQ、checkpoint/resume 和 frozen artifact。
-- 下一步:实现 Package Scan episode-aware pooled export 和 held-out streaming evaluator;随后用
-  同一接口接 DROID-100,再补 rank-aware 8-GPU orchestration。
+- 已验证:17 项单元测试与 synthetic Q2/Q3/Q5 smoke。
+- 默认关闭:legacy online-EMA single-token codebook。
+- 下一步:DROID RLDS 与 LIBERO HDF5 adapters、prefix-only Wan-VAE pooled exporter、
+  held-out evaluator,随后进行 DROID-10k 规格搜索。
 
-项目决策以 [`docs/CODEWAM_V1_PLAN.md`](./docs/CODEWAM_V1_PLAN.md) 为准;早期兼容原型说明见
-[`docs/DESIGN.md`](./docs/DESIGN.md)。
+外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
+checkpoints 和运行结果始终放在 git 之外。
