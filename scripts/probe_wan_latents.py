@@ -17,11 +17,13 @@ from codewam.codebook_eval.wan_probe_export import (
 )
 
 
-def _load_mapping(path: str | Path) -> dict[str, Any]:
+def _load_mapping(path: str | Path, section: str) -> dict[str, Any]:
     config = OmegaConf.load(path)
-    payload = OmegaConf.to_container(config, resolve=True)
+    if section not in config:
+        raise ValueError(f"Probe config has no `{section}` section.")
+    payload = OmegaConf.to_container(config[section], resolve=True)
     if not isinstance(payload, dict):
-        raise ValueError("Wan latent probe config must be a mapping.")
+        raise ValueError(f"Wan latent probe `{section}` section must be a mapping.")
     return payload
 
 
@@ -43,11 +45,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    payload = _load_mapping(args.config)
     if args.command in {"export", "run"}:
-        if "export" not in payload:
-            raise ValueError("Probe config has no `export` section.")
-        export_mapping = dict(payload["export"])
+        export_mapping = _load_mapping(args.config, "export")
         if args.max_episodes is not None:
             export_mapping["max_episodes"] = args.max_episodes
         result = export_droid_wan_probe(export_config_from_mapping(export_mapping))
@@ -61,16 +60,15 @@ def main() -> None:
         )
 
     if args.command in {"analyze", "run"}:
-        if "analysis" not in payload:
-            raise ValueError("Probe config has no `analysis` section.")
-        result = run_latent_probe(probe_config_from_mapping(payload["analysis"]))
+        analysis_mapping = _load_mapping(args.config, "analysis")
+        result = run_latent_probe(probe_config_from_mapping(analysis_mapping))
         print(
             "Probe analysis complete: "
             f"episodes={result['episode_counts']}, "
             f"kmeans_runs={len(result['kmeans_runs'])}, "
             f"rq_runs={len(result['rq_runs'])}"
         )
-        print(f"Report: {Path(payload['analysis']['output_dir']) / 'report.md'}")
+        print(f"Report: {Path(analysis_mapping['output_dir']) / 'report.md'}")
 
 
 if __name__ == "__main__":

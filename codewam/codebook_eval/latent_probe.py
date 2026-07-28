@@ -744,11 +744,9 @@ def _run_kmeans_sweeps(
     iterations: list[dict[str, Any]] = []
     assignments: dict[tuple[Any, ...], list[tuple[int, torch.Tensor]]] = {}
 
-    for camera, pool, k, seed in itertools.product(
+    for camera, pool in itertools.product(
         config.cameras,
         config.pools,
-        config.k_values,
-        config.seeds,
     ):
         samples = build_probe_samples(
             episodes,
@@ -758,57 +756,60 @@ def _run_kmeans_sweeps(
             stride=config.sweep_stride,
         )
         _, normalized, _, _ = _standardized_splits(samples)
-        run_id = f"capacity_{camera}_g{pool}_q{config.sweep_stride}_k{k}_seed{seed}"
-        result = fit_diagnostic_kmeans(
-            normalized["train"],
-            normalized["val"],
-            _kmeans_config(
-                config,
-                k=k,
-                seed=seed,
-                tolerance=config.default_tolerance,
-                patience=config.default_patience,
-            ),
-        )
-        test_codes, test_distances = _evaluate_centers(
-            normalized["test"],
-            result.centers,
-            device=device,
-            chunk_size=config.chunk_size,
-        )
-        rows.append(
-            _kmeans_row(
-                run_id,
+        for k, seed in itertools.product(config.k_values, config.seeds):
+            run_id = (
+                f"capacity_{camera}_g{pool}_q{config.sweep_stride}_k{k}_seed{seed}"
+            )
+            result = fit_diagnostic_kmeans(
+                normalized["train"],
+                normalized["val"],
+                _kmeans_config(
+                    config,
+                    k=k,
+                    seed=seed,
+                    tolerance=config.default_tolerance,
+                    patience=config.default_patience,
+                ),
+            )
+            test_codes, test_distances = _evaluate_centers(
+                normalized["test"],
+                result.centers,
+                device=device,
+                chunk_size=config.chunk_size,
+            )
+            rows.append(
+                _kmeans_row(
+                    run_id,
+                    "capacity_pool",
+                    samples,
+                    normalized,
+                    result,
+                    test_codes,
+                    test_distances,
+                    k,
+                    seed,
+                    config.default_tolerance,
+                    config.default_patience,
+                )
+            )
+            iterations.extend(_iteration_rows(run_id, result, samples.dimension))
+            key = (
                 "capacity_pool",
-                samples,
-                normalized,
-                result,
-                test_codes,
-                test_distances,
+                camera,
+                pool,
+                config.sweep_stride,
                 k,
-                seed,
                 config.default_tolerance,
                 config.default_patience,
             )
+            assignments.setdefault(key, []).append((seed, test_codes))
+        print(
+            f"Capacity sweep complete: camera={camera}, pool={pool}, "
+            f"fits={len(config.k_values) * len(config.seeds)}",
+            flush=True,
         )
-        iterations.extend(_iteration_rows(run_id, result, samples.dimension))
-        key = (
-            "capacity_pool",
-            camera,
-            pool,
-            config.sweep_stride,
-            k,
-            config.default_tolerance,
-            config.default_patience,
-        )
-        assignments.setdefault(key, []).append((seed, test_codes))
 
-    for camera, tolerance, patience, seed in itertools.product(
-        config.cameras,
-        config.tolerances,
-        config.patiences,
-        config.seeds,
-    ):
+    for camera in config.cameras:
         samples = build_probe_samples(
             episodes,
             camera=camera,
@@ -817,53 +818,63 @@ def _run_kmeans_sweeps(
             stride=config.sweep_stride,
         )
         _, normalized, _, _ = _standardized_splits(samples)
-        run_id = (
-            f"stop_{camera}_g{config.selected_pool}_q{config.sweep_stride}"
-            f"_k{config.selected_k}_tol{tolerance:g}_p{patience}_seed{seed}"
-        )
-        result = fit_diagnostic_kmeans(
-            normalized["train"],
-            normalized["val"],
-            _kmeans_config(
-                config,
-                k=config.selected_k,
-                seed=seed,
-                tolerance=tolerance,
-                patience=patience,
-            ),
-        )
-        test_codes, test_distances = _evaluate_centers(
-            normalized["test"],
-            result.centers,
-            device=device,
-            chunk_size=config.chunk_size,
-        )
-        rows.append(
-            _kmeans_row(
-                run_id,
+        for tolerance, patience, seed in itertools.product(
+            config.tolerances,
+            config.patiences,
+            config.seeds,
+        ):
+            run_id = (
+                f"stop_{camera}_g{config.selected_pool}_q{config.sweep_stride}"
+                f"_k{config.selected_k}_tol{tolerance:g}_p{patience}_seed{seed}"
+            )
+            result = fit_diagnostic_kmeans(
+                normalized["train"],
+                normalized["val"],
+                _kmeans_config(
+                    config,
+                    k=config.selected_k,
+                    seed=seed,
+                    tolerance=tolerance,
+                    patience=patience,
+                ),
+            )
+            test_codes, test_distances = _evaluate_centers(
+                normalized["test"],
+                result.centers,
+                device=device,
+                chunk_size=config.chunk_size,
+            )
+            rows.append(
+                _kmeans_row(
+                    run_id,
+                    "early_stop",
+                    samples,
+                    normalized,
+                    result,
+                    test_codes,
+                    test_distances,
+                    config.selected_k,
+                    seed,
+                    tolerance,
+                    patience,
+                )
+            )
+            iterations.extend(_iteration_rows(run_id, result, samples.dimension))
+            key = (
                 "early_stop",
-                samples,
-                normalized,
-                result,
-                test_codes,
-                test_distances,
+                camera,
+                config.selected_pool,
+                config.sweep_stride,
                 config.selected_k,
-                seed,
                 tolerance,
                 patience,
             )
+            assignments.setdefault(key, []).append((seed, test_codes))
+        print(
+            f"Early-stop sweep complete: camera={camera}, "
+            f"fits={len(config.tolerances) * len(config.patiences) * len(config.seeds)}",
+            flush=True,
         )
-        iterations.extend(_iteration_rows(run_id, result, samples.dimension))
-        key = (
-            "early_stop",
-            camera,
-            config.selected_pool,
-            config.sweep_stride,
-            config.selected_k,
-            tolerance,
-            patience,
-        )
-        assignments.setdefault(key, []).append((seed, test_codes))
 
     return rows, iterations, _pairwise_stability(assignments, "kmeans")
 
@@ -928,10 +939,9 @@ def _run_rq(
     artifact_dir = ensure_dir(output_dir / "artifacts")
     montage_dir = ensure_dir(output_dir / "montages")
 
-    for camera, stride, seed in itertools.product(
+    for camera, stride in itertools.product(
         config.cameras,
         config.strides,
-        config.seeds,
     ):
         samples = build_probe_samples(
             episodes,
@@ -941,112 +951,121 @@ def _run_rq(
             stride=stride,
         )
         split_samples, normalized, mean, std = _standardized_splits(samples)
-        result = fit_diagnostic_rq(
-            normalized["train"],
-            normalized["val"],
-            normalized["test"],
-            _kmeans_config(
-                config,
-                k=config.selected_k,
-                seed=seed,
-                tolerance=config.default_tolerance,
-                patience=config.default_patience,
-            ),
-            levels=config.rq_levels,
-        )
-        assert result.validation_residual_mse is not None
-        assert result.test_residual_mse is not None
-        assert result.test_codes is not None
-        train_reductions = _reductions(result.train_residual_mse)
-        validation_reductions = _reductions(result.validation_residual_mse)
-        test_reductions = _reductions(result.test_residual_mse)
-        row: dict[str, Any] = {
-            "run_id": f"rq_{camera}_g{config.selected_pool}_q{stride}_k{config.selected_k}_seed{seed}",
-            "camera": camera,
-            "pool": config.selected_pool,
-            "stride": stride,
-            "k": config.selected_k,
-            "levels": config.rq_levels,
-            "seed": seed,
-            "dimension": samples.dimension,
-            "train_vectors": int(normalized["train"].shape[0]),
-            "validation_vectors": int(normalized["val"].shape[0]),
-            "test_vectors": int(normalized["test"].shape[0]),
-            "train_initial_mse": result.train_residual_mse[0],
-            "validation_initial_mse": result.validation_residual_mse[0],
-            "test_initial_mse": result.test_residual_mse[0],
-            "train_final_mse": result.train_residual_mse[-1],
-            "validation_final_mse": result.validation_residual_mse[-1],
-            "test_final_mse": result.test_residual_mse[-1],
-            "train_total_reduction": 1.0
-            - result.train_residual_mse[-1]
-            / max(result.train_residual_mse[0], 1e-12),
-            "validation_total_reduction": 1.0
-            - result.validation_residual_mse[-1]
-            / max(result.validation_residual_mse[0], 1e-12),
-            "test_total_reduction": 1.0
-            - result.test_residual_mse[-1]
-            / max(result.test_residual_mse[0], 1e-12),
-        }
-        for level in range(config.rq_levels):
-            prefix = f"level{level + 1}"
-            row[f"{prefix}_iterations"] = result.levels[level].iterations
-            row[f"{prefix}_stop_reason"] = result.levels[level].stop_reason
-            row[f"{prefix}_train_reduction"] = train_reductions[level]
-            row[f"{prefix}_validation_reduction"] = validation_reductions[level]
-            row[f"{prefix}_test_reduction"] = test_reductions[level]
-            row.update(
-                {
-                    f"{prefix}_{key}": value
-                    for key, value in usage_summary(
-                        result.test_codes[:, level],
-                        k=config.selected_k,
-                    ).items()
-                }
+        for seed in config.seeds:
+            result = fit_diagnostic_rq(
+                normalized["train"],
+                normalized["val"],
+                normalized["test"],
+                _kmeans_config(
+                    config,
+                    k=config.selected_k,
+                    seed=seed,
+                    tolerance=config.default_tolerance,
+                    patience=config.default_patience,
+                ),
+                levels=config.rq_levels,
             )
-        rows.append(row)
-        key = (
-            camera,
-            config.selected_pool,
-            stride,
-            config.selected_k,
-            config.rq_levels,
-        )
-        for level in range(config.rq_levels):
-            assignments.setdefault((*key, level + 1), []).append(
-                (seed, result.test_codes[:, level])
-            )
-
-        centers = [level.centers for level in result.levels]
-        atomic_torch_save(
-            {
-                "schema": "codewam.latent-probe-rq-artifact.v1",
+            assert result.validation_residual_mse is not None
+            assert result.test_residual_mse is not None
+            assert result.test_codes is not None
+            train_reductions = _reductions(result.train_residual_mse)
+            validation_reductions = _reductions(result.validation_residual_mse)
+            test_reductions = _reductions(result.test_residual_mse)
+            row: dict[str, Any] = {
+                "run_id": (
+                    f"rq_{camera}_g{config.selected_pool}_q{stride}"
+                    f"_k{config.selected_k}_seed{seed}"
+                ),
                 "camera": camera,
                 "pool": config.selected_pool,
                 "stride": stride,
                 "k": config.selected_k,
                 "levels": config.rq_levels,
                 "seed": seed,
-                "normalization_mean": mean,
-                "normalization_std": std,
-                "centers": centers,
-                "metrics": row,
-            },
-            artifact_dir / f"{row['run_id']}.pt",
+                "dimension": samples.dimension,
+                "train_vectors": int(normalized["train"].shape[0]),
+                "validation_vectors": int(normalized["val"].shape[0]),
+                "test_vectors": int(normalized["test"].shape[0]),
+                "train_initial_mse": result.train_residual_mse[0],
+                "validation_initial_mse": result.validation_residual_mse[0],
+                "test_initial_mse": result.test_residual_mse[0],
+                "train_final_mse": result.train_residual_mse[-1],
+                "validation_final_mse": result.validation_residual_mse[-1],
+                "test_final_mse": result.test_residual_mse[-1],
+                "train_total_reduction": 1.0
+                - result.train_residual_mse[-1]
+                / max(result.train_residual_mse[0], 1e-12),
+                "validation_total_reduction": 1.0
+                - result.validation_residual_mse[-1]
+                / max(result.validation_residual_mse[0], 1e-12),
+                "test_total_reduction": 1.0
+                - result.test_residual_mse[-1]
+                / max(result.test_residual_mse[0], 1e-12),
+            }
+            for level in range(config.rq_levels):
+                prefix = f"level{level + 1}"
+                row[f"{prefix}_iterations"] = result.levels[level].iterations
+                row[f"{prefix}_stop_reason"] = result.levels[level].stop_reason
+                row[f"{prefix}_train_reduction"] = train_reductions[level]
+                row[f"{prefix}_validation_reduction"] = validation_reductions[level]
+                row[f"{prefix}_test_reduction"] = test_reductions[level]
+                row.update(
+                    {
+                        f"{prefix}_{key}": value
+                        for key, value in usage_summary(
+                            result.test_codes[:, level],
+                            k=config.selected_k,
+                        ).items()
+                    }
+                )
+            rows.append(row)
+            key = (
+                camera,
+                config.selected_pool,
+                stride,
+                config.selected_k,
+                config.rq_levels,
+            )
+            for level in range(config.rq_levels):
+                assignments.setdefault((*key, level + 1), []).append(
+                    (seed, result.test_codes[:, level])
+                )
+
+            centers = [level.centers for level in result.levels]
+            atomic_torch_save(
+                {
+                    "schema": "codewam.latent-probe-rq-artifact.v1",
+                    "camera": camera,
+                    "pool": config.selected_pool,
+                    "stride": stride,
+                    "k": config.selected_k,
+                    "levels": config.rq_levels,
+                    "seed": seed,
+                    "normalization_mean": mean,
+                    "normalization_std": std,
+                    "centers": centers,
+                    "metrics": row,
+                },
+                artifact_dir / f"{row['run_id']}.pt",
+            )
+            if seed == config.seeds[0]:
+                level1_codes, level1_distances = _evaluate_centers(
+                    normalized["test"],
+                    centers[0],
+                    device=device,
+                    chunk_size=config.chunk_size,
+                )
+                _cluster_montage(
+                    montage_dir / f"{camera}_q{stride}_level1.png",
+                    split_samples["test"],
+                    level1_codes,
+                    level1_distances,
+                )
+        print(
+            f"RQ sweep complete: camera={camera}, stride={stride}, "
+            f"fits={len(config.seeds)}",
+            flush=True,
         )
-        if seed == config.seeds[0]:
-            level1_codes, level1_distances = _evaluate_centers(
-                normalized["test"],
-                centers[0],
-                device=device,
-                chunk_size=config.chunk_size,
-            )
-            _cluster_montage(
-                montage_dir / f"{camera}_q{stride}_level1.png",
-                split_samples["test"],
-                level1_codes,
-                level1_distances,
-            )
     return rows, _pairwise_stability(assignments, "rq_level")
 
 
@@ -1235,7 +1254,12 @@ def run_latent_probe(config: LatentProbeConfig) -> dict[str, Any]:
     if any(count == 0 for count in split_counts.values()):
         raise ValueError(f"Probe needs episode-level train/val/test splits, got {split_counts}.")
 
+    print(
+        f"Probe loaded {len(episodes)} episodes with splits {split_counts}.",
+        flush=True,
+    )
     device = _resolve_device(config.device)
+    print("Computing latent state and motion diagnostics.", flush=True)
     state_rows = state_metrics(episodes, config.cameras, config.pools, device=device)
     motion_rows = motion_metrics(
         episodes,
@@ -1243,11 +1267,13 @@ def run_latent_probe(config: LatentProbeConfig) -> dict[str, Any]:
         config.pools,
         config.strides,
     )
+    print("Running K-Means capacity and early-stop sweeps.", flush=True)
     kmeans_rows, iteration_rows, kmeans_stability = _run_kmeans_sweeps(
         episodes,
         config,
     )
     capacity_rows = _capacity_summary(kmeans_rows)
+    print("Running three-level residual-quantization sweeps.", flush=True)
     rq_rows, rq_stability = _run_rq(episodes, config, output_dir)
     stability_rows = [*kmeans_stability, *rq_stability]
     recommendations = _recommend_early_stop(kmeans_rows)
