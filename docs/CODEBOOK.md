@@ -574,6 +574,8 @@ network:        resumable access to the official Google Cloud bucket
 - `evaluation.py`:只读 frozen train normalization/centers,在 val/test 流式累计逐层 residual、
   usage、dead fraction、perplexity、temporal transition、联合 tuple 指标和每中心 retrieval
   anchors。
+- `wan_causality.py`:用真实视频完整编码与逐级前缀编码的 latent 一致性审计,显式检测
+  Wan-VAE temporal look-ahead。
 - `droid_pooled_export.py`:rank-aware exact reader 到双相机 Wan `pooled_g4` 的原子 shard export、
   contract/SHA 校验、首次性能证据保留、resume 和 segment manifest finalize。
 - `codewam/data/droid_manifest.py`:官方 raw metadata、RLDS position、keep ranges、language 和
@@ -590,11 +592,11 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 54 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 56 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 patience resume、RQ residual 下降、artifact round-trip、双 rank resume 与单卡 centers 等价、
-DROID pooled export evidence 和 Q2/Q3/Q5 train/held-out 一键流程。
+DROID pooled export evidence、Wan causal-prefix 正反例和 Q2/Q3/Q5 train/held-out 一键流程。
 
 ## 12. 命令与产物
 

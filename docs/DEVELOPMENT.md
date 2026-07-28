@@ -170,6 +170,21 @@ python scripts/train_streaming_codebooks.py smoke \
   --output runs/codebook_eval/streaming_smoke
 ```
 
+正式导出前先用真实 DROID 片段验证 Wan-VAE 的时间因果性:
+
+```bash
+PYTHONPATH=. python scripts/audit_wan_causality.py \
+  --source-manifest "$DROID_MANIFEST" \
+  --data-dir "$DROID_RLDS_ROOT" \
+  --output "$POOLED_ROOT/causal_prefix_audit.json" \
+  --vae-path "$WAN_VAE_PATH" \
+  --fastwam-src "$FASTWAM_SRC" \
+  --device cuda:0
+```
+
+该审计比较同一片段的完整 21 帧编码与 `1/5/9/13/17/21` 帧前缀编码。每个前缀的全部
+latent ticks 都必须与完整编码的对应前缀一致;报告会锁定 manifest、VAE 和实现 SHA。
+
 真实 DROID manifest 就绪后,先按完整 TFRecord shard 分配 rank 并导出:
 
 ```bash

@@ -103,6 +103,9 @@ python scripts/evaluate_streaming_codebooks.py \
   --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
 ```
 
+真实数据导出前用 `scripts/audit_wan_causality.py` 做 full-vs-prefix latent 一致性审计,
+把 Wan-VAE 不读取未来帧从结构假设变成可复现证据。
+
 Package Scan v6 只用于本机数据链路和回归:
 
 ```bash
