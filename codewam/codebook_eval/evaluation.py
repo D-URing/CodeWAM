@@ -321,6 +321,13 @@ def _evaluate_artifact(
     ]
     return {
         "family": artifact.family,
+        "stride": artifact.descriptor.stride,
+        "pool": artifact.descriptor.pool,
+        "camera_ids": (
+            None
+            if artifact.descriptor.camera_ids is None
+            else list(artifact.descriptor.camera_ids)
+        ),
         "split": split,
         "episodes": len(episode_ids),
         "vectors": vector_count,

@@ -65,6 +65,8 @@ class StreamingEvaluationTests(unittest.TestCase):
         )
         for row in first["rows"]:
             self.assertGreater(row["vectors"], 0)
+            self.assertEqual(row["pool"], 2)
+            self.assertIsNone(row["camera_ids"])
             self.assertEqual(len(row["residual_mse"]), 4)
             self.assertEqual(len(row["code_usage"]), 3)
             self.assertEqual(len(row["temporal"]), 3)
