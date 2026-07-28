@@ -397,6 +397,14 @@ def export_droid_pooled_features(
     )[config.rank]
     output_dir = Path(config.output_dir)
     (output_dir / "pooled").mkdir(parents=True, exist_ok=True)
+    device = torch.device(config.device)
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("Wan export requested unavailable CUDA.")
+        torch.cuda.set_device(_cuda_device_index(device))
+        # The RLDS iterator imports TensorFlow lazily. Initialize Torch first so
+        # TensorFlow can disable its own GPUs without invalidating Torch's context.
+        torch.cuda.init()
 
     rows = []
     pending_work: dict[str, DroidShardWork] = {}
@@ -473,16 +481,12 @@ def export_droid_pooled_features(
             flush()
             current_shard = episode.source_shard
             shard_started = time.monotonic()
-            device = torch.device(config.device)
             if device.type == "cuda":
-                if not torch.cuda.is_available():
-                    raise RuntimeError("Wan export requested unavailable CUDA.")
                 torch.cuda.reset_peak_memory_stats(_cuda_device_index(device))
         if vae is None:
             vae = _load_wan_vae(config)
         for segment in episode.iter_eligible_segments():
             current_pooled.append(encode_droid_segment(segment, vae, config))
-            device = torch.device(config.device)
             if device.type == "cuda":
                 shard_peak_gib = max(
                     shard_peak_gib,
