@@ -19,6 +19,7 @@ from codewam.codebook_eval.streaming import (
     UniformReservoir,
     encode_residual_quantizer,
     fit_normalization,
+    kmeans_plus_plus,
 )
 
 
@@ -174,6 +175,15 @@ class StreamingClusteringTests(unittest.TestCase):
         self.assertEqual(whole.seen, values.shape[0])
         self.assertEqual(partitioned.seen, values.shape[0])
         torch.testing.assert_close(whole.result(), partitioned.result())
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is unavailable")
+    def test_kmeans_plus_plus_runs_deterministically_on_cuda(self) -> None:
+        values, _ = self.synthetic_clusters()
+        first = kmeans_plus_plus(values, k=3, seed=17, device="cuda")
+        second = kmeans_plus_plus(values, k=3, seed=17, device="cuda")
+
+        self.assertEqual(first.device.type, "cuda")
+        torch.testing.assert_close(first, second)
 
     def test_streaming_kmeans_is_batch_partition_invariant(self) -> None:
         values, initial = self.synthetic_clusters()

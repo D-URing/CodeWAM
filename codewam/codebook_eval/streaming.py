@@ -487,8 +487,10 @@ def kmeans_plus_plus(
     k: int,
     seed: int = 0,
     distance_chunk_size: int = 8192,
+    device: str | torch.device = "cpu",
 ) -> torch.Tensor:
-    values = vectors.detach().float().cpu()
+    target_device = _resolve_device(device)
+    values = vectors.detach().to(device=target_device, dtype=torch.float32)
     if values.ndim != 2:
         raise ValueError(f"`vectors` must be [N,D], got {tuple(values.shape)}.")
     if values.shape[0] < int(k):
@@ -499,7 +501,11 @@ def kmeans_plus_plus(
         raise ValueError("`distance_chunk_size` must be positive.")
 
     def distance_to(center: torch.Tensor) -> torch.Tensor:
-        distances = torch.empty(values.shape[0], dtype=torch.float32)
+        distances = torch.empty(
+            values.shape[0],
+            dtype=torch.float32,
+            device=target_device,
+        )
         for start in range(0, values.shape[0], int(distance_chunk_size)):
             chunk = values[start : start + int(distance_chunk_size)]
             distances[start : start + chunk.shape[0]] = (
@@ -507,8 +513,15 @@ def kmeans_plus_plus(
             ).square().sum(dim=1)
         return distances
 
-    generator = torch.Generator(device="cpu").manual_seed(int(seed))
-    first = int(torch.randint(values.shape[0], (1,), generator=generator).item())
+    generator = torch.Generator(device=target_device).manual_seed(int(seed))
+    first = int(
+        torch.randint(
+            values.shape[0],
+            (1,),
+            generator=generator,
+            device=target_device,
+        ).item()
+    )
     selected = [first]
     closest = distance_to(values[first])
 
@@ -523,7 +536,9 @@ def kmeans_plus_plus(
         selected.append(next_index)
         distance = distance_to(values[next_index])
         closest = torch.minimum(closest, distance)
-    return values[torch.tensor(selected, dtype=torch.long)].contiguous()
+    return values[
+        torch.tensor(selected, dtype=torch.long, device=target_device)
+    ].contiguous()
 
 
 @dataclass(frozen=True)
@@ -751,7 +766,8 @@ class StreamingKMeans:
                     k=self.config.k,
                     seed=self.config.seed,
                     distance_chunk_size=self.config.initialization_chunk_size,
-                ).to(device=device)
+                    device=device,
+                )
             if centers.ndim != 2 or centers.shape[0] != self.config.k:
                 raise ValueError(
                     f"Initial centers must be [K,D], got {tuple(centers.shape)}."
