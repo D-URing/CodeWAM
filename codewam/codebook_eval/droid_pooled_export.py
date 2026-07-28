@@ -272,6 +272,66 @@ def _validate_reused_work(
     }
 
 
+def _load_previous_rank_report(
+    path: Path,
+    *,
+    contract_hash: str,
+    rank: int,
+    world_size: int,
+) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    report = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        "schema": DROID_POOLED_EXPORT_SCHEMA,
+        "contract_hash": contract_hash,
+        "rank": rank,
+        "world_size": world_size,
+    }
+    mismatches = [
+        key for key, value in expected.items() if report.get(key) != value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            f"Existing rank report `{path}` differs in {mismatches}."
+        )
+    return report
+
+
+def _preserve_first_export_evidence(
+    reused: dict[str, Any],
+    previous: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if previous is None:
+        return reused
+    identity_keys = (
+        "source_shard",
+        "source_episodes",
+        "segments",
+        "ticks",
+        "path",
+        "sha256",
+        "bytes",
+    )
+    mismatches = [
+        key for key in identity_keys if previous.get(key) != reused.get(key)
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Reused pooled shard conflicts with its previous report in "
+            f"{mismatches}."
+        )
+    merged = dict(reused)
+    for key in ("elapsed_seconds", "peak_cuda_memory_gib"):
+        if key in previous:
+            merged[key] = previous[key]
+    merged["first_export_status"] = previous.get(
+        "first_export_status",
+        previous.get("status"),
+    )
+    return merged
+
+
 def encode_droid_segment(
     segment: DroidRLDSSegment,
     vae: Any,
@@ -397,6 +457,20 @@ def export_droid_pooled_features(
     )[config.rank]
     output_dir = Path(config.output_dir)
     (output_dir / "pooled").mkdir(parents=True, exist_ok=True)
+    report_path = (
+        output_dir
+        / f"rank-{config.rank:03d}-of-{config.world_size:03d}-report.json"
+    )
+    previous_report = _load_previous_rank_report(
+        report_path,
+        contract_hash=contract["contract_hash"],
+        rank=config.rank,
+        world_size=config.world_size,
+    )
+    previous_rows = {
+        str(row["source_shard"]): row
+        for row in (previous_report or {}).get("outputs", ())
+    }
     device = torch.device(config.device)
     if device.type == "cuda":
         if not torch.cuda.is_available():
@@ -412,8 +486,16 @@ def export_droid_pooled_features(
     for work in assignment.shards:
         path = _work_output_path(output_dir, work)
         if path.is_file() and config.resume:
+            reused = _validate_reused_work(
+                path,
+                work,
+                contract["contract_hash"],
+            )
             rows.append(
-                _validate_reused_work(path, work, contract["contract_hash"])
+                _preserve_first_export_evidence(
+                    reused,
+                    previous_rows.get(work.shard_name),
+                )
             )
             completed_episode_keys.update(
                 record.key for record in work.records
@@ -459,6 +541,7 @@ def export_droid_pooled_features(
                 "bytes": path.stat().st_size,
                 "elapsed_seconds": time.monotonic() - shard_started,
                 "peak_cuda_memory_gib": shard_peak_gib,
+                "first_export_status": "exported",
                 "status": "exported",
             }
         )
@@ -499,6 +582,16 @@ def export_droid_pooled_features(
                 )
     flush()
 
+    elapsed_seconds = time.monotonic() - started
+    first_export_elapsed_seconds = (
+        previous_report.get("first_export_elapsed_seconds")
+        if previous_report is not None
+        else None
+    )
+    if first_export_elapsed_seconds is None and any(
+        row["status"] == "exported" for row in rows
+    ):
+        first_export_elapsed_seconds = elapsed_seconds
     report = {
         "schema": DROID_POOLED_EXPORT_SCHEMA,
         "contract_hash": contract["contract_hash"],
@@ -510,12 +603,9 @@ def export_droid_pooled_features(
             "source_bytes": assignment.source_bytes,
         },
         "outputs": sorted(rows, key=lambda row: row["source_shard"]),
-        "elapsed_seconds": time.monotonic() - started,
+        "elapsed_seconds": elapsed_seconds,
+        "first_export_elapsed_seconds": first_export_elapsed_seconds,
     }
-    report_path = (
-        output_dir
-        / f"rank-{config.rank:03d}-of-{config.world_size:03d}-report.json"
-    )
     write_json_report(report_path, report)
     return report
 

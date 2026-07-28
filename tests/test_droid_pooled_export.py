@@ -11,6 +11,7 @@ import torch
 from codewam.codebook_eval.droid_pooled_export import (
     DroidPooledExportConfig,
     _cuda_device_index,
+    _preserve_first_export_evidence,
     encode_droid_segment,
     finalize_droid_pooled_export,
 )
@@ -80,6 +81,31 @@ def make_config(output_dir: str = "output") -> DroidPooledExportConfig:
 class DroidPooledExportTests(unittest.TestCase):
     def test_cuda_device_index_uses_integer_index(self) -> None:
         self.assertEqual(_cuda_device_index(torch.device("cuda:3")), 3)
+
+    def test_resume_preserves_first_export_evidence(self) -> None:
+        identity = {
+            "source_shard": "shard",
+            "source_episodes": 1,
+            "segments": 2,
+            "ticks": 10,
+            "path": "pooled.pt",
+            "sha256": "abc",
+            "bytes": 123,
+        }
+        reused = {**identity, "status": "reused"}
+        previous = {
+            **identity,
+            "status": "exported",
+            "elapsed_seconds": 4.5,
+            "peak_cuda_memory_gib": 2.0,
+        }
+
+        merged = _preserve_first_export_evidence(reused, previous)
+
+        self.assertEqual(merged["status"], "reused")
+        self.assertEqual(merged["first_export_status"], "exported")
+        self.assertEqual(merged["elapsed_seconds"], 4.5)
+        self.assertEqual(merged["peak_cuda_memory_gib"], 2.0)
 
     def test_segment_encoding_preserves_absolute_time_and_action_components(self) -> None:
         pooled = encode_droid_segment(make_segment(), FakeWanVAE(), make_config())
