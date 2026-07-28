@@ -8,7 +8,7 @@ import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from codewam.codebook_eval.manifest import (
     EpisodeManifest,
@@ -850,4 +850,99 @@ def manifest_distribution(manifest: EpisodeManifest) -> dict[str, Any]:
         "task_episode_min": min(task_counts.values(), default=0),
         "task_episode_max": max(task_counts.values(), default=0),
         "per_split": per_split,
+        "temporal": droid_temporal_distribution(manifest),
+    }
+
+
+def _integer_quantiles(values: Sequence[int]) -> dict[str, int]:
+    if not values:
+        return {}
+    ordered = sorted(values)
+    return {
+        name: ordered[int((len(ordered) - 1) * fraction)]
+        for name, fraction in (
+            ("min", 0.0),
+            ("p25", 0.25),
+            ("p50", 0.5),
+            ("p75", 0.75),
+            ("p90", 0.9),
+            ("p95", 0.95),
+            ("p99", 0.99),
+            ("max", 1.0),
+        )
+    }
+
+
+def droid_temporal_distribution(manifest: EpisodeManifest) -> dict[str, Any]:
+    family_offsets = {"Q2": 4, "Q3": 6, "Q5": 10}
+    range_counts: Counter[int] = Counter()
+    segment_lengths: list[int] = []
+    source_steps = 0
+    eligible_steps = 0
+    implicit_full_episode_ranges = 0
+    family_segments: Counter[str] = Counter()
+    family_episodes: Counter[str] = Counter()
+    descriptor_ticks: Counter[str] = Counter()
+
+    for record in manifest:
+        source_steps += record.num_steps
+        raw_ranges = record.metadata.get("keep_ranges")
+        if raw_ranges is None:
+            ranges = ((0, record.num_steps),)
+            implicit_full_episode_ranges += 1
+        else:
+            ranges = _validate_keep_ranges(raw_ranges, record.key)
+            if any(stop > record.num_steps for _, stop in ranges):
+                raise ValueError(
+                    f"Keep range exceeds source length for `{record.key}`."
+                )
+        observed_eligible_steps = sum(stop - start for start, stop in ranges)
+        expected_eligible_steps = record.metadata.get("eligible_steps")
+        if (
+            expected_eligible_steps is not None
+            and observed_eligible_steps != int(expected_eligible_steps)
+        ):
+            raise ValueError(
+                f"Eligible-step metadata mismatch for `{record.key}`."
+            )
+
+        eligible_steps += observed_eligible_steps
+        range_counts[len(ranges)] += 1
+        episode_families: set[str] = set()
+        for start, stop in ranges:
+            segment_length = stop - start
+            segment_lengths.append(segment_length)
+            latent_ticks = 1 + (segment_length - 1) // 4
+            for family, maximum_offset in family_offsets.items():
+                available = max(0, latent_ticks - maximum_offset)
+                descriptor_ticks[family] += available
+                if available:
+                    family_segments[family] += 1
+                    episode_families.add(family)
+        family_episodes.update(episode_families)
+
+    return {
+        "episodes": len(manifest),
+        "source_steps": source_steps,
+        "eligible_steps": eligible_steps,
+        "eligible_step_fraction": (
+            eligible_steps / source_steps if source_steps else 0.0
+        ),
+        "removed_idle_steps": source_steps - eligible_steps,
+        "segments": len(segment_lengths),
+        "ranges_per_episode": {
+            str(count): episodes for count, episodes in sorted(range_counts.items())
+        },
+        "segment_length_steps": _integer_quantiles(segment_lengths),
+        "implicit_full_episode_ranges": implicit_full_episode_ranges,
+        "families": {
+            family: {
+                "maximum_latent_offset": maximum_offset,
+                "minimum_source_steps": 4 * maximum_offset + 1,
+                "eligible_segments": family_segments[family],
+                "eligible_episodes": family_episodes[family],
+                "descriptor_ticks": descriptor_ticks[family],
+            }
+            for family, maximum_offset in family_offsets.items()
+        },
     }

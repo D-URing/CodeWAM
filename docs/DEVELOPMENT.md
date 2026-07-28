@@ -16,7 +16,7 @@ CodeWAM/
 │   │   └── pipeline.py        # canonical Q2/Q3/Q5 launcher
 │   ├── data/
 │   │   ├── droid_manifest.py  # exact official join and balanced sample
-│   │   ├── droid_rlds.py      # DROID RLDS episode adapter
+│   │   ├── droid_rlds.py      # exact-position, rank-aware DROID reader
 │   │   └── package_scan_v6.py # local regression adapter
 │   ├── model.py               # current FastWAM-compatible prototype
 │   ├── probe.py               # legacy compatibility probe

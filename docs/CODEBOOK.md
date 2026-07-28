@@ -213,6 +213,11 @@ uniqueness 已通过检查。assigned manifest fingerprint 为
 sample fingerprint 为
 `481a6febba3a04f374c6a8e91280cad338c38fb9b50e1536cb660c3bb672be4e`。
 
+整 shard LPT rank assignment 已在 canonical 10k 上验证:4 rank 各读约 217.3 GiB,最大差
+485 MiB;8 rank 各读 108.4--108.9 GiB,最大差 498 MiB。990 个 shard 不跨 rank,10,000 个
+episode 无遗漏。真实 record 解码也已核对 manifest key、source path、412-step shape 和两个
+独立 keep ranges;TensorFlow 显式不可见 GPU。
+
 ### P2: DROID-Core
 
 优先使用官方具有 improved camera calibration 的约 36k episodes,完成正式的 held-out
@@ -529,8 +534,9 @@ network:        resumable access to the official Google Cloud bucket
   和恢复参数。
 - `codewam/data/droid_manifest.py`:官方 raw metadata、RLDS position、keep ranges、language 和
   shard checksum 的精确 join,scene-isolated split,以及 institution/scene/collector-aware sample。
-- `codewam/data/droid_rlds.py`:当前 DROID episode reader;正式 rank-aware selected-shard reader
-  是下一张工程单。
+- `codewam/data/droid_rlds.py`:按 manifest `(shard,record)` 精确读取,未选相机跳过 JPEG decode,
+  整 shard 的确定性 rank assignment、completed-episode resume,以及不跨 gap 的 eligible
+  segment interface。
 
 input/cache 使用 fp16 或 bf16;normalization、distance、centers 和统计累积使用 fp32。descriptor、
 residual 和全量 code assignment 都只在当前 batch 中产生,不作为默认永久 cache。
@@ -539,7 +545,7 @@ residual 和全量 code assignment 都只在当前 batch 中产生,不作为默�
 rank-aware shard partition 与共享初始化 artifact 完成前,正式任务只能使用一个进程;8 张 GPU
 可以先并行不同候选,不能伪装成一个分布式 RQ run。
 
-当前 35 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 40 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 RQ residual 下降、artifact round-trip 和 Q2/Q3/Q5 一键训练。
@@ -622,8 +628,8 @@ BridgeData V2。
 下一阶段只完成真实数据 Gate 0/1,不提前修改完整模型:
 
 ```text
-1. 实现 manifest-position 驱动的 rank-aware selected-shard reader/resume
-2. 对 active/static segment、camera cadence、latent shape 和 future leak 做小规模 audit
+1. 对 active/static segment、camera cadence、latent shape 和 future leak 做小规模 audit
+2. 明确短 segment、temporal padding 和 absolute timestamp contract
 3. 将 prefix-only Wan-VAE exporter 扩展到 canonical pooled_g4 shard
 4. 将 P0 held-out usage/perplexity/residual 判据接入正式 streaming evaluator
 5. retrieval/geometry/camera/action-probe report

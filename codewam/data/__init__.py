@@ -3,6 +3,7 @@ from .droid_manifest import (
     DroidManifestBuildResult,
     balanced_scene_sample,
     build_droid_manifest,
+    droid_temporal_distribution,
     shard_aware_balanced_sample,
 )
 from .droid_rlds import (
@@ -25,6 +26,7 @@ __all__ = [
     "PackageScanV6Dataset",
     "balanced_scene_sample",
     "build_droid_manifest",
+    "droid_temporal_distribution",
     "iter_manifest_droid_rlds_episodes",
     "plan_droid_rank_assignments",
     "shard_aware_balanced_sample",

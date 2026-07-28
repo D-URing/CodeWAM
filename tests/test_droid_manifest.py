@@ -12,6 +12,7 @@ from codewam.data.droid_manifest import (
     balanced_scene_sample,
     build_droid_manifest,
     canonical_droid_episode_path,
+    droid_temporal_distribution,
     shard_aware_balanced_sample,
 )
 
@@ -278,6 +279,21 @@ class BalancedSceneSampleTests(unittest.TestCase):
             result.report["institution_candidate_targets"]["train"],
             {"site-0": 8, "site-1": 8},
         )
+
+    def test_temporal_distribution_counts_causal_descriptor_opportunities(self) -> None:
+        manifest = balanced_scene_sample(
+            self.build_manifest(),
+            20,
+            salt="temporal-test",
+        )
+        report = droid_temporal_distribution(manifest)
+
+        self.assertEqual(report["implicit_full_episode_ranges"], 20)
+        self.assertEqual(report["segments"], 20)
+        self.assertEqual(report["segment_length_steps"]["p50"], 32)
+        self.assertEqual(report["families"]["Q2"]["descriptor_ticks"], 80)
+        self.assertEqual(report["families"]["Q3"]["descriptor_ticks"], 40)
+        self.assertEqual(report["families"]["Q5"]["descriptor_ticks"], 0)
 
 
 if __name__ == "__main__":
