@@ -184,11 +184,22 @@ def episode_motion_measurements(
         .mean(dim=1)
         .sqrt()
     )
-    action_magnitude = episode.action[1:].float().square().mean(dim=1).sqrt()
     channels: dict[str, torch.Tensor] = {
         "proprio_motion": proprio_motion,
-        "action_magnitude": action_magnitude,
+        "legacy_flat_action_magnitude": (
+            episode.action[1:].float().square().mean(dim=1).sqrt()
+        ),
     }
+    for name, component in episode.action_components.items():
+        values = component.float()
+        if name.endswith("_velocity"):
+            channels[f"action_velocity/{name.removesuffix('_velocity')}"] = (
+                values[1:].square().mean(dim=1).sqrt()
+            )
+        elif name.endswith("_position"):
+            channels[f"action_delta/{name.removesuffix('_position')}"] = (
+                values[1:].sub(values[:-1]).square().mean(dim=1).sqrt()
+            )
     for camera, frames in episode.frames.items():
         thumbnails = _thumbnails(frames, thumbnail_size)
         channels[f"image_motion/{camera}"] = (

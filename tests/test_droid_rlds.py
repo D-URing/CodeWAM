@@ -100,6 +100,12 @@ class DroidEligibleSegmentTests(unittest.TestCase):
             language_instruction="move",
             source_file="trajectory.h5",
             recording_folder="recordings",
+            action_components={
+                "cartesian_velocity": torch.arange(
+                    60,
+                    dtype=torch.float32,
+                ).view(10, 6),
+            },
             split="train",
             keep_ranges=keep_ranges,
             manifest_key="droid-1.0.1:episode",
@@ -120,6 +126,10 @@ class DroidEligibleSegmentTests(unittest.TestCase):
         self.assertEqual(int(segments[1].frames["exterior"][0, 0, 0, 0]), 6)
         self.assertEqual(sum(value.steps for value in segments), 6)
         self.assertTrue(all(value.manifest_key == episode.manifest_key for value in segments))
+        self.assertEqual(
+            float(segments[1].action_components["cartesian_velocity"][0, 0]),
+            36.0,
+        )
 
     def test_overlapping_keep_ranges_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid keep range"):

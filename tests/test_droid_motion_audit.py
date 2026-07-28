@@ -71,6 +71,10 @@ class DroidMotionAuditTests(unittest.TestCase):
             language_instruction="move",
             source_file="trajectory.h5",
             recording_folder="recordings",
+            action_components={
+                "cartesian_velocity": action[:, :6].clone(),
+                "gripper_position": action[:, :1].clone(),
+            },
             split="train",
             keep_ranges=((4, 12),),
             manifest_key="droid-1.0.1:institution-0",
@@ -88,7 +92,7 @@ class DroidMotionAuditTests(unittest.TestCase):
             1.0,
         )
         self.assertGreater(
-            row["metrics"]["action_magnitude"][
+            row["metrics"]["action_velocity/cartesian"][
                 "inside_outside_median_ratio"
             ],
             1.0,

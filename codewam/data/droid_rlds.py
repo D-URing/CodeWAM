@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
@@ -25,6 +25,7 @@ def _validate_modalities(
     frames: dict[str, torch.Tensor],
     action: torch.Tensor,
     proprio: torch.Tensor,
+    action_components: dict[str, torch.Tensor] | None = None,
 ) -> int:
     if not frames:
         raise ValueError(f"DROID episode `{episode_id}` has no camera frames.")
@@ -48,6 +49,12 @@ def _validate_modalities(
     length = next(iter(lengths))
     if length <= 0:
         raise ValueError(f"DROID episode `{episode_id}` must not be empty.")
+    for name, values in (action_components or {}).items():
+        if values.ndim != 2 or int(values.shape[0]) != length:
+            raise ValueError(
+                f"DROID action component `{name}` must be [T,D] with T={length}, "
+                f"got {tuple(values.shape)}."
+            )
     return length
 
 
@@ -85,6 +92,7 @@ class DroidRLDSSegment:
     action: torch.Tensor
     proprio: torch.Tensor
     language_instruction: str
+    action_components: dict[str, torch.Tensor] = field(default_factory=dict)
     split: str | None = None
     manifest_key: str | None = None
     source_shard: str | None = None
@@ -102,12 +110,14 @@ class DroidRLDSSegment:
             self.frames,
             self.action,
             self.proprio,
+            self.action_components,
         )
         if length != self.stop - self.start:
             raise ValueError(
                 f"DROID segment `{self.segment_id}` contains {length} rows, "
                 f"expected {self.stop - self.start}."
             )
+        object.__setattr__(self, "action_components", dict(self.action_components))
 
     @property
     def segment_id(self) -> str:
@@ -128,6 +138,7 @@ class DroidRLDSEpisode:
     language_instruction: str
     source_file: str
     recording_folder: str
+    action_components: dict[str, torch.Tensor] = field(default_factory=dict)
     split: str | None = None
     keep_ranges: tuple[tuple[int, int], ...] = ()
     manifest_key: str | None = None
@@ -142,6 +153,7 @@ class DroidRLDSEpisode:
             self.frames,
             self.action,
             self.proprio,
+            self.action_components,
         )
         ranges = _validate_keep_ranges(
             self.keep_ranges,
@@ -149,6 +161,7 @@ class DroidRLDSEpisode:
             episode_id=self.episode_id,
         )
         object.__setattr__(self, "keep_ranges", ranges)
+        object.__setattr__(self, "action_components", dict(self.action_components))
         if self.split is not None and self.split not in {"train", "val", "test"}:
             raise ValueError(f"Unsupported DROID split `{self.split}`.")
 
@@ -171,6 +184,10 @@ class DroidRLDSEpisode:
                 action=self.action[start:stop],
                 proprio=self.proprio[start:stop],
                 language_instruction=self.language_instruction,
+                action_components={
+                    name: values[start:stop]
+                    for name, values in self.action_components.items()
+                },
                 split=self.split,
                 manifest_key=self.manifest_key,
                 source_shard=self.source_shard,
@@ -378,6 +395,12 @@ def _decode_manifest_record(
     action = torch.from_numpy(
         np.stack([row["action"] for row in step_rows], axis=0)
     ).float()
+    action_components = {
+        name: torch.from_numpy(
+            np.stack([row["action_dict"][name] for row in step_rows], axis=0)
+        ).float()
+        for name in sorted(step_rows[0]["action_dict"])
+    }
     proprio = torch.from_numpy(
         np.concatenate(
             [
@@ -419,6 +442,7 @@ def _decode_manifest_record(
         language_instruction=instruction,
         source_file=source_file,
         recording_folder=recording_folder,
+        action_components=action_components,
         split=record.split,
         keep_ranges=keep_ranges,
         manifest_key=record.key,
@@ -566,6 +590,12 @@ def iter_droid_rlds_episodes(
         action = torch.from_numpy(
             np.stack([row["action"] for row in step_rows], axis=0)
         ).float()
+        action_components = {
+            name: torch.from_numpy(
+                np.stack([row["action_dict"][name] for row in step_rows], axis=0)
+            ).float()
+            for name in sorted(step_rows[0]["action_dict"])
+        }
         proprio = torch.from_numpy(
             np.concatenate(
                 [
@@ -595,4 +625,5 @@ def iter_droid_rlds_episodes(
             language_instruction=instruction,
             source_file=source_file,
             recording_folder=recording_folder,
+            action_components=action_components,
         )
