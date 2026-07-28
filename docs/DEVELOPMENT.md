@@ -212,6 +212,7 @@ python scripts/prepare_streaming_codebook_run.py \
   --pooled-export-dir "$POOLED_ROOT" \
   --output-dir "$RQ_ROOT" \
   --cameras exterior_image_1_left wrist_image_left \
+  --strides 2 3 5 \
   --pool 4 --k 16 --levels 3 --device cuda:0
 
 python scripts/train_streaming_codebooks.py train \

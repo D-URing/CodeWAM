@@ -74,11 +74,19 @@ def prepare_droid_streaming_run(
     device: str = "auto",
     seed: int = 7,
     camera_ids: Sequence[str] | None = None,
+    strides: Sequence[int] = (2, 3, 5),
 ) -> dict[str, Any]:
     if int(pool) not in {1, 2, 4}:
         raise ValueError(f"`pool` must be one of 1, 2, 4; got {pool}.")
     if int(k) <= 1 or int(levels) <= 0:
         raise ValueError("`k` must exceed one and `levels` must be positive.")
+    selected_strides = tuple(int(value) for value in strides)
+    if (
+        not selected_strides
+        or any(value <= 0 for value in selected_strides)
+        or len(set(selected_strides)) != len(selected_strides)
+    ):
+        raise ValueError("Descriptor strides must be nonempty, positive, and unique.")
 
     export_dir = Path(pooled_export_dir).resolve()
     output_dir = Path(output_dir).resolve()
@@ -196,7 +204,7 @@ def prepare_droid_streaming_run(
         },
         "metadata": metadata,
         "descriptor": {
-            "strides": [2, 3, 5],
+            "strides": list(selected_strides),
             "pool": int(pool),
             "max_gap_factor": 1.5,
             "camera_ids": list(selected_cameras),
@@ -226,8 +234,8 @@ def prepare_droid_streaming_run(
         },
         "metadata": {"dataset": datasets[0]},
         "artifacts": {
-            family: str(output_dir / family / "codebook.pt")
-            for family in ("Q2", "Q3", "Q5")
+            f"Q{stride}": str(output_dir / f"Q{stride}" / "codebook.pt")
+            for stride in selected_strides
         },
         "evaluation": {
             "splits": ["val", "test"],
@@ -240,8 +248,19 @@ def prepare_droid_streaming_run(
         },
     }
 
-    train_path = config_dir / f"train_g{pool}_k{k}_l{levels}.yaml"
-    evaluation_path = config_dir / f"evaluate_g{pool}_k{k}_l{levels}.yaml"
+    family_suffix = (
+        ""
+        if selected_strides == (2, 3, 5)
+        else "_" + "-".join(f"q{value}" for value in selected_strides)
+    )
+    train_path = (
+        config_dir
+        / f"train_g{pool}_k{k}_l{levels}{family_suffix}.yaml"
+    )
+    evaluation_path = (
+        config_dir
+        / f"evaluate_g{pool}_k{k}_l{levels}{family_suffix}.yaml"
+    )
     _atomic_write_yaml(train_path, train_config)
     _atomic_write_yaml(evaluation_path, evaluation_config)
     return {
@@ -255,4 +274,5 @@ def prepare_droid_streaming_run(
         "k": int(k),
         "levels": int(levels),
         "camera_ids": list(selected_cameras),
+        "strides": list(selected_strides),
     }

@@ -20,6 +20,13 @@ def main() -> None:
     parser.add_argument("--k", type=int, default=16)
     parser.add_argument("--levels", type=int, default=3)
     parser.add_argument(
+        "--strides",
+        nargs="+",
+        type=int,
+        default=(2, 3, 5),
+        help="Causal descriptor strides to compile; defaults to 2 3 5.",
+    )
+    parser.add_argument(
         "--cameras",
         nargs="+",
         help="Ordered subset of cameras from the pooled export; defaults to all.",
@@ -38,11 +45,13 @@ def main() -> None:
         device=args.device,
         seed=args.seed,
         camera_ids=args.cameras,
+        strides=args.strides,
     )
     print(
         f"Prepared {result['dataset']}: shards={result['pooled_shards']} "
         f"g={result['pool']} K={result['k']} L={result['levels']}"
         f" cameras={','.join(result['camera_ids'])}"
+        f" strides={','.join(str(value) for value in result['strides'])}"
     )
     print(f"Train config: {result['train_config']}")
     print(f"Evaluation config: {result['evaluation_config']}")

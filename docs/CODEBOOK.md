@@ -163,7 +163,7 @@ manifest 的自然分布上报告。P1 用于:
 
 - camera policy: exterior-only vs exterior+wrist。
 - spatial pool: `g in {1,2,4}`。
-- capacity: `K in {16,32,64}`。
+- capacity: `K in {8,16,32}`。
 - 有效 RQ prefix: L1/L1+L2/L1+L2+L3。
 - streaming trainer 的百万向量压力测试。
 
@@ -441,19 +441,22 @@ artifact,绝不继续更新 centers。
 
 ### Step A: camera/pool
 
-固定 `s=3,K=32`,在 DROID-10k 比较:
+固定 `s=3,K=16`,在 DROID-10k 比较:
 
 ```text
 exterior-only vs exterior+wrist
 g = 1,2,4
 ```
 
+配置生成器用 `--strides 3` 只训练代表性 Q3;选定 camera/pool/K 后再用默认
+`--strides 2 3 5` 训练三族,避免搜索阶段重复计算。
+
 ### Step B: capacity
 
 固定选中的 camera/pool,比较:
 
 ```text
-K = 16,32,64
+K = 8,16,32
 ```
 
 选择满足 held-out 质量门槛的最小 K。

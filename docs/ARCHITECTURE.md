@@ -130,7 +130,7 @@ C_t = {
 `c_{2,1}=7` 与 `c_{3,1}=7` 没有共同语义。即使都叫第一层,其输入分布和中心也不同。
 RQ 内部每层确实是对上一层 residual 做 K-Means,但九组中心都不能共享。
 
-候选容量先比较 `K in {16,32,64}`。选择满足 held-out 质量门槛的最小 K;若某层没有带来
+候选容量先比较 `K in {8,16,32}`。选择满足 held-out 质量门槛的最小 K;若某层没有带来
 稳定 residual reduction,就删掉该层,而不是因为预设为 RQ-3 强行保留。
 
 ### 3.4 Artifact 契约
@@ -488,7 +488,7 @@ Package Scan v6 只用于本机链路、可视化和回归测试,不支撑论文
 
 ```text
 spatial pool g = 1,2,4
-capacity K     = 16,32,64
+capacity K     = 8,16,32
 family stride  = 2,3,5
 RQ prefix      = L1 / L1+L2 / L1+L2+L3
 ```

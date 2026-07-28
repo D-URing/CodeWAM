@@ -93,6 +93,7 @@ class RunSetupTests(unittest.TestCase):
                 levels=3,
                 device="cpu",
                 camera_ids=("exterior",),
+                strides=(3,),
             )
             train = OmegaConf.load(result["train_config"])
             evaluation = OmegaConf.load(result["evaluation_config"])
@@ -102,6 +103,7 @@ class RunSetupTests(unittest.TestCase):
             self.assertEqual(train.descriptor.pool, 2)
             self.assertEqual(list(train.descriptor.camera_ids), ["exterior"])
             self.assertEqual(train.training.k, 8)
+            self.assertEqual(list(train.descriptor.strides), [3])
             self.assertEqual(
                 list(train.metadata.source_checksums),
                 [file_sha256(path) for path in shard_paths],
@@ -109,6 +111,12 @@ class RunSetupTests(unittest.TestCase):
             self.assertEqual(
                 evaluation.artifacts.Q3,
                 str((root / "rq" / "Q3" / "codebook.pt").resolve()),
+            )
+            self.assertEqual(list(evaluation.artifacts), ["Q3"])
+            self.assertTrue(
+                result["train_config"].endswith(
+                    "train_g2_k8_l3_q3.yaml"
+                )
             )
             self.assertEqual(
                 Path(result["train_config"]).stat().st_mode & 0o777,
