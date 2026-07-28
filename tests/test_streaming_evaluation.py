@@ -67,6 +67,16 @@ class StreamingEvaluationTests(unittest.TestCase):
             self.assertGreater(row["vectors"], 0)
             self.assertEqual(len(row["residual_mse"]), 4)
             self.assertEqual(len(row["code_usage"]), 3)
+            self.assertEqual(len(row["temporal"]), 3)
+            self.assertEqual(len(row["representatives"]), 3)
+            self.assertGreater(row["temporal"][0]["adjacent_pairs"], 0)
+            self.assertTrue(
+                any(
+                    code["samples"]
+                    for level in row["representatives"]
+                    for code in level["codes"]
+                )
+            )
             self.assertGreater(row["joint_usage"]["active_tuples"], 0)
 
 

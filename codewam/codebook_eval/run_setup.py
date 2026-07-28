@@ -215,6 +215,7 @@ def prepare_droid_streaming_run(
             "cpu_threads": 4,
             "batch_size": 8192,
             "center_block_size": 1024,
+            "representatives_per_code": 3,
             "resume": True,
         },
     }

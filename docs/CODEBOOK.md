@@ -572,7 +572,8 @@ network:        resumable access to the official Google Cloud bucket
 - `pipeline.py`:一次顺序训练 Q2/Q3/Q5,校验 manifest fingerprint、source checksums、config contract
   、实现 SHA 和恢复参数。
 - `evaluation.py`:只读 frozen train normalization/centers,在 val/test 流式累计逐层 residual、
-  usage、dead fraction、perplexity、最大簇和联合 tuple 指标。
+  usage、dead fraction、perplexity、temporal transition、联合 tuple 指标和每中心 retrieval
+  anchors。
 - `droid_pooled_export.py`:rank-aware exact reader 到双相机 Wan `pooled_g4` 的原子 shard export、
   contract/SHA 校验、首次性能证据保留、resume 和 segment manifest finalize。
 - `codewam/data/droid_manifest.py`:官方 raw metadata、RLDS position、keep ranges、language 和
@@ -588,7 +589,7 @@ residual 和全量 code assignment 都只在当前 batch 中产生,不作为默�
 rank-aware shard partition 与共享初始化 artifact 完成前,正式任务只能使用一个进程;8 张 GPU
 可以先并行不同候选,不能伪装成一个分布式 RQ run。
 
-当前 49 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 52 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 patience resume、RQ residual 下降、artifact round-trip、DROID pooled export evidence 和

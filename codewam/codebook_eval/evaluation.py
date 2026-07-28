@@ -117,6 +117,80 @@ def _joint_usage_metrics(
     }
 
 
+def _transition_metrics(counts: torch.Tensor) -> dict[str, float | int]:
+    counts = counts.detach().double().cpu()
+    total = float(counts.sum().item())
+    if total <= 0:
+        return {
+            "adjacent_pairs": 0,
+            "same_next_fraction": float("nan"),
+            "change_next_fraction": float("nan"),
+            "active_transitions": 0,
+            "transition_perplexity": float("nan"),
+            "maximum_transition_fraction": float("nan"),
+        }
+    active = counts > 0
+    probabilities = counts[active] / total
+    perplexity = float(
+        torch.exp(-(probabilities * probabilities.log()).sum()).item()
+    )
+    same = float(counts.diagonal().sum().item() / total)
+    return {
+        "adjacent_pairs": int(total),
+        "same_next_fraction": same,
+        "change_next_fraction": 1.0 - same,
+        "active_transitions": int(active.sum().item()),
+        "transition_perplexity": perplexity,
+        "maximum_transition_fraction": float(counts.max().item() / total),
+    }
+
+
+def _update_representatives(
+    representatives: list[list[dict[str, Any]]],
+    *,
+    codes: torch.Tensor,
+    distances: torch.Tensor,
+    batch: Any,
+    dimension: int,
+    limit: int,
+) -> None:
+    if limit <= 0:
+        return
+    codes = codes.detach().cpu()
+    distances = distances.detach().float().cpu()
+    for code in torch.unique(codes).tolist():
+        indices = torch.nonzero(codes == int(code), as_tuple=False).flatten()
+        take = min(int(limit), int(indices.numel()))
+        nearest = indices[
+            torch.topk(
+                distances[indices],
+                k=take,
+                largest=False,
+                sorted=True,
+            ).indices
+        ]
+        candidates = [
+            {
+                "episode_id": batch.episode_ids[int(index)],
+                "time_index": int(batch.time_indices[int(index)].item()),
+                "timestamp": float(batch.timestamps[int(index)].item()),
+                "distance_mse": float(
+                    distances[int(index)].item() / float(dimension)
+                ),
+            }
+            for index in nearest.tolist()
+        ]
+        combined = [*representatives[int(code)], *candidates]
+        representatives[int(code)] = sorted(
+            combined,
+            key=lambda value: (
+                value["distance_mse"],
+                value["episode_id"],
+                value["time_index"],
+            ),
+        )[:limit]
+
+
 def _evaluate_artifact(
     artifact: FrozenRQArtifact,
     *,
@@ -125,6 +199,7 @@ def _evaluate_artifact(
     batch_size: int,
     center_block_size: int,
     device: torch.device,
+    representatives_per_code: int,
 ) -> dict[str, Any]:
     source = CausalDescriptorSource(
         episode_factory=episode_factory,
@@ -142,10 +217,19 @@ def _evaluate_artifact(
         torch.zeros(k, dtype=torch.long) for _ in range(levels)
     ]
     joint_counts: Counter[int] = Counter()
+    transition_counts = [
+        torch.zeros((k, k), dtype=torch.long) for _ in range(levels)
+    ]
+    representatives: list[list[list[dict[str, Any]]]] = [
+        [[] for _ in range(k)] for _ in range(levels)
+    ]
     residual_sse = [0.0 for _ in range(levels + 1)]
     vector_count = 0
     dimension: int | None = None
     episode_ids: set[str] = set()
+    previous_episode_id: str | None = None
+    previous_time_index: int | None = None
+    previous_codes: torch.Tensor | None = None
 
     for batch in source:
         values = artifact.normalization.normalize(batch.vectors)
@@ -161,19 +245,66 @@ def _evaluate_artifact(
             dtype=torch.long,
             device=device,
         )
+        batch_codes = []
         for level, level_centers in enumerate(centers):
-            codes, _ = assign_nearest(
+            codes, distances = assign_nearest(
                 residual,
                 level_centers,
                 center_block_size=center_block_size,
             )
+            codes_cpu = codes.detach().cpu()
             level_counts[level] += torch.bincount(
-                codes.detach().cpu(),
+                codes_cpu,
                 minlength=k,
+            )
+            _update_representatives(
+                representatives[level],
+                codes=codes_cpu,
+                distances=distances,
+                batch=batch,
+                dimension=int(values.shape[1]),
+                limit=representatives_per_code,
             )
             residual = residual - level_centers[codes]
             residual_sse[level + 1] += float(residual.square().sum().item())
             joint = joint * k + codes
+            batch_codes.append(codes_cpu)
+        code_matrix = torch.stack(batch_codes, dim=1)
+
+        if code_matrix.shape[0] > 1:
+            adjacent = torch.tensor(
+                [
+                    batch.episode_ids[index] == batch.episode_ids[index - 1]
+                    for index in range(1, code_matrix.shape[0])
+                ],
+                dtype=torch.bool,
+            )
+            adjacent &= batch.time_indices[1:] == batch.time_indices[:-1] + 1
+            if adjacent.any():
+                for level in range(levels):
+                    pairs = (
+                        code_matrix[:-1, level][adjacent] * k
+                        + code_matrix[1:, level][adjacent]
+                    )
+                    transition_counts[level] += torch.bincount(
+                        pairs,
+                        minlength=k * k,
+                    ).reshape(k, k)
+        if (
+            previous_episode_id == batch.episode_ids[0]
+            and previous_time_index is not None
+            and previous_time_index + 1 == int(batch.time_indices[0].item())
+            and previous_codes is not None
+        ):
+            for level in range(levels):
+                transition_counts[level][
+                    int(previous_codes[level].item()),
+                    int(code_matrix[0, level].item()),
+                ] += 1
+        previous_episode_id = batch.episode_ids[-1]
+        previous_time_index = int(batch.time_indices[-1].item())
+        previous_codes = code_matrix[-1].clone()
+
         joint_counts.update(int(value) for value in joint.detach().cpu().tolist())
         vector_count += int(values.shape[0])
         episode_ids.update(batch.episode_ids)
@@ -204,6 +335,20 @@ def _evaluate_artifact(
         "code_usage": [
             {"level": level + 1, **_usage_metrics(counts)}
             for level, counts in enumerate(level_counts)
+        ],
+        "temporal": [
+            {"level": level + 1, **_transition_metrics(counts)}
+            for level, counts in enumerate(transition_counts)
+        ],
+        "representatives": [
+            {
+                "level": level + 1,
+                "codes": [
+                    {"code": code, "samples": samples}
+                    for code, samples in enumerate(level_representatives)
+                ],
+            }
+            for level, level_representatives in enumerate(representatives)
         ],
         "joint_usage": _joint_usage_metrics(
             joint_counts,
@@ -241,8 +386,13 @@ def evaluate_frozen_codebooks(
     cpu_threads = int(evaluation.get("cpu_threads", 4))
     batch_size = int(evaluation.get("batch_size", 8192))
     center_block_size = int(evaluation.get("center_block_size", 1024))
+    representatives_per_code = int(
+        evaluation.get("representatives_per_code", 3)
+    )
     if cpu_threads <= 0 or batch_size <= 0 or center_block_size <= 0:
         raise ValueError("Held-out thread and batch sizes must be positive.")
+    if representatives_per_code < 0:
+        raise ValueError("Held-out representatives_per_code must be non-negative.")
     torch.set_num_threads(cpu_threads)
     device = _resolve_device(str(evaluation.get("device", "auto")))
     resume = bool(evaluation.get("resume", True))
@@ -382,6 +532,7 @@ def evaluate_frozen_codebooks(
                     batch_size=batch_size,
                     center_block_size=center_block_size,
                     device=device,
+                    representatives_per_code=representatives_per_code,
                 )
             )
     report = {

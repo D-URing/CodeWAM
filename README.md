@@ -123,9 +123,9 @@ BridgeData V2 frozen-transfer and independent-refit replication
   mode-specific masks 和可选 MemoryPort。
 - 已实现:episode manifest、scene-level split、pooled-feature shard、Q2/Q3/Q5 causal iterator、
   train-only normalization、GPU K-Means++、三级 streaming RQ、可恢复 patience、frozen
-  artifact、只读 held-out evaluator,以及 DROID 1.0.1 精确 metadata/RLDS join、rank-aware
-  reader、keep-range audit 和 canonical pooled exporter。
-- 已验证:49 项单元测试、synthetic Q2/Q3/Q5 train/eval smoke、58,116-episode canonical
+  artifact、带 temporal/retrieval anchors 的只读 held-out evaluator,以及 DROID 1.0.1
+  精确 metadata/RLDS join、rank-aware reader、keep-range audit 和 canonical pooled exporter。
+- 已验证:52 项单元测试、synthetic Q2/Q3/Q5 train/eval smoke、58,116-episode canonical
   DROID manifest,以及 26-episode/13-institution 真实 Wan latent 与 RQ 工程 pilot。
 - 默认关闭:legacy online-EMA single-token codebook。
 - 下一步:4 卡导出 canonical DROID-10k pooled cache,在原始 scene-isolated val/test 上完成
