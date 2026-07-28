@@ -193,16 +193,22 @@ segment ids,跳过已完成 shard,同时保留首次导出的耗时与显存证�
 pooled shards 就绪后训练与 held-out 评估:
 
 ```bash
+python scripts/prepare_streaming_codebook_run.py \
+  --pooled-export-dir "$POOLED_ROOT" \
+  --output-dir "$RQ_ROOT" \
+  --pool 4 --k 16 --levels 3 --device cuda:0
+
 python scripts/train_streaming_codebooks.py train \
-  --config configs/codebook_eval/streaming_rq_template.yaml
+  --config "$RQ_ROOT/configs/train_g4_k16_l3.yaml"
 
 python scripts/evaluate_streaming_codebooks.py \
-  --config configs/codebook_eval/streaming_eval_template.yaml
+  --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
 ```
 
 训练默认 `cpu_threads=4`,避免短 segment tensor 操作在 64 线程机器上过度并行;
 K-Means++、Lloyd assignment 和 residual quantization 使用 `training.device`。评估只读取
-frozen train normalization/centers,不会用 val/test 重估统计量。
+frozen train normalization/centers,不会用 val/test 重估统计量。配置生成器只接受已经
+finalize 的 export,并复核 contract、pooled manifest 以及每个 shard 的大小和 SHA-256。
 
 官方 DROID manifest 的构建命令、数据 contract、搜索顺序、评估指标和 8xA100 布局都在
 `CODEBOOK.md`。一次性下载器和官方数据索引放在共享数据根目录,不放进本仓库。旧

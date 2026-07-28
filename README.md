@@ -91,8 +91,16 @@ python scripts/train_streaming_codebooks.py smoke \
 正式 episode-aware pooled shards 就绪后:
 
 ```bash
+python scripts/prepare_streaming_codebook_run.py \
+  --pooled-export-dir "$POOLED_ROOT" \
+  --output-dir "$RQ_ROOT" \
+  --pool 4 --k 16 --levels 3 --device cuda:0
+
 python scripts/train_streaming_codebooks.py train \
-  --config configs/codebook_eval/streaming_rq_template.yaml
+  --config "$RQ_ROOT/configs/train_g4_k16_l3.yaml"
+
+python scripts/evaluate_streaming_codebooks.py \
+  --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
 ```
 
 Package Scan v6 只用于本机数据链路和回归:

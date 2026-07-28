@@ -7,6 +7,7 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 from codewam.codebook_eval.pipeline import (
+    _source_checksums,
     create_synthetic_streaming_fixture,
     train_streaming_codebooks,
 )
@@ -14,6 +15,14 @@ from codewam.codebook_eval.streaming import FrozenRQArtifact
 
 
 class StreamingPipelineTests(unittest.TestCase):
+    def test_configured_source_checksums_are_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "pooled.pt"
+            path.write_bytes(b"pooled")
+
+            with self.assertRaisesRegex(RuntimeError, "do not match disk"):
+                _source_checksums((path,), ("stale",))
+
     def test_one_command_trains_and_resumes_all_three_families(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -51,12 +51,28 @@ def _config_hash(config: DictConfig) -> str:
 
 
 def _source_checksums(paths: Sequence[Path], configured: Any) -> list[str]:
+    observed = [file_sha256(path) for path in paths]
     if configured:
-        checksums = [str(value) for value in configured]
-        if len(checksums) != len(paths):
-            raise ValueError("Configured source_checksums must align one-to-one with pooled shards.")
-        return checksums
-    return [file_sha256(path) for path in paths]
+        expected = [str(value) for value in configured]
+        if len(expected) != len(paths):
+            raise ValueError(
+                "Configured source_checksums must align one-to-one with pooled shards."
+            )
+        mismatches = [
+            str(path)
+            for path, expected_value, observed_value in zip(
+                paths,
+                expected,
+                observed,
+            )
+            if expected_value != observed_value
+        ]
+        if mismatches:
+            raise RuntimeError(
+                "Configured pooled shard checksums do not match disk: "
+                f"{mismatches[:8]}."
+            )
+    return observed
 
 
 def _write_contract(path: Path, contract: dict[str, Any], resume: bool) -> None:

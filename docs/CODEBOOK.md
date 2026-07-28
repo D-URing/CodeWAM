@@ -625,11 +625,16 @@ PYTHONPATH=. python scripts/build_droid_manifest.py \
 正式 pooled shards 和 manifest 就绪后:
 
 ```bash
+python scripts/prepare_streaming_codebook_run.py \
+  --pooled-export-dir "$POOLED_ROOT" \
+  --output-dir "$RQ_ROOT" \
+  --pool 4 --k 16 --levels 3 --device cuda:0
+
 python scripts/train_streaming_codebooks.py train \
-  --config configs/codebook_eval/streaming_rq_template.yaml
+  --config "$RQ_ROOT/configs/train_g4_k16_l3.yaml"
 
 python scripts/evaluate_streaming_codebooks.py \
-  --config configs/codebook_eval/streaming_eval_template.yaml
+  --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
 ```
 
 每个 family 的标准输出:
