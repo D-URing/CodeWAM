@@ -19,6 +19,11 @@ def main() -> None:
     parser.add_argument("--pool", type=int, choices=(1, 2, 4), default=4)
     parser.add_argument("--k", type=int, default=16)
     parser.add_argument("--levels", type=int, default=3)
+    parser.add_argument(
+        "--cameras",
+        nargs="+",
+        help="Ordered subset of cameras from the pooled export; defaults to all.",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=7)
     args = parser.parse_args()
@@ -32,10 +37,12 @@ def main() -> None:
         levels=args.levels,
         device=args.device,
         seed=args.seed,
+        camera_ids=args.cameras,
     )
     print(
         f"Prepared {result['dataset']}: shards={result['pooled_shards']} "
         f"g={result['pool']} K={result['k']} L={result['levels']}"
+        f" cameras={','.join(result['camera_ids'])}"
     )
     print(f"Train config: {result['train_config']}")
     print(f"Evaluation config: {result['evaluation_config']}")

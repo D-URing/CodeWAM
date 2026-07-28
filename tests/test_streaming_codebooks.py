@@ -53,6 +53,56 @@ def tensor_batch_factory(values: torch.Tensor, batch_size: int):
 
 
 class CausalDescriptorTests(unittest.TestCase):
+    def test_descriptor_selects_cameras_by_name_and_order(self) -> None:
+        ticks = 7
+        exterior = torch.arange(ticks, dtype=torch.float32)
+        wrist = exterior + 100.0
+        values = torch.stack((exterior, wrist), dim=1)
+        episode = PooledFeatureEpisode(
+            episode_id="two-view",
+            split="train",
+            timestamps=torch.arange(ticks, dtype=torch.float64) * 0.25,
+            pooled_g4=values.view(ticks, 2, 1, 1, 1)
+            .expand(ticks, 2, 1, 4, 4)
+            .half(),
+            camera_ids=("exterior", "wrist"),
+        )
+        source = CausalDescriptorSource(
+            episode_factory=lambda: iter((episode,)),
+            spec=CausalDescriptorSpec(
+                stride=2,
+                pool=1,
+                max_gap_factor=None,
+                camera_ids=("wrist",),
+            ),
+            batch_size=8,
+            split="train",
+        )
+
+        batch = next(iter(source))
+
+        torch.testing.assert_close(
+            batch.vectors.float(),
+            torch.tensor(
+                [
+                    [100.0, 102.0, 104.0],
+                    [101.0, 103.0, 105.0],
+                    [102.0, 104.0, 106.0],
+                ]
+            ),
+        )
+        missing = CausalDescriptorSource(
+            episode_factory=lambda: iter((episode,)),
+            spec=CausalDescriptorSpec(
+                stride=2,
+                pool=1,
+                camera_ids=("overhead",),
+            ),
+            split="train",
+        )
+        with self.assertRaisesRegex(ValueError, "lacks descriptor cameras"):
+            next(iter(missing))
+
     def test_q2_uses_only_two_past_offsets_and_current(self) -> None:
         episodes = (
             scalar_episode("episode-a", offset=0.0, ticks=9),
@@ -378,7 +428,11 @@ class StreamingClusteringTests(unittest.TestCase):
         moments.update(values)
         artifact = FrozenRQArtifact(
             family="Q2",
-            descriptor=CausalDescriptorSpec(stride=2, pool=1),
+            descriptor=CausalDescriptorSpec(
+                stride=2,
+                pool=1,
+                camera_ids=("exterior",),
+            ),
             normalization=moments.finalize(),
             centers=result.centers,
             metadata={

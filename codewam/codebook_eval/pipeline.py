@@ -368,6 +368,12 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
     strides = [int(value) for value in descriptor_config.get("strides", (2, 3, 5))]
     if len(strides) != len(set(strides)):
         raise ValueError(f"Descriptor strides must be unique, got {strides}.")
+    configured_camera_ids = descriptor_config.get("camera_ids", None)
+    camera_ids = (
+        None
+        if configured_camera_ids is None
+        else tuple(str(value) for value in configured_camera_ids)
+    )
     batch_size = int(training.get("batch_size", 8192))
     levels = int(training.get("levels", 3))
     configured_device = str(training.get("device", "auto"))
@@ -425,6 +431,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             stride=stride,
             pool=int(descriptor_config.get("pool", 4)),
             max_gap_factor=descriptor_config.get("max_gap_factor", 1.5),
+            camera_ids=camera_ids,
         )
         family_dir = ensure_dir(output_dir / spec.family)
         contract = {
@@ -433,6 +440,11 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             "stride": spec.stride,
             "pool": spec.pool,
             "max_gap_factor": spec.max_gap_factor,
+            "camera_ids": (
+                None
+                if spec.camera_ids is None
+                else list(spec.camera_ids)
+            ),
             "k": kmeans_config.k,
             "levels": levels,
             "batch_size": batch_size,
@@ -525,6 +537,11 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             "family": spec.family,
             "stride": spec.stride,
             "pool": spec.pool,
+            "camera_ids": (
+                None
+                if spec.camera_ids is None
+                else list(spec.camera_ids)
+            ),
             "k": kmeans_config.k,
             "levels": levels,
             "normalization_count": normalization.count,

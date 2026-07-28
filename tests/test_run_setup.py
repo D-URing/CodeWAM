@@ -53,6 +53,7 @@ class RunSetupTests(unittest.TestCase):
                 "vae_model_id": "Wan-AI/Wan2.2-TI2V-5B",
                 "vae_sha256": "vae-sha",
                 "preprocess_revision": "preprocess-v1",
+                "cameras": ["exterior", "wrist"],
             }
             contract = {
                 **contract_payload,
@@ -91,6 +92,7 @@ class RunSetupTests(unittest.TestCase):
                 k=8,
                 levels=3,
                 device="cpu",
+                camera_ids=("exterior",),
             )
             train = OmegaConf.load(result["train_config"])
             evaluation = OmegaConf.load(result["evaluation_config"])
@@ -98,6 +100,7 @@ class RunSetupTests(unittest.TestCase):
             self.assertEqual(result["pooled_shards"], 2)
             self.assertEqual(train.metadata.dataset, "droid-1.0.1")
             self.assertEqual(train.descriptor.pool, 2)
+            self.assertEqual(list(train.descriptor.camera_ids), ["exterior"])
             self.assertEqual(train.training.k, 8)
             self.assertEqual(
                 list(train.metadata.source_checksums),
@@ -140,6 +143,7 @@ class RunSetupTests(unittest.TestCase):
                 "vae_model_id": "wan",
                 "vae_sha256": "vae",
                 "preprocess_revision": "prep",
+                "cameras": ["exterior", "wrist"],
             }
             contract = {
                 **contract_payload,

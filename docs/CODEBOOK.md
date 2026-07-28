@@ -568,7 +568,8 @@ network:        resumable access to the official Google Cloud bucket
 - `shards.py`:`codewam.pooled-feature-shard.v1` 原子 writer、SHA-256、逐 shard/episode reader 和
   `g=4 -> g=2/1` nested pooling。
 - `streaming.py`:因果 Q2/Q3/Q5 descriptor、train-only Welford normalization、uniform reservoir、
-  GPU/CPU deterministic K-Means++、blocked Lloyd、三级 RQ、可恢复 patience 和 frozen artifact。
+  camera-subset contract、GPU/CPU deterministic K-Means++、blocked Lloyd、三级 RQ、可恢复
+  patience 和 frozen artifact。
 - `pipeline.py`:一次顺序训练 Q2/Q3/Q5,校验 manifest fingerprint、source checksums、config contract
   、实现 SHA 和恢复参数。
 - `evaluation.py`:只读 frozen train normalization/centers,在 val/test 流式累计逐层 residual、

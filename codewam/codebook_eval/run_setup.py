@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
@@ -73,6 +73,7 @@ def prepare_droid_streaming_run(
     levels: int = 3,
     device: str = "auto",
     seed: int = 7,
+    camera_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     if int(pool) not in {1, 2, 4}:
         raise ValueError(f"`pool` must be one of 1, 2, 4; got {pool}.")
@@ -152,6 +153,24 @@ def prepare_droid_streaming_run(
     dataset_revisions = contract.get("dataset_revisions")
     if not isinstance(dataset_revisions, list) or not dataset_revisions:
         raise ValueError("The DROID export contract has no dataset revisions.")
+    export_cameras = contract.get("cameras")
+    if not isinstance(export_cameras, list) or not export_cameras:
+        raise ValueError("The DROID export contract has no camera order.")
+    available_cameras = tuple(str(value) for value in export_cameras)
+    selected_cameras = (
+        available_cameras
+        if camera_ids is None
+        else tuple(str(value) for value in camera_ids)
+    )
+    if not selected_cameras or len(set(selected_cameras)) != len(selected_cameras):
+        raise ValueError("Selected descriptor cameras must be nonempty and unique.")
+    unknown_cameras = [
+        value for value in selected_cameras if value not in available_cameras
+    ]
+    if unknown_cameras:
+        raise ValueError(
+            f"Selected cameras are absent from the pooled export: {unknown_cameras}."
+        )
     metadata = {
         "dataset": datasets[0],
         "dataset_revision": ",".join(str(value) for value in dataset_revisions),
@@ -180,6 +199,7 @@ def prepare_droid_streaming_run(
             "strides": [2, 3, 5],
             "pool": int(pool),
             "max_gap_factor": 1.5,
+            "camera_ids": list(selected_cameras),
         },
         "training": {
             "device": str(device),
@@ -234,4 +254,5 @@ def prepare_droid_streaming_run(
         "pool": int(pool),
         "k": int(k),
         "levels": int(levels),
+        "camera_ids": list(selected_cameras),
     }

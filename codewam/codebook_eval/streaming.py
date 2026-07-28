@@ -55,6 +55,7 @@ class CausalDescriptorSpec:
     stride: int
     pool: int = 4
     max_gap_factor: float | None = 1.5
+    camera_ids: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if int(self.stride) <= 0:
@@ -63,6 +64,17 @@ class CausalDescriptorSpec:
             raise ValueError(f"`pool` must be one of 1, 2, 4; got {self.pool}.")
         if self.max_gap_factor is not None and float(self.max_gap_factor) < 1.0:
             raise ValueError("`max_gap_factor` must be >= 1 or None.")
+        camera_ids = (
+            None
+            if self.camera_ids is None
+            else tuple(str(value) for value in self.camera_ids)
+        )
+        if camera_ids is not None:
+            if not camera_ids or len(set(camera_ids)) != len(camera_ids):
+                raise ValueError(
+                    "Descriptor camera_ids must be nonempty and unique."
+                )
+        object.__setattr__(self, "camera_ids", camera_ids)
 
     @property
     def family(self) -> str:
@@ -137,6 +149,24 @@ class CausalDescriptorSource:
                 continue
 
             pooled = episode.pooled(self.spec.pool)
+            valid_mask = episode.valid_mask
+            if self.spec.camera_ids is not None:
+                missing = [
+                    camera
+                    for camera in self.spec.camera_ids
+                    if camera not in episode.camera_ids
+                ]
+                if missing:
+                    raise ValueError(
+                        f"Episode `{episode.episode_id}` lacks descriptor "
+                        f"cameras {missing}; available={episode.camera_ids}."
+                    )
+                view_indices = [
+                    episode.camera_ids.index(camera)
+                    for camera in self.spec.camera_ids
+                ]
+                pooled = pooled[:, view_indices]
+                valid_mask = valid_mask[:, view_indices]
             features = pooled.reshape(episode.ticks, -1)
             current_indices = torch.arange(
                 2 * stride,
@@ -144,7 +174,7 @@ class CausalDescriptorSource:
                 dtype=torch.long,
                 device=features.device,
             )
-            valid_mask = episode.valid_mask.to(device=features.device)
+            valid_mask = valid_mask.to(device=features.device)
             valid = (
                 valid_mask[current_indices - 2 * stride].all(dim=1)
                 & valid_mask[current_indices - stride].all(dim=1)
@@ -1177,6 +1207,11 @@ class FrozenRQArtifact:
                     "stride": self.descriptor.stride,
                     "pool": self.descriptor.pool,
                     "max_gap_factor": self.descriptor.max_gap_factor,
+                    "camera_ids": (
+                        None
+                        if self.descriptor.camera_ids is None
+                        else list(self.descriptor.camera_ids)
+                    ),
                 },
                 "normalization": self.normalization.to_payload(),
                 "centers": [center.detach().float().cpu() for center in self.centers],
@@ -1197,6 +1232,11 @@ class FrozenRQArtifact:
                 stride=int(descriptor["stride"]),
                 pool=int(descriptor["pool"]),
                 max_gap_factor=descriptor.get("max_gap_factor"),
+                camera_ids=(
+                    None
+                    if descriptor.get("camera_ids") is None
+                    else tuple(descriptor["camera_ids"])
+                ),
             ),
             normalization=NormalizationStats.from_payload(payload["normalization"]),
             centers=tuple(center.float().cpu() for center in payload["centers"]),
