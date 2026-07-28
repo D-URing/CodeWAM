@@ -34,6 +34,129 @@ from .streaming import (
 NORMALIZATION_SCHEMA = "codewam.normalization.v1"
 
 
+def _distributed_ready() -> bool:
+    return (
+        torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+        and torch.distributed.get_world_size() > 1
+    )
+
+
+def _distributed_rank() -> int:
+    return torch.distributed.get_rank() if _distributed_ready() else 0
+
+
+def _distributed_world_size() -> int:
+    return torch.distributed.get_world_size() if _distributed_ready() else 1
+
+
+def _is_primary_rank() -> bool:
+    return _distributed_rank() == 0
+
+
+def _distributed_backend() -> str:
+    if not _distributed_ready():
+        return "none"
+    return str(torch.distributed.get_backend())
+
+
+def _broadcast_from_primary(value: Any) -> Any:
+    if not _distributed_ready():
+        return value
+    payload = [value if _is_primary_rank() else None]
+    torch.distributed.broadcast_object_list(payload, src=0)
+    return payload[0]
+
+
+def _runtime_device(configured: str) -> str:
+    if not _distributed_ready():
+        return configured
+    lowered = str(configured).lower()
+    if lowered == "auto" or lowered.startswith("cuda"):
+        if not torch.cuda.is_available():
+            if lowered.startswith("cuda"):
+                raise RuntimeError("Distributed CUDA training requested unavailable CUDA.")
+            return "cpu"
+        local_rank = int(os.environ.get("LOCAL_RANK", _distributed_rank()))
+        torch.cuda.set_device(local_rank)
+        return f"cuda:{local_rank}"
+    return configured
+
+
+def partition_shard_paths(
+    paths: Sequence[Path],
+    world_size: int,
+) -> tuple[tuple[Path, ...], ...]:
+    if int(world_size) <= 0:
+        raise ValueError("Shard partition world size must be positive.")
+    if len(paths) < int(world_size):
+        raise ValueError(
+            f"Need at least one pooled shard per rank, got "
+            f"{len(paths)} shards and {world_size} ranks."
+        )
+    loads = [0 for _ in range(int(world_size))]
+    assignments: list[list[Path]] = [
+        [] for _ in range(int(world_size))
+    ]
+    for path in sorted(
+        paths,
+        key=lambda value: (-value.stat().st_size, str(value)),
+    ):
+        rank = min(
+            range(int(world_size)),
+            key=lambda value: (loads[value], len(assignments[value]), value),
+        )
+        assignments[rank].append(path)
+        loads[rank] += path.stat().st_size
+    return tuple(
+        tuple(sorted(rank_paths))
+        for rank_paths in assignments
+    )
+
+
+def _validate_distributed_episode_partition(
+    shard_paths: tuple[Path, ...],
+    *,
+    split: str,
+    expected_episode_ids: set[str],
+) -> set[str]:
+    local_ids = [
+        episode.episode_id
+        for episode in iter_pooled_feature_episodes(
+            shard_paths,
+            split=split,
+        )
+    ]
+    if len(local_ids) != len(set(local_ids)):
+        raise ValueError("Duplicate episode ids within one distributed shard partition.")
+    gathered: list[list[str] | None] = [
+        None for _ in range(_distributed_world_size())
+    ]
+    torch.distributed.all_gather_object(gathered, local_ids)
+    observed: set[str] = set()
+    duplicates: set[str] = set()
+    for rank_ids in gathered:
+        if rank_ids is None:
+            raise RuntimeError("Distributed episode id gathering failed.")
+        for episode_id in rank_ids:
+            if episode_id in observed:
+                duplicates.add(episode_id)
+            observed.add(episode_id)
+    if duplicates:
+        raise ValueError(
+            "Episodes occur in more than one distributed partition: "
+            f"{sorted(duplicates)[:8]}."
+        )
+    missing = sorted(expected_episode_ids - observed)
+    unexpected = sorted(observed - expected_episode_ids)
+    if missing or unexpected:
+        raise ValueError(
+            "Distributed pooled shards differ from the train manifest: "
+            f"missing={missing[:8]} unexpected={unexpected[:8]}."
+        )
+    return set(local_ids)
+
+
 def _plain_config(config: DictConfig) -> dict[str, Any]:
     payload = OmegaConf.to_container(config, resolve=True)
     if not isinstance(payload, dict):
@@ -122,14 +245,17 @@ def _load_or_fit_normalization(
         return NormalizationStats.from_payload(payload["stats"])
 
     stats = fit_normalization(source, require_train_split=True)
-    atomic_torch_save(
-        {
-            "schema": NORMALIZATION_SCHEMA,
-            "contract_hash": contract_hash,
-            "stats": stats.to_payload(),
-        },
-        path,
-    )
+    if _is_primary_rank():
+        atomic_torch_save(
+            {
+                "schema": NORMALIZATION_SCHEMA,
+                "contract_hash": contract_hash,
+                "stats": stats.to_payload(),
+            },
+            path,
+        )
+    if _distributed_ready():
+        torch.distributed.barrier()
     return stats
 
 
@@ -184,16 +310,6 @@ def _episode_factory(
 
 
 def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
-    if (
-        torch.distributed.is_available()
-        and torch.distributed.is_initialized()
-        and torch.distributed.get_world_size() > 1
-    ):
-        raise RuntimeError(
-            "The canonical launcher does not yet partition pooled shards by rank. "
-            "Use one process until rank-aware orchestration is implemented."
-        )
-
     config_path = Path(config_path)
     config = OmegaConf.load(config_path)
     input_config = config.get("input", {})
@@ -218,7 +334,13 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
 
     manifest_fingerprint, expected_episode_ids = _manifest_context(config, dataset_name)
     configured_checksums = metadata_config.get("source_checksums", ())
-    source_checksums = _source_checksums(shard_paths, configured_checksums)
+    source_checksums = _broadcast_from_primary(
+        _source_checksums(shard_paths, configured_checksums)
+        if _is_primary_rank()
+        else None
+    )
+    if not isinstance(source_checksums, list):
+        raise RuntimeError("Distributed source checksum broadcast failed.")
     config_hash = _config_hash(config)
     implementation_sha256 = {
         "pipeline": file_sha256(Path(__file__)),
@@ -226,12 +348,29 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
     }
     output_dir = ensure_dir(config.get("output_dir", "runs/codebook_eval/streaming"))
     resume = bool(training.get("resume", True))
+    world_size = _distributed_world_size()
+    rank = _distributed_rank()
+    shard_assignments = partition_shard_paths(shard_paths, world_size)
+    local_shard_paths = shard_assignments[rank]
+    if _distributed_ready():
+        if expected_episode_ids is None:
+            raise ValueError(
+                "Distributed RQ training requires an explicit episode manifest."
+            )
+        local_episode_ids = _validate_distributed_episode_partition(
+            local_shard_paths,
+            split=split,
+            expected_episode_ids=expected_episode_ids,
+        )
+    else:
+        local_episode_ids = expected_episode_ids
 
     strides = [int(value) for value in descriptor_config.get("strides", (2, 3, 5))]
     if len(strides) != len(set(strides)):
         raise ValueError(f"Descriptor strides must be unique, got {strides}.")
     batch_size = int(training.get("batch_size", 8192))
     levels = int(training.get("levels", 3))
+    configured_device = str(training.get("device", "auto"))
     kmeans_config = StreamingKMeansConfig(
         k=int(training.get("k", 32)),
         max_iters=int(training.get("max_iters", 50)),
@@ -241,9 +380,14 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
         reservoir_size=int(training.get("reservoir_size", 100_000)),
         initialization_chunk_size=int(training.get("initialization_chunk_size", 8192)),
         center_block_size=int(training.get("center_block_size", 1024)),
-        device=str(training.get("device", "auto")),
+        device=_runtime_device(configured_device),
     )
     episode_factory = _episode_factory(
+        local_shard_paths,
+        split=split,
+        expected_episode_ids=local_episode_ids,
+    )
+    initialization_episode_factory = _episode_factory(
         shard_paths,
         split=split,
         expected_episode_ids=expected_episode_ids,
@@ -259,6 +403,13 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
         "source_checksums": source_checksums,
         "dataset": dataset_name,
         "implementation_sha256": implementation_sha256,
+        "distributed_world_size": world_size,
+        "distributed_backend": _distributed_backend(),
+        "initialization_policy": (
+            "rank0-global-reservoir-kmeans++-v1"
+            if world_size > 1
+            else "single-stream-reservoir-kmeans++-v1"
+        ),
     }
     empty_metadata = [
         key
@@ -291,8 +442,19 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             "reservoir_size": kmeans_config.reservoir_size,
             "initialization_chunk_size": kmeans_config.initialization_chunk_size,
             "center_block_size": kmeans_config.center_block_size,
-            "device": kmeans_config.device,
+            "device": configured_device,
             "cpu_threads": cpu_threads,
+            "distributed_world_size": world_size,
+            "distributed_backend": artifact_metadata[
+                "distributed_backend"
+            ],
+            "shard_assignments": [
+                [str(path) for path in rank_paths]
+                for rank_paths in shard_assignments
+            ],
+            "initialization_policy": artifact_metadata[
+                "initialization_policy"
+            ],
             "manifest_fingerprint": manifest_fingerprint,
             "source_checksums": source_checksums,
             "shards": [str(path) for path in shard_paths],
@@ -300,7 +462,13 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
         }
         contract_text = json.dumps(contract, sort_keys=True, separators=(",", ":"))
         contract_hash = hashlib.sha256(contract_text.encode("utf-8")).hexdigest()
-        _write_contract(family_dir / "contract.json", contract, resume=resume)
+        contract_path = family_dir / "contract.json"
+        if _is_primary_rank():
+            _write_contract(contract_path, contract, resume=resume)
+        if _distributed_ready():
+            torch.distributed.barrier()
+            if not _is_primary_rank():
+                _write_contract(contract_path, contract, resume=True)
 
         source = CausalDescriptorSource(
             episode_factory=episode_factory,
@@ -318,8 +486,23 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             normalization=normalization,
             device=kmeans_config.device,
         )
+        initialization_source = CausalDescriptorSource(
+            episode_factory=initialization_episode_factory,
+            spec=spec,
+            batch_size=batch_size,
+            split="train",
+        )
+        initialization_batch_factory = (
+            initialization_source.vector_batch_factory(
+                normalization=normalization,
+                device=kmeans_config.device,
+            )
+            if _is_primary_rank()
+            else lambda: iter(())
+        )
         rq_result = StreamingRQTrainer(kmeans_config, levels=levels).fit(
             batch_factory,
+            initialization_batch_factory=initialization_batch_factory,
             checkpoint_dir=family_dir / "checkpoints",
             resume=resume,
         )
@@ -331,7 +514,8 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             metadata=artifact_metadata,
         )
         artifact_path = family_dir / "codebook.pt"
-        artifact.save(artifact_path)
+        if _is_primary_rank():
+            artifact.save(artifact_path)
 
         reductions = [
             1.0 - after / max(before, 1e-12)
@@ -355,13 +539,20 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             "iterations_per_level": list(rq_result.iterations_per_level),
             "patience": kmeans_config.patience,
             "cpu_threads": cpu_threads,
+            "distributed_world_size": world_size,
             "implementation_sha256": implementation_sha256,
             "artifact": str(artifact_path),
         }
-        save_json(family_dir / "train_summary.json", row)
+        if _is_primary_rank():
+            save_json(family_dir / "train_summary.json", row)
+        if _distributed_ready():
+            torch.distributed.barrier()
         rows.append(row)
 
-    save_json(output_dir / "train_summary.json", rows)
+    if _is_primary_rank():
+        save_json(output_dir / "train_summary.json", rows)
+    if _distributed_ready():
+        torch.distributed.barrier()
     return rows
 
 

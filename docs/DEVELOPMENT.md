@@ -205,6 +205,15 @@ python scripts/evaluate_streaming_codebooks.py \
   --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
 ```
 
+选定最终规格后可让每个 rank 读取独立 pooled shards,共享 rank-0 全局 reservoir 初始化并只
+all-reduce `K x D` 统计量:
+
+```bash
+torchrun --standalone --nproc-per-node=8 \
+  scripts/train_streaming_codebooks.py train \
+  --config "$RQ_ROOT/configs/train_g4_k16_l3.yaml"
+```
+
 训练默认 `cpu_threads=4`,避免短 segment tensor 操作在 64 线程机器上过度并行;
 K-Means++、Lloyd assignment 和 residual quantization 使用 `training.device`。评估只读取
 frozen train normalization/centers,不会用 val/test 重估统计量。配置生成器只接受已经

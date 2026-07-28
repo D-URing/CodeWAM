@@ -585,15 +585,16 @@ network:        resumable access to the official Google Cloud bucket
 input/cache 使用 fp16 或 bf16;normalization、distance、centers 和统计累积使用 fp32。descriptor、
 residual 和全量 code assignment 都只在当前 batch 中产生,不作为默认永久 cache。
 
-底层已经具备 distributed collective primitive,但 launcher 会主动拒绝 `world_size > 1`。在
-rank-aware shard partition 与共享初始化 artifact 完成前,正式任务只能使用一个进程;8 张 GPU
-可以先并行不同候选,不能伪装成一个分布式 RQ run。
+canonical launcher 已支持 `torchrun`:按 pooled shard 大小做确定性 LPT 分区,跨 rank 合并
+train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoir/K-Means++ 初始化,
+再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
+`K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 52 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 54 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
-patience resume、RQ residual 下降、artifact round-trip、DROID pooled export evidence 和
-Q2/Q3/Q5 train/held-out 一键流程。
+patience resume、RQ residual 下降、artifact round-trip、双 rank resume 与单卡 centers 等价、
+DROID pooled export evidence 和 Q2/Q3/Q5 train/held-out 一键流程。
 
 ## 12. 命令与产物
 

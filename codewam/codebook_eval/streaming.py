@@ -446,6 +446,40 @@ def build_reservoir(
     return reservoir.result()
 
 
+def build_distributed_initial_centers(
+    batch_factory: TensorBatchFactory,
+    config: StreamingKMeansConfig,
+) -> torch.Tensor:
+    if not _distributed_ready():
+        raise RuntimeError(
+            "Shared distributed initialization requires an initialized process group."
+        )
+    device = _resolve_device(config.device)
+    payload: list[torch.Tensor | None] = [None]
+    if _is_primary_rank():
+        sample = build_reservoir(
+            batch_factory,
+            max_samples=config.reservoir_size,
+            seed=config.seed,
+        )
+        payload[0] = kmeans_plus_plus(
+            sample,
+            k=config.k,
+            seed=config.seed,
+            distance_chunk_size=config.initialization_chunk_size,
+            device=device,
+        ).detach().cpu()
+    torch.distributed.broadcast_object_list(
+        payload,
+        src=0,
+        device=device,
+    )
+    centers = payload[0]
+    if not isinstance(centers, torch.Tensor):
+        raise RuntimeError("Distributed K-Means initialization broadcast failed.")
+    return centers
+
+
 def assign_nearest(
     vectors: torch.Tensor,
     centers: torch.Tensor,
@@ -836,7 +870,16 @@ class StreamingKMeans:
                 )
 
             if hardest_scores is None or hardest_vectors is None:
-                raise ValueError("K-Means stream yielded no vectors.")
+                hardest_scores = torch.empty(
+                    0,
+                    device=device,
+                    dtype=torch.float32,
+                )
+                hardest_vectors = torch.empty(
+                    (0, centers.shape[1]),
+                    device=device,
+                    dtype=torch.float32,
+                )
             hardest_scores, hardest_vectors = _gather_hardest(
                 hardest_scores,
                 hardest_vectors,
@@ -970,6 +1013,7 @@ class StreamingRQTrainer:
         self,
         batch_factory: TensorBatchFactory,
         initial_centers: Sequence[torch.Tensor] | None = None,
+        initialization_batch_factory: TensorBatchFactory | None = None,
         checkpoint_dir: str | Path | None = None,
         resume: bool = False,
     ) -> StreamingRQResult:
@@ -1017,6 +1061,29 @@ class StreamingRQTrainer:
             level_initial = None
             if initial_centers is not None and level < len(initial_centers):
                 level_initial = initial_centers[level]
+            has_level_checkpoint = (
+                resume
+                and level_checkpoint is not None
+                and level_checkpoint.is_file()
+            )
+            if (
+                level_initial is None
+                and _distributed_ready()
+                and not has_level_checkpoint
+            ):
+                if initialization_batch_factory is None:
+                    raise ValueError(
+                        "Distributed RQ requires one shared initialization stream."
+                    )
+                initialization_level_factory = residual_batch_factory(
+                    initialization_batch_factory,
+                    centers=centers,
+                    center_block_size=level_config.center_block_size,
+                )
+                level_initial = build_distributed_initial_centers(
+                    initialization_level_factory,
+                    level_config,
+                )
             result = StreamingKMeans(level_config).fit(
                 level_factory,
                 initial_centers=level_initial,
