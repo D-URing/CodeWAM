@@ -14,6 +14,10 @@ CodeWAM/
 │   │   ├── shards.py          # pooled episode shard contract
 │   │   ├── streaming.py       # causal descriptors and streaming RQ
 │   │   └── pipeline.py        # canonical Q2/Q3/Q5 launcher
+│   ├── data/
+│   │   ├── droid_manifest.py  # exact official join and balanced sample
+│   │   ├── droid_rlds.py      # DROID RLDS episode adapter
+│   │   └── package_scan_v6.py # local regression adapter
 │   ├── model.py               # current FastWAM-compatible prototype
 │   ├── probe.py               # legacy compatibility probe
 │   └── runtime.py             # Hydra factory
@@ -171,7 +175,8 @@ python scripts/train_streaming_codebooks.py train \
   --config configs/codebook_eval/streaming_rq_template.yaml
 ```
 
-数据 contract、搜索顺序、评估指标和 8xA100 布局都在 `CODEBOOK.md`。旧
+官方 DROID manifest 的构建命令、数据 contract、搜索顺序、评估指标和 8xA100 布局都在
+`CODEBOOK.md`。一次性下载器和官方数据索引放在共享数据根目录,不放进本仓库。旧
 `scripts/codebook_eval.py` 和 `codewam.probe` 只用于历史兼容检查。
 
 ## 7. Compatible 模型训练

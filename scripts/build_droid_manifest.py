@@ -30,7 +30,7 @@ def main() -> None:
     parser.add_argument("--include-failures", action="store_true")
     parser.add_argument("--include-quality-flags", action="store_true")
     parser.add_argument("--sample-size", type=int, default=10_000)
-    parser.add_argument("--candidate-multiplier", type=float, default=1.25)
+    parser.add_argument("--candidate-multiplier", type=float, default=1.0)
     parser.add_argument("--split-salt", default="codewam-droid-1.0.1-scene-v1")
     parser.add_argument("--sample-salt", default="codewam-droid-10k-balanced-v1")
     args = parser.parse_args()

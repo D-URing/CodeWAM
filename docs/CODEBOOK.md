@@ -155,13 +155,63 @@ camera-identity probe 同时通过后,才把某个 codebook 规格接入模型�
 
 ### P1: DROID-10k
 
-从 full manifest 中按 scene/task/collector 分层抽取 10k episodes。用于:
+从 clean full manifest 中先按 split 分配,再做容量受限的 institution 配额、institution 内
+scene round-robin,最后用 collector/task 的当前最小计数打破 episode 选择平局。shard-aware
+候选选择以 `split x institution` 为目标,避免为了 10k episodes 默认读取全部 2,048 个
+TFRecord shard。这个 balanced sample 只用于规格搜索和 fit;正式 held-out 指标仍在 full
+manifest 的自然分布上报告。P1 用于:
 
 - camera policy: exterior-only vs exterior+wrist。
 - spatial pool: `g in {1,2,4}`。
 - capacity: `K in {16,32,64}`。
 - 有效 RQ prefix: L1/L1+L2/L1+L2+L3。
 - streaming trainer 的百万向量压力测试。
+
+#### DROID 1.0.1 canonical manifest: 2026-07-29
+
+已把 2,048 个官方 RLDS shard 的 95,658 条精确 `(shard,record,file_path,num_steps)` 索引,
+`keep_ranges_1_0_1.json`、raw `metadata.json`、language annotations 和 GCS CRC32C/bytes
+做确定性 join。clean manifest 含 58,116 个成功 episode、16,749,080 个 RLDS steps 和
+15,024,230 个 eligible steps。排除项全部显式计数:
+
+```text
+missing raw metadata       21,933
+failure episode            15,040
+ambiguous metadata id/path    202 / 263
+empty eligible keep ranges     90
+raw metadata quality flag      14
+```
+
+RLDS `num_steps` 是后续读取的权威长度。57,099 个 episode 的 RLDS 长度比 raw metadata
+少 1,另有 254 个更大差异和 763 个完全一致;代码记录 delta 而不猜测或修补。`keep_ranges`
+保持原始半开区间,不能把分离区间拼接后制造跨边界时间窗口。
+
+scene hash split 的 episode/scenes 为:
+
+```text
+train  45,830 / 1,516
+val     6,481 /   204
+test    5,805 /   188
+```
+
+这里的 1,908 个 strict scene 是 `(institution,building,raw scene_id)` tuple,粒度比论文或
+网站汇总 scene taxonomy 更细,不能与公开的汇总数字直接比较。分组隔离和 episode key
+uniqueness 已通过检查。assigned manifest fingerprint 为
+`223180b62b65f194c9f14f14f5a6af01d5b68f7fba23641bbc708bb430dd5927`。
+
+对 canonical 10k 比较了 candidate multiplier:
+
+| multiplier | selected shards | source bytes | sampled scenes | max collector |
+|---:|---:|---:|---:|---:|
+| 1.00 | 990 | 870.2 GiB | 1,775 | 720 |
+| 1.10 | 1,080 | 947.5 GiB | 1,792 | 721 |
+| 1.25 | 1,187 | 1,036.7 GiB | 1,811 | 722 |
+
+因此默认 `1.0`:再读取 77--167 GiB 只增加 17--36 个 scene,且不改善 collector 去偏。
+最终 sample 精确为 8,000/1,000/1,000,覆盖 1,775 scenes;最大 collector 占比从 full 的
+27.2% 降到 7.2%。institution 配额受各 split 可用容量约束,绝不移动 scene 来补齐配额。
+sample fingerprint 为
+`481a6febba3a04f374c6a8e91280cad338c38fb9b50e1536cb660c3bb672be4e`。
 
 ### P2: DROID-Core
 
@@ -197,8 +247,10 @@ val:   10% scenes
 test:  10% scenes
 ```
 
-使用稳定 hash 和 task-stratification;另保留 leave-one-institution/building-out 压力测试。所有
-normalization、reservoir sample 和 centers 只能读取 train split。
+使用不依赖 free-form task 文本的稳定 scene hash。task/collector 只参与 train fit sample
+内部的去偏,不参与 split,避免同一场景因标注差异跨 split。另保留
+leave-one-institution/building-out 压力测试。所有 normalization、reservoir sample 和 centers
+只能读取 train split。
 
 ### 5.2 Camera policy
 
@@ -475,6 +527,10 @@ network:        resumable access to the official Google Cloud bucket
   deterministic K-Means++、blocked Lloyd、三级 RQ、checkpoint/resume 和 frozen artifact。
 - `pipeline.py`:一次顺序训练 Q2/Q3/Q5,校验 manifest fingerprint、source checksums、config contract
   和恢复参数。
+- `codewam/data/droid_manifest.py`:官方 raw metadata、RLDS position、keep ranges、language 和
+  shard checksum 的精确 join,scene-isolated split,以及 institution/scene/collector-aware sample。
+- `codewam/data/droid_rlds.py`:当前 DROID episode reader;正式 rank-aware selected-shard reader
+  是下一张工程单。
 
 input/cache 使用 fp16 或 bf16;normalization、distance、centers 和统计累积使用 fp32。descriptor、
 residual 和全量 code assignment 都只在当前 batch 中产生,不作为默认永久 cache。
@@ -483,7 +539,8 @@ residual 和全量 code assignment 都只在当前 batch 中产生,不作为默�
 rank-aware shard partition 与共享初始化 artifact 完成前,正式任务只能使用一个进程;8 张 GPU
 可以先并行不同候选,不能伪装成一个分布式 RQ run。
 
-当前 17 项单元测试覆盖 manifest round-trip、scene isolation、invalid tick、train-only
+当前 35 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 RQ residual 下降、artifact round-trip 和 Q2/Q3/Q5 一键训练。
 
@@ -496,6 +553,24 @@ python -m unittest discover -s tests -v
 python scripts/train_streaming_codebooks.py smoke \
   --output runs/codebook_eval/streaming_smoke
 ```
+
+共享盘上的官方 DROID 索引就绪后,只构建 manifest 和 canonical 10k sample:
+
+```bash
+export DROID_META_ROOT=/path/to/manifests/droid/official-1.0.1
+
+PYTHONPATH=. python scripts/build_droid_manifest.py \
+  --metadata-index "$DROID_META_ROOT/raw-metadata/droid_raw_metadata_1_0_1.jsonl.gz" \
+  --rlds-index "$DROID_META_ROOT/rlds-index/droid_1_0_1_rlds_shard_index.jsonl.gz" \
+  --keep-ranges "$DROID_META_ROOT/supplemental-bcb840c3/keep_ranges_1_0_1.json" \
+  --language-annotations "$DROID_META_ROOT/supplemental-bcb840c3/droid_language_annotations.json" \
+  --gcs-metadata "$DROID_META_ROOT/gcs_metadata.txt" \
+  --output-dir "$DROID_META_ROOT/codewam-manifests" \
+  --sample-size 10000
+```
+
+该命令只读 metadata/index,不解码 JPEG,不需要 GPU。输出和报告原子写入、默认 `0644`,
+并记录所有输入 SHA-256、manifest fingerprint、分布与 selected shard bytes。
 
 正式 pooled shards 和 manifest 就绪后:
 
@@ -547,14 +622,14 @@ BridgeData V2。
 下一阶段只完成真实数据 Gate 0/1,不提前修改完整模型:
 
 ```text
-1. 扩展 DROID RLDS adapter 从 P0 probe contract 到正式 scene/institution manifest
-2. 将 prefix-only Wan-VAE pooled exporter 扩展为 rank-aware shard/resume
-3. DROID-100 + LIBERO 小规模 cadence/shape/future-leak audit
+1. 实现 manifest-position 驱动的 rank-aware selected-shard reader/resume
+2. 对 active/static segment、camera cadence、latent shape 和 future leak 做小规模 audit
+3. 将 prefix-only Wan-VAE exporter 扩展到 canonical pooled_g4 shard
 4. 将 P0 held-out usage/perplexity/residual 判据接入正式 streaming evaluator
 5. retrieval/geometry/camera/action-probe report
-6. scene/task/event balanced reservoir
+6. train-only scene/task/event balanced descriptor reservoir
 7. DROID-10k 顺序规格搜索
-8. rank-aware shard partition、共享初始化与 1-GPU/8-GPU 等价测试
+8. shared initialization 与 1-GPU/8-GPU 等价测试
 ```
 
 验收不以“程序跑完”为准:

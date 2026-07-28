@@ -634,7 +634,7 @@ def shard_aware_balanced_sample(
     *,
     salt: str = "codewam-droid-balanced-v1",
     split_fractions: Mapping[SplitName, float] = DEFAULT_SPLIT_FRACTIONS,
-    candidate_multiplier: float = 1.25,
+    candidate_multiplier: float = 1.0,
 ) -> DroidBalancedSampleResult:
     if candidate_multiplier < 1.0:
         raise ValueError("Candidate multiplier must be at least one.")
