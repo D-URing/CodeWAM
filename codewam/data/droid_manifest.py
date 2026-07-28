@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -31,6 +32,12 @@ DEFAULT_SPLIT_FRACTIONS: dict[SplitName, float] = {
 
 @dataclass(frozen=True)
 class DroidManifestBuildResult:
+    manifest: EpisodeManifest
+    report: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class DroidBalancedSampleResult:
     manifest: EpisodeManifest
     report: dict[str, Any]
 
@@ -176,20 +183,23 @@ def _load_language_annotations(path: Path | None) -> dict[str, tuple[str, ...]]:
     return annotations
 
 
-def _load_gcs_crc32c(path: Path | None) -> dict[str, str]:
+def _load_gcs_object_metadata(path: Path | None) -> dict[str, dict[str, Any]]:
     if path is None:
         return {}
-    checksums: dict[str, str] = {}
+    objects: dict[str, dict[str, Any]] = {}
     current_name: str | None = None
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("gs://") and stripped.endswith(":"):
             current_name = stripped[:-1].rsplit("/", 1)[-1]
+            objects.setdefault(current_name, {})
+        elif current_name is not None and stripped.startswith("Content-Length:"):
+            objects[current_name]["bytes"] = int(stripped.split(":", 1)[1].strip())
         elif current_name is not None and stripped.startswith("Hash (crc32c):"):
-            checksums[current_name] = stripped.split(":", 1)[1].strip()
-    if not checksums:
+            objects[current_name]["crc32c"] = stripped.split(":", 1)[1].strip()
+    if not any("crc32c" in value for value in objects.values()):
         raise ValueError(f"No GCS CRC32C entries found in {path}.")
-    return checksums
+    return objects
 
 
 def _task_texts(
@@ -230,7 +240,7 @@ def build_droid_manifest(
     )
     keep_by_path = _load_keep_ranges(keep_ranges)
     annotations = _load_language_annotations(language_path)
-    shard_crc32c = _load_gcs_crc32c(gcs_path)
+    gcs_objects = _load_gcs_object_metadata(gcs_path)
     metadata_id_paths: dict[str, set[str]] = defaultdict(set)
     for episode_path, rows in metadata_by_path.items():
         for row in rows:
@@ -291,8 +301,9 @@ def build_droid_manifest(
             continue
 
         shard_name = str(rlds["shard_name"])
-        checksum = shard_crc32c.get(shard_name)
-        if shard_crc32c and checksum is None:
+        shard_object = gcs_objects.get(shard_name, {})
+        checksum = shard_object.get("crc32c")
+        if gcs_objects and checksum is None:
             missing_shard_checksums += 1
         task_texts = _task_texts(metadata, annotations)
         primary_task = task_texts[0] if task_texts else ""
@@ -315,6 +326,7 @@ def build_droid_manifest(
                     "rlds_shard_index": int(rlds["shard_index"]),
                     "rlds_record_index": int(rlds["record_index"]),
                     "rlds_shard_name": shard_name,
+                    "rlds_shard_bytes": shard_object.get("bytes"),
                     "recording_folderpath": str(rlds["recording_folderpath"]),
                     "collector_id": str(metadata.get("collector_id", "")),
                     "date": str(metadata.get("date", "")),
@@ -524,6 +536,145 @@ def balanced_scene_sample(
     if len(sampled) != total_size:
         raise RuntimeError(f"Expected {total_size} sampled episodes, got {len(sampled)}.")
     return sampled
+
+
+def shard_aware_balanced_sample(
+    manifest: EpisodeManifest,
+    total_size: int,
+    *,
+    salt: str = "codewam-droid-balanced-v1",
+    split_fractions: Mapping[SplitName, float] = DEFAULT_SPLIT_FRACTIONS,
+    candidate_multiplier: float = 1.25,
+) -> DroidBalancedSampleResult:
+    if candidate_multiplier < 1.0:
+        raise ValueError("Candidate multiplier must be at least one.")
+    manifest.assert_group_isolation("scene")
+    targets = _allocate_split_targets(total_size, split_fractions)
+    availability = Counter(record.split for record in manifest)
+    for split, target in targets.items():
+        if availability[split] < target:
+            raise ValueError(
+                f"Requested {target} `{split}` episodes but only "
+                f"{availability[split]} are available."
+            )
+    candidate_targets = {
+        split: min(
+            availability[split],
+            max(target, int(math.ceil(target * candidate_multiplier))),
+        )
+        for split, target in targets.items()
+    }
+
+    by_shard: dict[str, list[EpisodeRecord]] = defaultdict(list)
+    for record in manifest:
+        shard_name = str(record.metadata.get("rlds_shard_name") or "")
+        if not shard_name:
+            raise ValueError(f"Episode `{record.key}` has no RLDS shard identity.")
+        by_shard[shard_name].append(record)
+
+    shard_split_counts = {
+        shard: Counter(record.split for record in records)
+        for shard, records in by_shard.items()
+    }
+    selected_shards: set[str] = set()
+    candidate_counts: Counter[str] = Counter()
+    covered_scenes: set[str] = set()
+    while any(
+        candidate_counts[split] < target
+        for split, target in candidate_targets.items()
+    ):
+        deficits = {
+            split: max(0, target - candidate_counts[split])
+            for split, target in candidate_targets.items()
+        }
+        choices: list[tuple[tuple[Any, ...], str]] = []
+        for shard, records in by_shard.items():
+            if shard in selected_shards:
+                continue
+            counts = shard_split_counts[shard]
+            coverage_gain = sum(
+                min(counts[split], deficits[split]) / candidate_targets[split]
+                for split in candidate_targets
+                if candidate_targets[split] > 0
+            )
+            if coverage_gain <= 0.0:
+                continue
+            new_scenes = len(
+                {
+                    record.group_key("scene")
+                    for record in records
+                    if record.group_key("scene") not in covered_scenes
+                }
+            )
+            usable = sum(
+                min(counts[split], deficits[split]) for split in candidate_targets
+            )
+            choices.append(
+                (
+                    (
+                        -coverage_gain,
+                        -new_scenes,
+                        -usable,
+                        _stable_score(f"{salt}|candidate-shard|{shard}"),
+                    ),
+                    shard,
+                )
+            )
+        if not choices:
+            raise RuntimeError(
+                f"Could not satisfy shard candidate targets {candidate_targets}; "
+                f"reached {dict(candidate_counts)}."
+            )
+        _, selected = min(choices)
+        selected_shards.add(selected)
+        candidate_counts.update(shard_split_counts[selected])
+        covered_scenes.update(
+            record.group_key("scene") for record in by_shard[selected]
+        )
+
+    candidates = EpisodeManifest.from_records(
+        record
+        for record in manifest
+        if str(record.metadata["rlds_shard_name"]) in selected_shards
+    )
+    sampled = balanced_scene_sample(
+        candidates,
+        total_size,
+        salt=salt,
+        split_fractions=split_fractions,
+    )
+
+    shard_bytes: dict[str, int | None] = {}
+    for shard in selected_shards:
+        values = {
+            record.metadata.get("rlds_shard_bytes")
+            for record in by_shard[shard]
+        }
+        if len(values) != 1:
+            raise ValueError(f"Inconsistent source byte metadata for shard `{shard}`.")
+        value = next(iter(values))
+        shard_bytes[shard] = int(value) if value is not None else None
+    selected_source_bytes = (
+        sum(value for value in shard_bytes.values() if value is not None)
+        if all(value is not None for value in shard_bytes.values())
+        else None
+    )
+    report = {
+        "schema": "codewam.droid-shard-aware-sample.v1",
+        "sample_salt": salt,
+        "candidate_multiplier": candidate_multiplier,
+        "split_targets": targets,
+        "candidate_targets": candidate_targets,
+        "candidate_counts": {
+            split: candidate_counts[split] for split in ("train", "val", "test")
+        },
+        "source_shards_available": len(by_shard),
+        "source_shards_selected": len(selected_shards),
+        "selected_source_bytes": selected_source_bytes,
+        "selected_shards": sorted(selected_shards),
+        "sample": manifest_distribution(sampled),
+    }
+    return DroidBalancedSampleResult(manifest=sampled, report=report)
 
 
 def manifest_distribution(manifest: EpisodeManifest) -> dict[str, Any]:

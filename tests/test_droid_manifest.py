@@ -12,6 +12,7 @@ from codewam.data.droid_manifest import (
     balanced_scene_sample,
     build_droid_manifest,
     canonical_droid_episode_path,
+    shard_aware_balanced_sample,
 )
 
 
@@ -142,6 +143,7 @@ class DroidManifestBuildTests(unittest.TestCase):
             gcs_path.write_text(
                 "\n".join(
                     f"gs://gresearch/robotics/droid/1.0.1/{name}:\n"
+                    f"    Content-Length:         {1000 + index}\n"
                     f"    Hash (crc32c): checksum-{index}"
                     for index, name in enumerate(sorted(shard_names))
                 )
@@ -207,7 +209,11 @@ class BalancedSceneSampleTests(unittest.TestCase):
                             task_ids=(f"task-{episode % 3}",),
                             camera_ids=("exterior", "wrist"),
                             split=split,
-                            metadata={"collector_id": f"collector-{episode % 2}"},
+                            metadata={
+                                "collector_id": f"collector-{episode % 2}",
+                                "rlds_shard_name": f"shard-{episode}",
+                                "rlds_shard_bytes": 100,
+                            },
                         )
                     )
         return EpisodeManifest.from_records(records)
@@ -232,6 +238,23 @@ class BalancedSceneSampleTests(unittest.TestCase):
             record.scene_id for record in first if record.split == "train"
         )
         self.assertEqual(set(train_scene_counts.values()), {4})
+
+    def test_shard_aware_sample_limits_source_reads(self) -> None:
+        result = shard_aware_balanced_sample(
+            self.build_manifest(),
+            20,
+            salt="shard-test",
+            candidate_multiplier=1.0,
+        )
+
+        self.assertEqual(len(result.manifest), 20)
+        self.assertEqual(result.report["source_shards_available"], 5)
+        self.assertEqual(result.report["source_shards_selected"], 4)
+        self.assertEqual(result.report["selected_source_bytes"], 400)
+        self.assertEqual(
+            Counter(record.split for record in result.manifest),
+            {"train": 16, "val": 2, "test": 2},
+        )
 
 
 if __name__ == "__main__":

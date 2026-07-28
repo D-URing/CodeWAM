@@ -7,9 +7,9 @@ from pathlib import Path
 from codewam.codebook_eval.manifest import SplitConfig
 from codewam.data.droid_manifest import (
     DEFAULT_SPLIT_FRACTIONS,
-    balanced_scene_sample,
     build_droid_manifest,
     manifest_distribution,
+    shard_aware_balanced_sample,
     write_json_report,
 )
 
@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--include-failures", action="store_true")
     parser.add_argument("--include-quality-flags", action="store_true")
     parser.add_argument("--sample-size", type=int, default=10_000)
+    parser.add_argument("--candidate-multiplier", type=float, default=1.25)
     parser.add_argument("--split-salt", default="codewam-droid-1.0.1-scene-v1")
     parser.add_argument("--sample-salt", default="codewam-droid-10k-balanced-v1")
     args = parser.parse_args()
@@ -75,11 +76,13 @@ def main() -> None:
     )
 
     if args.sample_size:
-        sampled = balanced_scene_sample(
+        sample_result = shard_aware_balanced_sample(
             full_manifest,
             args.sample_size,
             salt=args.sample_salt,
+            candidate_multiplier=args.candidate_multiplier,
         )
+        sampled = sample_result.manifest
         sample_name = f"droid_{args.sample_size}_manifest.jsonl"
         sample_path = output_dir / sample_name
         sample_report_path = output_dir / f"droid_{args.sample_size}_manifest_report.json"
@@ -92,7 +95,7 @@ def main() -> None:
                 "source_manifest_fingerprint": full_manifest.fingerprint(),
                 "sample_salt": args.sample_salt,
                 "split_fractions": DEFAULT_SPLIT_FRACTIONS,
-                "sample": manifest_distribution(sampled),
+                "shard_selection": sample_result.report,
                 "output": str(sample_path),
             },
         )
