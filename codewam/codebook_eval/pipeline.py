@@ -184,6 +184,10 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
     training = config.get("training", {})
     descriptor_config = config.get("descriptor", {})
     metadata_config = config.get("metadata", {})
+    cpu_threads = int(training.get("cpu_threads", 4))
+    if cpu_threads <= 0:
+        raise ValueError("`training.cpu_threads` must be positive.")
+    torch.set_num_threads(cpu_threads)
 
     split = str(input_config.get("split", "train"))
     if split != "train":
@@ -265,6 +269,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             "initialization_chunk_size": kmeans_config.initialization_chunk_size,
             "center_block_size": kmeans_config.center_block_size,
             "device": kmeans_config.device,
+            "cpu_threads": cpu_threads,
             "manifest_fingerprint": manifest_fingerprint,
             "source_checksums": source_checksums,
             "shards": [str(path) for path in shard_paths],
@@ -324,6 +329,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
                 / max(rq_result.residual_mse[0], 1e-12)
             ),
             "iterations_per_level": list(rq_result.iterations_per_level),
+            "cpu_threads": cpu_threads,
             "artifact": str(artifact_path),
         }
         save_json(family_dir / "train_summary.json", row)

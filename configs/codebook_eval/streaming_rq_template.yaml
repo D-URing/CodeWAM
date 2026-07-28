@@ -28,6 +28,7 @@ descriptor:
 
 training:
   device: auto
+  cpu_threads: 4
   batch_size: 8192
   k: 32
   levels: 3
