@@ -33,6 +33,10 @@ class StreamingPipelineTests(unittest.TestCase):
                 self.assertEqual(artifact.family, row["family"])
                 self.assertEqual(len(artifact.centers), 3)
                 self.assertGreater(row["normalization_count"], 0)
+                self.assertEqual(
+                    sorted(artifact.metadata["implementation_sha256"]),
+                    ["pipeline", "streaming"],
+                )
 
 
 if __name__ == "__main__":

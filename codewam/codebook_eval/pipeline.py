@@ -204,6 +204,10 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
     configured_checksums = metadata_config.get("source_checksums", ())
     source_checksums = _source_checksums(shard_paths, configured_checksums)
     config_hash = _config_hash(config)
+    implementation_sha256 = {
+        "pipeline": file_sha256(Path(__file__)),
+        "streaming": file_sha256(Path(__file__).with_name("streaming.py")),
+    }
     output_dir = ensure_dir(config.get("output_dir", "runs/codebook_eval/streaming"))
     resume = bool(training.get("resume", True))
 
@@ -238,6 +242,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
         "config_hash": config_hash,
         "source_checksums": source_checksums,
         "dataset": dataset_name,
+        "implementation_sha256": implementation_sha256,
     }
     empty_metadata = [
         key
@@ -275,6 +280,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             "manifest_fingerprint": manifest_fingerprint,
             "source_checksums": source_checksums,
             "shards": [str(path) for path in shard_paths],
+            "implementation_sha256": implementation_sha256,
         }
         contract_text = json.dumps(contract, sort_keys=True, separators=(",", ":"))
         contract_hash = hashlib.sha256(contract_text.encode("utf-8")).hexdigest()
@@ -333,6 +339,7 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
             "iterations_per_level": list(rq_result.iterations_per_level),
             "patience": kmeans_config.patience,
             "cpu_threads": cpu_threads,
+            "implementation_sha256": implementation_sha256,
             "artifact": str(artifact_path),
         }
         save_json(family_dir / "train_summary.json", row)
