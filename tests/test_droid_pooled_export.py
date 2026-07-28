@@ -10,6 +10,7 @@ import torch
 
 from codewam.codebook_eval.droid_pooled_export import (
     DroidPooledExportConfig,
+    _cuda_device_index,
     encode_droid_segment,
     finalize_droid_pooled_export,
 )
@@ -77,6 +78,9 @@ def make_config(output_dir: str = "output") -> DroidPooledExportConfig:
 
 
 class DroidPooledExportTests(unittest.TestCase):
+    def test_cuda_device_index_uses_integer_index(self) -> None:
+        self.assertEqual(_cuda_device_index(torch.device("cuda:3")), 3)
+
     def test_segment_encoding_preserves_absolute_time_and_action_components(self) -> None:
         pooled = encode_droid_segment(make_segment(), FakeWanVAE(), make_config())
 

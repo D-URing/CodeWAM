@@ -376,6 +376,16 @@ def _pooled_shard_metadata(
     }
 
 
+def _cuda_device_index(device: torch.device) -> int:
+    if device.type != "cuda":
+        raise ValueError(f"Expected a CUDA device, got `{device}`.")
+    return (
+        int(device.index)
+        if device.index is not None
+        else int(torch.cuda.current_device())
+    )
+
+
 def export_droid_pooled_features(
     config: DroidPooledExportConfig,
 ) -> dict[str, Any]:
@@ -467,7 +477,7 @@ def export_droid_pooled_features(
             if device.type == "cuda":
                 if not torch.cuda.is_available():
                     raise RuntimeError("Wan export requested unavailable CUDA.")
-                torch.cuda.reset_peak_memory_stats(device)
+                torch.cuda.reset_peak_memory_stats(_cuda_device_index(device))
         if vae is None:
             vae = _load_wan_vae(config)
         for segment in episode.iter_eligible_segments():
@@ -476,7 +486,12 @@ def export_droid_pooled_features(
             if device.type == "cuda":
                 shard_peak_gib = max(
                     shard_peak_gib,
-                    float(torch.cuda.max_memory_allocated(device) / 1024**3),
+                    float(
+                        torch.cuda.max_memory_allocated(
+                            _cuda_device_index(device)
+                        )
+                        / 1024**3
+                    ),
                 )
     flush()
 
