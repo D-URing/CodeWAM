@@ -5,6 +5,7 @@ import unittest
 import torch
 
 from codewam.codebook_eval.wan_probe_export import (
+    _construct_wan_vae,
     _preprocess_video,
     latent_frame_indices,
 )
@@ -12,6 +13,21 @@ from codewam.data.droid_rlds import probe_split
 
 
 class WanProbeExportTests(unittest.TestCase):
+    def test_wan_constructor_materializes_unregistered_statistics(self) -> None:
+        class FakeWanVAE(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.mean = torch.tensor([1.0])
+                self.std = torch.tensor([2.0])
+
+        model = _construct_wan_vae(FakeWanVAE)
+        self.assertFalse(model.mean.is_meta)
+        self.assertFalse(model.std.is_meta)
+
+        with torch.device("meta"):
+            with self.assertRaisesRegex(RuntimeError, "was not materialized"):
+                _construct_wan_vae(FakeWanVAE)
+
     def test_latent_ticks_are_aligned_to_causal_chunk_end(self) -> None:
         torch.testing.assert_close(latent_frame_indices(1, 1), torch.tensor([0]))
         torch.testing.assert_close(latent_frame_indices(5, 2), torch.tensor([0, 4]))

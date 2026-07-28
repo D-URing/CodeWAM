@@ -66,6 +66,19 @@ def _torch_dtype(name: str) -> torch.dtype:
     }[str(name)]
 
 
+def _construct_wan_vae(model_type: type[torch.nn.Module]) -> torch.nn.Module:
+    # FastWAM keeps the VAE normalization statistics as ordinary tensor
+    # attributes, so meta-device construction cannot materialize them later.
+    model = model_type()
+    for name in ("mean", "std"):
+        value = getattr(model, name, None)
+        if not isinstance(value, torch.Tensor) or value.is_meta:
+            raise RuntimeError(
+                f"Wan VAE normalization tensor `{name}` was not materialized."
+            )
+    return model
+
+
 def _source_checksums(data_dir: Path, include_tfrecords: bool) -> list[str]:
     patterns = ["dataset_info.json", "features.json"]
     if include_tfrecords:
@@ -97,8 +110,7 @@ def _load_wan_vae(config: WanProbeExportConfig):
     if not vae_path.is_file():
         raise FileNotFoundError(f"Missing Wan VAE checkpoint: {vae_path}.")
     dtype = _torch_dtype(config.dtype)
-    with torch.device("meta"):
-        model = WanVideoVAE38()
+    model = _construct_wan_vae(WanVideoVAE38)
     state_dict = load_state_dict(str(vae_path), torch_dtype=dtype, device="cpu")
     converted = wan_video_vae_state_dict_converter(state_dict)
     incompatibility = model.load_state_dict(converted, strict=True, assign=True)
