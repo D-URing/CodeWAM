@@ -544,9 +544,10 @@ single token` 是早期兼容原型,不是 canonical v1。配置必须默认关�
 
 公开数据角色、DROID 数据阶梯、pooled feature cache、distributed streaming RQ 和 8xA100
 作业布局以 `CODEBOOK.md` 为准。
-截至当前提交,步骤 1 和步骤 2 的单机底座、GPU smoke 与 reference-equivalence tests 已实现;
-真实 episode exporter、held-out evaluator 和 rank-aware DDP orchestration 仍待完成。实现边界见
-`CODEBOOK.md`。
+截至当前提交,episode manifest、rank-aware DROID pooled exporter、单机 streaming RQ、
+可恢复 patience、frozen artifact 和 residual/usage held-out evaluator 已实现并通过 GPU
+pilot。retrieval/geometry/action probes、shared initialization 和 rank-aware distributed RQ
+orchestration 仍待完成。实现边界见 `CODEBOOK.md`。
 
 | 早期实现 | canonical v1 |
 |---|---|

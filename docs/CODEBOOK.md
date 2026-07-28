@@ -218,6 +218,45 @@ sample fingerprint 为
 episode 无遗漏。真实 record 解码也已核对 manifest key、source path、412-step shape 和两个
 独立 keep ranges;TensorFlow 显式不可见 GPU。
 
+temporal audit 显示 canonical 10k 的 3,379,214 个 RLDS steps 中有 3,002,148 个 eligible
+steps,分成 15,202 个独立 keep-range segments。Q2/Q3/Q5 分别有
+14,441/13,934/13,155 个足够长的 segments,可生成 696,092/667,483/612,987 个 causal
+descriptor ticks。因此默认规则是短 segment 自然跳过对应 family,绝不 padding,也不跨 gap
+拼接。
+
+#### Canonical keep-range pilot: 2026-07-29
+
+从 train split 按 13 个 institution 各取 2 个不同 scene,得到 26 episodes。原始 RGB/action
+audit 先验证官方 keep range 确实聚焦运动:inside/outside 的 exterior 与 wrist 图像运动中位数
+比分别为 2.10 和 11.74,proprio motion 为 371.72;flat 7D action 因含绝对 gripper position
+不适合作 idle 判据。
+
+两路相机经 frozen Wan2.2-VAE 后生成 37 个独立 segments、1,753 ticks 和 5.54 MiB
+`pooled_g4`。单 A800 首次核心导出 159.97 秒,峰值显存 1.79--2.00 GiB;完整续跑核心校验
+2.06 秒。首次证据在 resume report 中保留,所有产物为 `0644`。v3/v4 的 latent、timestamp、
+action、proprio 与 action components 已逐 tensor 相等。
+
+Gate 0 在这批 canonical keep-range 数据上再次通过:
+
+| camera | g=4 effective rank / rank95 | latent-image rho Q2/Q3/Q5 | high/low motion residual |
+|---|---:|---:|---:|
+| exterior-1 | 12.86 / 53 | 0.567 / 0.645 / 0.663 | 1.61 / 1.85 / 1.68 |
+| wrist | 19.78 / 136 | 0.543 / 0.593 / 0.650 | 1.59 / 1.56 / 1.59 |
+
+像素变化仍混合 camera 与物体运动,所以该表只证明“可见运动进入 latent”,不宣称完成物体级
+解耦。严格因果 Q2/Q3/Q5 得到 1,605/1,531/1,388 个 4,608 维 descriptors。
+
+train-only RQ 工程 sweep 中,K=8/16/32 均无死码,三级总 residual reduction 约为
+49%/64%/73%;但 K=32 某些第三级 perplexity 仅为容量的 27.6%。这不能用于选择 K:
+样本全是 train,更大 K 降低训练误差是预期现象。固定 K=16、`patience=2` 时,
+`tol=1e-3` 各层约 8--13 轮;收紧到 `1e-4/1e-5` 可增至 35/49 轮,总 residual 只再改善
+约 0.14--0.75 个百分点。因此 P1 初始默认 `tol=1e-3,patience=2`,最终由 held-out
+distortion、usage 和 probe 决定。
+
+性能诊断还发现 64 个 Torch CPU threads 会让短 segment descriptor pass 从 0.15 秒膨胀到
+33.5 秒。canonical launcher 现显式使用 `cpu_threads=4`,K-Means++ 在目标 GPU 上运行;
+同一 pilot 的完整三族 RQ 为 K=8 14.2 秒,K=16/32 并行候选各约 24--26 秒。
+
 ### P2: DROID-Core
 
 优先使用官方具有 improved camera calibration 的约 36k episodes,完成正式的 held-out
@@ -444,8 +483,8 @@ rank i owns disjoint RLDS shards
 CPU decode/prefetch -> GPU Wan-VAE -> pooled_g4 fp16 -> shard writer
 ```
 
-不需要 DDP gradient synchronization。每个 rank 原子写临时文件,完成后 rename;支持 episode-level
-resume。VAE throughput 先在 DROID-100 测得,再用:
+不需要 DDP gradient synchronization。每个 rank 原子写临时文件,完成后 rename;支持
+source-shard-level resume。VAE throughput 先在小样本 pilot 实测,再用:
 
 ```text
 wall time ~= total camera-video hours / (8 x measured realtime multiplier)
@@ -529,9 +568,13 @@ network:        resumable access to the official Google Cloud bucket
 - `shards.py`:`codewam.pooled-feature-shard.v1` 原子 writer、SHA-256、逐 shard/episode reader 和
   `g=4 -> g=2/1` nested pooling。
 - `streaming.py`:因果 Q2/Q3/Q5 descriptor、train-only Welford normalization、uniform reservoir、
-  deterministic K-Means++、blocked Lloyd、三级 RQ、checkpoint/resume 和 frozen artifact。
+  GPU/CPU deterministic K-Means++、blocked Lloyd、三级 RQ、可恢复 patience 和 frozen artifact。
 - `pipeline.py`:一次顺序训练 Q2/Q3/Q5,校验 manifest fingerprint、source checksums、config contract
-  和恢复参数。
+  、实现 SHA 和恢复参数。
+- `evaluation.py`:只读 frozen train normalization/centers,在 val/test 流式累计逐层 residual、
+  usage、dead fraction、perplexity、最大簇和联合 tuple 指标。
+- `droid_pooled_export.py`:rank-aware exact reader 到双相机 Wan `pooled_g4` 的原子 shard export、
+  contract/SHA 校验、首次性能证据保留、resume 和 segment manifest finalize。
 - `codewam/data/droid_manifest.py`:官方 raw metadata、RLDS position、keep ranges、language 和
   shard checksum 的精确 join,scene-isolated split,以及 institution/scene/collector-aware sample。
 - `codewam/data/droid_rlds.py`:按 manifest `(shard,record)` 精确读取,未选相机跳过 JPEG decode,
@@ -545,10 +588,11 @@ residual 和全量 code assignment 都只在当前 batch 中产生,不作为默�
 rank-aware shard partition 与共享初始化 artifact 完成前,正式任务只能使用一个进程;8 张 GPU
 可以先并行不同候选,不能伪装成一个分布式 RQ run。
 
-当前 40 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 49 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
-RQ residual 下降、artifact round-trip 和 Q2/Q3/Q5 一键训练。
+patience resume、RQ residual 下降、artifact round-trip、DROID pooled export evidence 和
+Q2/Q3/Q5 train/held-out 一键流程。
 
 ## 12. 命令与产物
 
@@ -583,6 +627,9 @@ PYTHONPATH=. python scripts/build_droid_manifest.py \
 ```bash
 python scripts/train_streaming_codebooks.py train \
   --config configs/codebook_eval/streaming_rq_template.yaml
+
+python scripts/evaluate_streaming_codebooks.py \
+  --config configs/codebook_eval/streaming_eval_template.yaml
 ```
 
 每个 family 的标准输出:
@@ -600,8 +647,9 @@ output/Q2|Q3|Q5/
   train_summary.json
 ```
 
-同一 output resume 前会重新核对 descriptor、K/L、source checksums、manifest fingerprint 和
-运行参数。contract 不一致时必须使用新目录,不能串用 checkpoint。
+同一 output resume 前会重新核对 descriptor、K/L、tol/patience、source checksums、manifest
+fingerprint、实现 SHA 和运行参数。contract 不一致时必须使用新目录,不能串用 checkpoint。
+held-out evaluator 同样锁定 manifest、pooled shard、codebook 和实现 SHA,且只接受 val/test。
 
 `scripts/codebook_eval.py`、`configs/codebook_eval/package_scan_v6_*.yaml` 和
 `public_latent_codebooks.yaml` 属于旧 window evaluator。它们可用于本机回归或历史结果复算,
@@ -625,17 +673,16 @@ BridgeData V2。
 
 ## 14. 下一张工程单
 
-下一阶段只完成真实数据 Gate 0/1,不提前修改完整模型:
+下一阶段完成真实数据 Gate 1/2,不提前把未验证码本接入完整模型:
 
 ```text
-1. 对 active/static segment、camera cadence、latent shape 和 future leak 做小规模 audit
-2. 明确短 segment、temporal padding 和 absolute timestamp contract
-3. 将 prefix-only Wan-VAE exporter 扩展到 canonical pooled_g4 shard
-4. 将 P0 held-out usage/perplexity/residual 判据接入正式 streaming evaluator
-5. retrieval/geometry/camera/action-probe report
-6. train-only scene/task/event balanced descriptor reservoir
-7. DROID-10k 顺序规格搜索
-8. shared initialization 与 1-GPU/8-GPU 等价测试
+1. 用当前 4xA800 导出 canonical DROID-10k pooled cache并验证 rank resume/finalize
+2. 在原始 scene-isolated val/test 上运行 frozen held-out residual/usage evaluator
+3. 加入 retrieval、camera identity、geometry 与 action probe report
+4. 只用 train 建立 scene/task/event balanced descriptor reservoir
+5. 顺序比较 camera、g、K、RQ prefix,不做全组合暴力搜索
+6. 固定 initialization 后完成 1-GPU/多 GPU 聚合等价测试
+7. Gate 1/2 通过后实现 FrozenRQAdapter 与模型 mask tests
 ```
 
 验收不以“程序跑完”为准:

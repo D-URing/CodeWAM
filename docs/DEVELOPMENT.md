@@ -13,7 +13,9 @@ CodeWAM/
 │   │   ├── manifest.py        # episode provenance and deterministic split
 │   │   ├── shards.py          # pooled episode shard contract
 │   │   ├── streaming.py       # causal descriptors and streaming RQ
-│   │   └── pipeline.py        # canonical Q2/Q3/Q5 launcher
+│   │   ├── pipeline.py        # canonical Q2/Q3/Q5 launcher
+│   │   ├── evaluation.py      # frozen-artifact val/test evaluator
+│   │   └── droid_pooled_export.py # rank-aware Wan pooled exporter
 │   ├── data/
 │   │   ├── droid_manifest.py  # exact official join and balanced sample
 │   │   ├── droid_rlds.py      # exact-position, rank-aware DROID reader
@@ -168,12 +170,39 @@ python scripts/train_streaming_codebooks.py smoke \
   --output runs/codebook_eval/streaming_smoke
 ```
 
-真实 pooled shards 就绪后:
+真实 DROID manifest 就绪后,先按完整 TFRecord shard 分配 rank 并导出:
+
+```bash
+PYTHONPATH=. python scripts/export_droid_pooled.py export \
+  --source-manifest "$DROID_MANIFEST" \
+  --data-dir "$DROID_RLDS_ROOT" \
+  --output-dir "$POOLED_ROOT" \
+  --vae-path "$WAN_VAE_PATH" \
+  --fastwam-src "$FASTWAM_SRC" \
+  --rank "$RANK" --world-size "$WORLD_SIZE" \
+  --device "cuda:$LOCAL_RANK"
+
+PYTHONPATH=. python scripts/export_droid_pooled.py finalize \
+  --source-manifest "$DROID_MANIFEST" \
+  --output-dir "$POOLED_ROOT"
+```
+
+每个 rank 只拥有完整 source shards;不使用 DDP。相同命令续跑会校验 contract、输出 SHA 和
+segment ids,跳过已完成 shard,同时保留首次导出的耗时与显存证据。
+
+pooled shards 就绪后训练与 held-out 评估:
 
 ```bash
 python scripts/train_streaming_codebooks.py train \
   --config configs/codebook_eval/streaming_rq_template.yaml
+
+python scripts/evaluate_streaming_codebooks.py \
+  --config configs/codebook_eval/streaming_eval_template.yaml
 ```
+
+训练默认 `cpu_threads=4`,避免短 segment tensor 操作在 64 线程机器上过度并行;
+K-Means++、Lloyd assignment 和 residual quantization 使用 `training.device`。评估只读取
+frozen train normalization/centers,不会用 val/test 重估统计量。
 
 官方 DROID manifest 的构建命令、数据 contract、搜索顺序、评估指标和 8xA100 布局都在
 `CODEBOOK.md`。一次性下载器和官方数据索引放在共享数据根目录,不放进本仓库。旧
