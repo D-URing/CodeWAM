@@ -100,8 +100,8 @@ def canonical_droid_episode_path(value: str) -> str:
 
 
 def _validate_keep_ranges(value: object, episode_path: str) -> tuple[tuple[int, int], ...]:
-    if not isinstance(value, list) or not value:
-        raise ValueError(f"DROID episode `{episode_path}` has no keep ranges.")
+    if not isinstance(value, list):
+        raise ValueError(f"DROID episode `{episode_path}` has invalid keep ranges.")
     ranges: list[tuple[int, int]] = []
     previous_end = -1
     for item in value:
@@ -287,6 +287,9 @@ def build_droid_manifest(
 
         num_steps = int(rlds["num_steps"])
         ranges = tuple(keep_row["ranges"])
+        if not ranges:
+            exclusion_counts["no_eligible_keep_ranges"] += 1
+            continue
         if num_steps <= 0 or ranges[-1][1] > num_steps:
             exclusion_counts["keep_range_exceeds_rlds_length"] += 1
             continue

@@ -105,6 +105,12 @@ class DroidManifestBuildTests(unittest.TestCase):
                     "language_instruction2": f"do task {index % 4}",
                 }
 
+            sixth_key = next(
+                key
+                for key in keep_rows
+                if "00:06:00_2024" in key
+            )
+            keep_rows[sixth_key] = []
             metadata_rows[5]["episode_id"] = metadata_rows[4]["episode_id"]
             duplicate = dict(metadata_rows[0])
             duplicate["episode_id"] = "duplicate-id"
@@ -159,7 +165,7 @@ class DroidManifestBuildTests(unittest.TestCase):
                 gcs_metadata=gcs_path,
             )
 
-        self.assertEqual(len(result.manifest), 7)
+        self.assertEqual(len(result.manifest), 6)
         self.assertEqual(
             result.report["excluded"],
             {
@@ -167,6 +173,7 @@ class DroidManifestBuildTests(unittest.TestCase):
                 "ambiguous_raw_metadata_path": 1,
                 "failure_episode": 1,
                 "missing_raw_metadata": 1,
+                "no_eligible_keep_ranges": 1,
                 "raw_metadata_quality_flag": 1,
             },
         )
