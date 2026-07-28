@@ -1,0 +1,25 @@
+# Frozen RQ held-out evaluator. It never refits normalization or centers.
+
+output_dir: runs/codebook_eval/droid_streaming_rq/heldout
+
+input:
+  pooled_shards:
+    - runs/codebook_eval/pooled/droid/*.pt
+  manifest: runs/codebook_eval/manifests/droid.jsonl
+  group_by: scene
+
+metadata:
+  dataset: droid
+
+artifacts:
+  Q2: runs/codebook_eval/droid_streaming_rq/Q2/codebook.pt
+  Q3: runs/codebook_eval/droid_streaming_rq/Q3/codebook.pt
+  Q5: runs/codebook_eval/droid_streaming_rq/Q5/codebook.pt
+
+evaluation:
+  splits: [val, test]
+  device: auto
+  cpu_threads: 4
+  batch_size: 8192
+  center_block_size: 1024
+  resume: true
