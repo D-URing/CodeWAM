@@ -93,6 +93,20 @@ def _write_run(root: Path) -> None:
                 "camera_ids": ["exterior"],
                 "k": 2,
                 "target": "future_proprio_change",
+                "prefix_depth": 1,
+                "levels": 2,
+                "normalized_mse_reduction": 0.2,
+                "exact_prefix_coverage": 1.0,
+                "any_code_coverage": 1.0,
+            },
+            {
+                "family": "Q3",
+                "split": "val",
+                "stride": 3,
+                "pool": 4,
+                "camera_ids": ["exterior"],
+                "k": 2,
+                "target": "future_proprio_change",
                 "prefix_depth": 2,
                 "levels": 2,
                 "normalized_mse_reduction": 0.12,
@@ -131,6 +145,10 @@ class StreamingComparisonTests(unittest.TestCase):
         self.assertAlmostEqual(row["generalization_gap"], 0.05)
         self.assertEqual(row["active_codes_by_level"], [2, 2])
         self.assertEqual(len(report["association_rows"]), 1)
+        self.assertEqual(
+            report["association_rows"][0]["best_prefix_depth"],
+            1,
+        )
         self.assertIn("exterior-g4", markdown)
         self.assertIn("35.00%", markdown)
         self.assertIn("future_proprio_change", markdown)

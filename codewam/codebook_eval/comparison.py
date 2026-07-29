@@ -193,29 +193,30 @@ def _markdown(report: dict[str, Any]) -> str:
     if report["association_rows"]:
         lines.extend(
             [
-                "## Full-prefix held-out association",
+                "## Held-out association by prefix",
                 "",
-                "| run | family | split | target | normalized MSE gain | "
-                "exact tuple coverage | any prefix coverage |",
-                "|---|---|---|---|---:|---:|---:|",
+                "| run | family | split | target | best prefix | best gain | "
+                "full-prefix gain | full exact coverage |",
+                "|---|---|---|---|---:|---:|---:|---:|",
             ]
         )
         for row in report["association_rows"]:
             lines.append(
-                "| {label} | {family} | {split} | {target} | {gain} | "
-                "{exact} | {any_coverage} |".format(
+                "| {label} | {family} | {split} | {target} | L{best_depth} | "
+                "{best_gain} | {full_gain} | {exact} |".format(
                     label=row["label"],
                     family=row["family"],
                     split=row["split"],
                     target=row["target"],
-                    gain=_format_percent(
-                        row["normalized_mse_reduction"]
+                    best_depth=row["best_prefix_depth"],
+                    best_gain=_format_percent(
+                        row["best_normalized_mse_reduction"]
+                    ),
+                    full_gain=_format_percent(
+                        row["full_prefix_normalized_mse_reduction"]
                     ),
                     exact=_format_percent(
-                        row["exact_prefix_coverage"]
-                    ),
-                    any_coverage=_format_percent(
-                        row["any_code_coverage"]
+                        row["full_prefix_exact_coverage"]
                     ),
                 )
             )
@@ -325,13 +326,12 @@ def compare_streaming_runs(
             input_row["association_contract_hash"] = association.get(
                 "contract_hash"
             )
+            selected_association_rows = []
             for row in association.get("rows", ()):
                 if (
                     selected_families is not None
                     and row["family"] not in selected_families
                 ):
-                    continue
-                if int(row["prefix_depth"]) != int(row["levels"]):
                     continue
                 identity = (
                     row["family"],
@@ -346,22 +346,50 @@ def compare_streaming_runs(
                     raise RuntimeError(
                         f"Association row does not match held-out run `{label}`."
                     )
+                selected_association_rows.append(row)
+            groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+            for row in selected_association_rows:
+                groups.setdefault(
+                    (row["family"], row["split"], row["target"]),
+                    [],
+                ).append(row)
+            for (family, split, target), group in groups.items():
+                full = [
+                    row
+                    for row in group
+                    if int(row["prefix_depth"]) == int(row["levels"])
+                ]
+                if len(full) != 1:
+                    raise RuntimeError(
+                        f"Association group has no unique full prefix for `{label}`."
+                    )
+                best = max(
+                    group,
+                    key=lambda row: (
+                        float(row["normalized_mse_reduction"]),
+                        -int(row["prefix_depth"]),
+                    ),
+                )
                 association_rows.append(
                     {
                         "label": label,
                         "run_dir": str(run_dir.resolve()),
-                        "family": row["family"],
-                        "split": row["split"],
-                        "target": row["target"],
-                        "prefix_depth": int(row["prefix_depth"]),
-                        "normalized_mse_reduction": float(
-                            row["normalized_mse_reduction"]
+                        "family": family,
+                        "split": split,
+                        "target": target,
+                        "best_prefix_depth": int(best["prefix_depth"]),
+                        "best_normalized_mse_reduction": float(
+                            best["normalized_mse_reduction"]
                         ),
-                        "exact_prefix_coverage": float(
-                            row["exact_prefix_coverage"]
+                        "full_prefix_depth": int(full[0]["prefix_depth"]),
+                        "full_prefix_normalized_mse_reduction": float(
+                            full[0]["normalized_mse_reduction"]
                         ),
-                        "any_code_coverage": float(
-                            row["any_code_coverage"]
+                        "full_prefix_exact_coverage": float(
+                            full[0]["exact_prefix_coverage"]
+                        ),
+                        "full_prefix_any_code_coverage": float(
+                            full[0]["any_code_coverage"]
                         ),
                     }
                 )
