@@ -51,6 +51,7 @@ class StreamingEvaluationTests(unittest.TestCase):
             OmegaConf.save(evaluation_config, evaluation_config_path)
 
             first = evaluate_frozen_codebooks(evaluation_config_path)
+            train_streaming_codebooks(training_config_path)
             resumed = evaluate_frozen_codebooks(evaluation_config_path)
 
         self.assertEqual(first, resumed)
