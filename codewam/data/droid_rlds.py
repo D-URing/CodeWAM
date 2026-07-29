@@ -5,7 +5,7 @@ import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 import torch
@@ -535,6 +535,175 @@ def iter_manifest_droid_rlds_episodes(
                 f"DROID shard `{shard.shard_name}` is missing manifest positions "
                 f"{missing[:8]}."
             )
+
+
+def read_manifest_droid_rlds_frames(
+    data_dir: str | Path,
+    manifest: EpisodeManifest,
+    frame_requests: Mapping[str, Iterable[int]],
+    *,
+    camera: str = "wrist_image_left",
+) -> dict[tuple[str, int], torch.Tensor]:
+    """Decode only requested RGB frames from exact manifest positions.
+
+    Request keys are full ``EpisodeRecord.key`` values. All camera features stay
+    as encoded bytes while the sequence is scanned; JPEG decoding is performed
+    only for requested indices.
+    """
+
+    requested_camera = _requested_cameras((camera,))[0]
+    records_by_key = {record.key: record for record in manifest}
+    unknown = sorted(set(frame_requests) - set(records_by_key))
+    if unknown:
+        raise KeyError(f"Unknown DROID manifest keys: {unknown[:8]}.")
+
+    normalized: dict[str, tuple[int, ...]] = {}
+    for key, values in frame_requests.items():
+        record = records_by_key[key]
+        indices = tuple(sorted({int(value) for value in values}))
+        invalid = [
+            index
+            for index in indices
+            if index < 0 or index >= record.num_steps
+        ]
+        if invalid:
+            raise IndexError(
+                f"DROID frame request for `{key}` is outside [0, "
+                f"{record.num_steps}): {invalid[:8]}."
+            )
+        if indices:
+            normalized[key] = indices
+    if not normalized:
+        return {}
+
+    selected_manifest = EpisodeManifest.from_records(
+        records_by_key[key] for key in sorted(normalized)
+    )
+    data_dir = Path(data_dir)
+    if not (data_dir / "dataset_info.json").is_file():
+        raise FileNotFoundError(f"Not a TFDS builder directory: {data_dir}.")
+
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    try:
+        import tensorflow as tf
+        import tensorflow_datasets as tfds
+    except ImportError as exc:
+        raise RuntimeError(
+            "Reading DROID RLDS requires `tensorflow-cpu` and "
+            "`tensorflow-datasets`."
+        ) from exc
+    _disable_tensorflow_gpu(tf)
+    builder = tfds.builder_from_directory(builder_dir=str(data_dir))
+    decoders = {
+        "steps": {
+            "observation": {
+                value: tfds.decode.SkipDecoding()
+                for value in DROID_CAMERA_KEYS
+            }
+        }
+    }
+
+    frames: dict[tuple[str, int], torch.Tensor] = {}
+    for shard in plan_droid_rank_assignments(selected_manifest, 1)[0].shards:
+        shard_path = data_dir / shard.shard_name
+        if not shard_path.is_file():
+            raise FileNotFoundError(f"Missing DROID shard `{shard_path}`.")
+        if shard_path.stat().st_size != shard.source_bytes:
+            raise RuntimeError(
+                f"DROID shard `{shard_path}` has {shard_path.stat().st_size} "
+                f"bytes, expected {shard.source_bytes}."
+            )
+
+        pending = {
+            int(record.metadata["rlds_record_index"]): record
+            for record in shard.records
+        }
+        maximum_index = max(pending)
+        found_records: set[int] = set()
+        dataset = tf.data.TFRecordDataset(str(shard_path), num_parallel_reads=1)
+        for record_index, raw_record in enumerate(dataset):
+            if record_index > maximum_index:
+                break
+            record = pending.get(record_index)
+            if record is None:
+                continue
+            found_records.add(record_index)
+            decoded = builder.info.features.deserialize_example(
+                raw_record,
+                decoders=decoders,
+            )
+            source_file = _decode_text(
+                decoded["episode_metadata"]["file_path"].numpy()
+            )
+            recording_folder = _decode_text(
+                decoded["episode_metadata"]["recording_folderpath"].numpy()
+            )
+            expected_recording_folder = str(
+                record.metadata.get("recording_folderpath") or ""
+            )
+            mismatches = []
+            if source_file != record.source_uri:
+                mismatches.append("source_uri")
+            if recording_folder != expected_recording_folder:
+                mismatches.append("recording_folderpath")
+            if mismatches:
+                raise RuntimeError(
+                    f"DROID manifest/source mismatch for `{record.key}`: "
+                    f"{mismatches}."
+                )
+
+            wanted = set(normalized[record.key])
+            found_frame_indices: set[int] = set()
+            step_count = 0
+            for step_index, row in enumerate(decoded["steps"]):
+                step_count = step_index + 1
+                if step_index not in wanted:
+                    continue
+                encoded = row["observation"][requested_camera].numpy()
+                image = tf.io.decode_image(
+                    encoded,
+                    channels=3,
+                    expand_animations=False,
+                ).numpy()
+                if image.ndim != 3 or image.shape[-1] != 3:
+                    raise RuntimeError(
+                        f"DROID camera `{requested_camera}` frame "
+                        f"{record.key}:{step_index} has shape {image.shape}."
+                    )
+                frames[(record.key, step_index)] = torch.from_numpy(
+                    np.asarray(image, dtype=np.uint8).copy()
+                ).contiguous()
+                found_frame_indices.add(step_index)
+            if step_count != record.num_steps:
+                raise RuntimeError(
+                    f"DROID manifest/source mismatch for `{record.key}`: "
+                    "['num_steps']."
+                )
+            missing_frames = sorted(wanted - found_frame_indices)
+            if missing_frames:
+                raise RuntimeError(
+                    f"DROID record `{record.key}` is missing requested frames "
+                    f"{missing_frames[:8]}."
+                )
+            if len(found_records) == len(pending):
+                break
+
+        missing_records = sorted(set(pending) - found_records)
+        if missing_records:
+            raise RuntimeError(
+                f"DROID shard `{shard.shard_name}` is missing manifest "
+                f"positions {missing_records[:8]}."
+            )
+
+    expected = {
+        (key, index)
+        for key, indices in normalized.items()
+        for index in indices
+    }
+    if set(frames) != expected:
+        missing = sorted(expected - set(frames))
+        raise RuntimeError(f"Missing requested DROID RGB frames: {missing[:8]}.")
+    return frames
 
 
 def iter_droid_rlds_episodes(

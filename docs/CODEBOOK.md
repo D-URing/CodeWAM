@@ -257,6 +257,181 @@ distortion、usage 和 probe 决定。
 33.5 秒。canonical launcher 现显式使用 `cpu_threads=4`,K-Means++ 在目标 GPU 上运行;
 同一 pilot 的完整三族 RQ 为 K=8 14.2 秒,K=16/32 并行候选各约 24--26 秒。
 
+#### Canonical DROID-10k frozen baseline: 2026-07-29
+
+正式 export 覆盖 10,000 个 source episodes、990 个 pooled shards、15,202 个独立 keep-range
+segments 和 756,225 个 latent ticks,总计 2,478,763,109 bytes。train/val/test 分别含
+602,394/69,310/84,521 ticks;Q2/Q3/Q5 可用 descriptor 总数为
+696,092/667,483/612,987。source manifest fingerprint 为
+`481a6febba3a04f374c6a8e91280cad338c38fb9b50e1536cb660c3bb672be4e`,
+pooled manifest fingerprint 为
+`726f19040d3d589cfdc82661059f553d170310f1d99b0b2c65633164b05049c2`。
+
+真实 Wan2.2-VAE causal-prefix audit 对同一 segment 分别编码 1/5/9/13/17/21 帧,比较所有
+已产生 latent ticks。两路 camera 的每一行 `max_abs_error=0`、`mismatch_fraction=0`,
+因此这批 cache 通过 Gate 0;完整序列没有改变任何较早 latent tick。
+
+双视角 `g=4,K=16,L=3,tol=1e-3,patience=2` 的冻结结果:
+
+| family | train N | iterations L1/L2/L3 | train reduction | val/test reduction | val/test min perplexity/K | val/test active codes |
+|---|---:|---:|---:|---:|---:|---:|
+| Q2 | 554,007 | 18/11/9 | 32.46% | 28.46% / 28.77% | 0.785 / 0.802 | 15/16/16 ; 15/15/16 |
+| Q3 | 531,053 | 11/9/9 | 31.70% | 27.55% / 28.06% | 0.829 / 0.806 | 15/15/16 ; 15/15/16 |
+| Q5 | 487,354 | 13/9/8 | 31.03% | 27.08% / 27.43% | 0.796 / 0.796 | 15/16/16 ; 15/16/16 |
+
+held-out 第三级仍独立降低 5.1--6.0% residual,且 L3 全部 16 个中心都激活,当前不能删除。
+L1/L2/L3 相邻 code 保持率约为 94.4--95.7% / 83.3--85.1% / 71.9--78.1%,形成稳定的
+coarse-to-fine 时间层级。每个 family 的 held-out L1 都稳定缺一个中心;Q3 的 val/test L2
+也缺同一个中心。这更像 train-domain-specific center,不是随机初始化造成的整体 collapse。
+
+Q2 的 normalized distortion 暂时比 Q3/Q5 好约 0.7--1.7 个百分点,但这不能证明 Q2 更有
+控制价值。高 L1 persistence 也可能主要编码 scene/background/static pose。下一步必须用
+camera/pool 对照、动作与未来状态关联、scene/camera concentration 和 retrieval montage
+区分“健康量化”与“有用视觉状态”。
+
+生产续跑还暴露并修复了一个 provenance 缺陷:旧实现会用数值相同的 tensor 重写
+`codebook.pt`,使文件 SHA 改变并让既有 held-out contract 失效。现在 resume 会先逐 tensor
+校验现有 frozen artifact 并保持原文件字节不动;跨 train-resume/evaluation-resume 回归测试
+已锁定该行为。基线重建 contract 前后的六行 held-out metrics 逐字段完全相同。
+
+#### P1 camera/pool/capacity 选择: 2026-07-29
+
+固定 Q3 后按顺序完成 camera/pool 与 wrist capacity 对照。所有 association 都只在 train
+拟合条件均值并在原始 scene-isolated val/test 上评分;context 指标在同一 held-out split 内
+再按 parent episode 分成 fit/evaluation 两半,单 parent group 不参与该指标。
+
+camera/pool 的关键信号是:
+
+| candidate | val/test action gain at best prefix | val/test future-moment gain | val/test scene gain at L3 |
+|---|---:|---:|---:|
+| exterior `g=4,K=16` | -0.05% / 1.73% | 0.02% / 0.01% | 76.72% / 73.81% |
+| dual `g=4,K=16` | 2.40% / 2.84% | 0.50% / 0.42% | 54.91% / 53.79% |
+| wrist `g=2,K=16` | 4.29% / 4.43% | 4.37% / 4.51% | 14.63% / 19.14% |
+| wrist `g=4,K=16` | 6.20% / 6.37% | 3.86% / 3.84% | 15.61% / 19.85% |
+
+exterior-only 虽有 37.1--37.6% held-out residual reduction,但 action/future association 接近
+零且 scene identity 极强;它主要是容易量化的背景/场景坐标,不能据此作为控制码本。dual
+descriptor 也被 exterior 信号稀释。wrist `g=4` 的 action/proprio 关联最强,所以第一版
+**frozen codebook 选择 wrist-only `g=4`**。这不删除连续路径中的 exterior view:
+continuous state 仍保留 exterior+wrist 来支持精确几何和遮挡信息。
+
+wrist `g=1` 的 val/test future latent moment gain 达 10.96%/10.63%,但最佳 action gain 只有
+1.63%/1.62%;它更像全局慢运动摘要。它可作为后续 world-side multi-scale auxiliary,不替代
+当前有空间布局的主码本。
+
+固定 wrist `g=4,Q3,L=3` 后:
+
+| K | val/test held-out reduction | val/test full-L3 action gain | val/test L3 exact coverage | val/test joint tuple active |
+|---:|---:|---:|---:|---:|
+| 8 | 28.20% / 29.97% | 6.22% / 6.24% | 99.99% / 99.97% | 92.19% / 93.36% |
+| 16 | 33.70% / 35.06% | 5.17% / 5.28% | 99.81% / 99.78% | 90.23% / 90.99% |
+| 32 | 37.74% / 39.29% | -0.11% / -0.39% | 84.81% / 86.08% | 53.83% / 56.13% |
+
+K=32 的 L2 仍有约 6.1--6.2% action gain,但 L3 精确覆盖与联合使用率明显下降且完整 prefix
+过拟合。K=8 的三个 level 对三类 target 都持续改善,覆盖接近 100%,并用 K=32 四分之一的
+中心达到相当或更好的控制关联。因此 P1 当前候选冻结为
+**wrist `g=4,K=8,L=3,tol=1e-3,patience=2`**;K=16/32 只保留为 ablation。
+
+这个选择尚未证明 Q2/Q3/Q5 三族联合都必要。单族 future target 取各自 `t+s`,不能直接当作
+同一 horizon 比较。最终 family gate 使用严格对齐时间点、共同 `t+1` target 和 train-only
+加性类别岭探针,同时报告 joint 相对 best single 以及每个 leave-one-family-out 的增量。
+
+#### P1 three-family single-artifact screen: 2026-07-29
+
+在选定的 wrist `g=4,K=8,L=3` 规格上,Q2/Q3/Q5 一键流水线均完整生成 train、held-out、
+association、concentration 和带报告 SHA 的 workflow summary:
+
+| family | iterations L1/L2/L3 | val/test residual reduction | val/test full-L3 action gain | val/test own-horizon future-moment gain | val/test scene gain L3 |
+|---|---:|---:|---:|---:|---:|
+| Q2 | 11/11/8 | 30.00% / 31.45% | 7.21% / 7.17% | 2.81% / 2.80% | 11.88% / 17.66% |
+| Q3 | 9/8/8 | 28.20% / 29.97% | 6.22% / 6.24% | 3.63% / 3.63% | 12.39% / 18.54% |
+| Q5 | 9/14/8 | 26.82% / 28.31% | 4.06% / 3.90% | 3.74% / 3.57% | 13.12% / 19.45% |
+
+三族的每一级八个中心在 val/test 全部激活,L3 exact prefix coverage 为
+99.97--100.00%。Q2 更偏当前动作,Q5 相对更偏慢速视觉演化,与互质时间窗口的设计动机一致;
+但表中的 future target 分别是 `t+2/t+3/t+5`,只能作为族内证据,不能把差异解释为互补性。
+
+#### P1 aligned multi-family contribution: 2026-07-29
+
+联合探针只保留 Q5 也可用的共同 ticks,因此 val/test 精确使用 54,557/68,462 个样本。三个
+single、三个 pair 和 joint model 共享 target normalization 与样本;共同 future horizon 为
+`t+1`。L3 train-code coverage 最低仍为 99.9835%。默认 `ridge=8` 的结果:
+
+| common target | full joint gain val/test | best single val/test | joint - best single | leave-one-out increment Q2 / Q3 / Q5 val | leave-one-out increment Q2 / Q3 / Q5 test |
+|---|---:|---:|---:|---:|---:|
+| current action | 6.57% / 6.86% | Q2 6.21% / 6.29% | 0.36% / 0.57% | 1.09% / 0.20% / -0.19% | 1.01% / 0.49% / -0.03% |
+| future proprio | 2.69% / 3.02% | Q5 1.87% / Q3 2.07% | 0.82% / 0.95% | 0.25% / 0.32% / 0.56% | 0.31% / 0.49% / 0.48% |
+| future latent moment | 2.13% / 2.10% | Q2 1.47% / 1.45% | 0.66% / 0.65% | 0.52% / 0.24% / 0.18% | 0.50% / 0.28% / 0.16% |
+
+`ridge={2,8,32}` sensitivity 的方向完全一致:所有 target/depth/split 的 joint 都优于 best
+single。L3 future targets 中三个 family 的 leave-one-out increment 全为正;Q5-L3 只在
+current action 上稳定为轻微负值,val 为 -0.20% 至 -0.16%,test 为 -0.03% 至 -0.01%。
+Q2+Q3 的 L3 action gain 为 6.76%/6.89%,略高于 all-family 的 6.57%/6.86%;但在 L2,Q5
+action increment 又为正。
+
+因此当前结论不是删除 Q5,而是 **保留三族并做 role-specific measurement routing**:
+World/Forward-Dynamics 候选读取全部合法 L3;Policy 必须比较 all-L3、Q2+Q3-L3 和
+`Q2-L3 + Q3-L3 + Q5-L2`。
+
+mixed-prefix 直接复测中,最后一个 hybrid 的 action gain 为 6.96%/6.96%,高于 all-L3 的
+6.57%/6.86%、Q2+Q3-L3 的 6.76%/6.89% 和 all-L2 的 6.82%/6.21%。hybrid 的 future
+proprio 为 2.66%/3.06%、future latent moment 为 2.14%/2.09%,与 all-L3 的
+2.69%/3.02%、2.13%/2.10% 基本持平。因此 **Policy 初始默认使用 hybrid mask**,
+同时保留 all-L3/no-Q5 ablation;World 初始保留 all-L3,等真实 future-code objective 再裁剪。
+这些实验仍是 code-only probe,尚未回答 `H+C` 是否优于 continuous `H`。
+
+#### P1 cross-scene retrieval 与时间反事实: 2026-07-29
+
+原 held-out evaluator 只保存每个 center 的全局最近 3 个点,其中相邻 tick 或同一 scene 会
+重复占位。naive montage 因而不能区分“码字有场景偏置”和“展示样本本身不够多样”。重新冻结
+评估数值不变,只把每码 anchor pool 扩为 32;RGB renderer 再按 scene 去重选择最近 3 个
+test clips。每个 clip 精确还原 descriptor 实际读取的 `t-2s,t-s,t` 三个原始 wrist RGB,
+并额外显示仅供观察的首尾 RGB 差分:
+
+| family | scene-diverse clips / 24 | 满 3 scenes 的 codes / 8 | median / max source anchor rank | selected-anchor RGB motion eta-squared |
+|---|---:|---:|---:|---:|
+| Q2 | 22 | 6 | 2.5 / 23 | 0.823 |
+| Q3 | 24 | 8 | 3.5 / 23 | 0.808 |
+| Q5 | 23 | 7 | 2.0 / 24 | 0.598 |
+
+`eta-squared` 只是 2--3 个跨场景近邻上的描述性分解,不能作显著性或总体 effect size。montage
+显示 L1 同时按运动量和明显的容器/台面/颜色/纹理组织;Q2 两个码字、Q5 一个码字在前 32 个
+anchor 中仍不足 3 个 scene。因此当前不能宣称 L1 已形成对象级运动原语。
+
+为直接检查时间信息是否被使用,冻结 normalization 和全部 centers,在相同 val/test descriptor
+上运行三个反事实:
+
+```text
+history_swap:  [z(t-s),  z(t-2s), z(t)]   # 当前端点不变,只交换历史顺序
+reverse_time:  [z(t),    z(t-s),  z(t-2s)]
+static_current:[z(t),    z(t),    z(t)]
+```
+
+下面是 test 的 code-change fraction;`full` 表示任一合法 RQ prefix code 改变:
+
+| family | history-swap L1 / full | reverse L1 / full | static-current L1 / full |
+|---|---:|---:|---:|
+| Q2 | 3.41% / 13.11% | 2.62% / 21.85% | 22.27% / 66.39% |
+| Q3 | 1.63% / 27.65% | 2.73% / 39.30% | 25.52% / 72.71% |
+| Q5 | 2.12% / 40.50% | 4.12% / 45.82% | 30.25% / 80.13% |
+
+val 方向独立复现:reverse full-prefix 为 22.84%/42.00%/48.53%,static-current 为
+68.38%/75.68%/81.98%。test reverse 的逐层独立变化率分别是
+Q2 `2.62/6.17/19.10%`,Q3 `2.73/8.78/36.48%`,Q5 `4.12/33.47/24.63%`。
+因此较稳妥的解释是:
+
+- L1 主要是当前内容与粗状态坐标,不能单独当成动态类别。
+- 时间顺序主要进入 residual levels;Q2/Q3 更集中于 L3,Q5 的方向信号在 L2 最强。
+- Q5-L2 的结果与 aligned action probe 选择 Policy hybrid mask 相互支持;World 仍保留 L3。
+- 反事实是 frozen representation sensitivity,不是物理环境因果干预;对象级平移/缩放仍需
+  controlled geometry probe。
+
+当前不修改 canonical descriptor。若跨场景几何/光照测试仍显示静态内容压倒动态,下一轮比较
+原始三状态与可逆的
+`[z(t), z(t)-z(t-s), z(t-s)-z(t-2s)]` basis。它保留完整当前状态且可重建原三帧,不是
+`delta-only`;只有 held-out original-space distortion、action/future probe 和跨场景
+retrieval 同时改善时才替换当前输入。
+
 ### P2: DROID-Core
 
 优先使用官方具有 improved camera calibration 的约 36k episodes,完成正式的 held-out
@@ -265,7 +440,7 @@ code 的主导变量。
 
 ### P3: DROID-Full
 
-使用完整 76k episodes 训练选定规格的 Q2/Q3/Q5,并报告规模曲线:
+使用完整 76k episodes 训练 P1/P2 family gate 后保留的 codebooks,并报告规模曲线:
 
 ```text
 100 episodes -> 10k -> Core-36k -> Full-76k
@@ -298,14 +473,17 @@ leave-one-institution/building-out 压力测试。所有 normalization、reservo
 
 ### 5.2 Camera policy
 
-第一版主输入:
+P1 证据把两条路径分开:
 
 ```text
-exterior-1 + wrist
+frozen RQ descriptor:  wrist
+continuous state H:    exterior-1 + wrist
 ```
 
-两路分别经同一 frozen Wan-VAE,保留 view identity 后再组成 descriptor。`exterior-2` 默认作为
-cross-view consistency 和 camera replacement 测试。后续只有实验证明有增益时才进入主输入。
+两路仍分别经同一 frozen Wan-VAE。离散码本只用 wrist `g=4`,避免 exterior scene/background
+identity 支配 code;连续状态保留 view identity 和双视角空间细节。`exterior-2` 默认作为
+cross-view consistency 和 camera replacement 测试,只有后续 H-path ablation 证明有增益时才
+进入连续主输入。
 
 ### 5.3 Sampling policy
 
@@ -429,7 +607,7 @@ metrics accumulation 必须为 fp32。
 正式 artifact 默认只保存:
 
 - train-only normalization。
-- 3 family x 有效 RQ levels 的 centers。
+- 每个保留 family x 有效 RQ levels 的 centers。
 - split/data/model/config hashes。
 - 每个 center 的少量 representative episode/time ids。
 - held-out aggregate metrics 和 reports。
@@ -441,10 +619,10 @@ artifact,绝不继续更新 centers。
 
 ### Step A: camera/pool
 
-固定 `s=3,K=16`,在 DROID-10k 比较:
+固定 `s=3,K=16`,已在 DROID-10k 比较:
 
 ```text
-exterior-only vs exterior+wrist
+exterior-only vs wrist-only vs exterior+wrist
 g = 1,2,4
 ```
 
@@ -474,7 +652,8 @@ RQ prefix = L1 / L1+L2 / L1+L2+L3
 
 ### Step D: full refinement
 
-只对最终三个 codebooks 在 DROID-Full 做 1-2 次 streaming Lloyd refinement,再冻结 artifact。
+只对最终保留的 codebooks 在 DROID-Full 做 1-2 次 streaming Lloyd refinement,再冻结
+artifact。
 
 ## 9. 8xA100 作业布局
 
@@ -584,6 +763,17 @@ latent spatial-moment change。报告 standardized MSE 相对 train global-mean 
 - `evaluation.py`:只读 frozen train normalization/centers,在 val/test 流式累计逐层 residual、
   usage、dead fraction、perplexity、temporal transition、联合 tuple 指标和每中心 retrieval
   anchors。
+- `association.py`:只用 train 拟合 RQ-prefix 条件均值,在 val/test 测量 action、future proprio
+  和 future Wan spatial-moment association,包含逐级 backoff 与 exact coverage。
+- `concentration.py`:在 held-out split 内按 parent episode 隔离 fit/evaluation,测量 scene、
+  institution 和 exact-task concentration;descriptive MI 不冒充泛化指标。
+- `family_association.py`:在共同 tick/target 上拟合 train-only additive categorical ridge,
+  比较 single/pair/joint family 与 leave-one-family-out 增量。
+- `retrieval.py`:把 held-out anchors 经 pooled provenance 精确映射回 DROID RGB,按
+  scene/parent 去重并生成三帧 trajectory、差分 montage 和 machine-readable summary。
+- `temporal_sensitivity.py`:冻结 codebook 后运行 history-swap、time-reversal 和
+  static-current 反事实,报告逐层/prefix code change 与 cross-reconstruction penalty。
+- `workflow.py`:可恢复地串联 train、held-out、association、concentration,并锁定各报告 SHA。
 - `wan_causality.py`:用真实视频完整编码与逐级前缀编码的 latent 一致性审计,显式检测
   Wan-VAE temporal look-ahead。
 - `droid_pooled_export.py`:rank-aware exact reader 到双相机 Wan `pooled_g4` 的原子 shard export、
@@ -592,8 +782,8 @@ latent spatial-moment change。报告 standardized MSE 相对 train global-mean 
 - `codewam/data/droid_manifest.py`:官方 raw metadata、RLDS position、keep ranges、language 和
   shard checksum 的精确 join,scene-isolated split,以及 institution/scene/collector-aware sample。
 - `codewam/data/droid_rlds.py`:按 manifest `(shard,record)` 精确读取,未选相机跳过 JPEG decode,
-  整 shard 的确定性 rank assignment、completed-episode resume,以及不跨 gap 的 eligible
-  segment interface。
+  整 shard 的确定性 rank assignment、completed-episode resume、不跨 gap 的 eligible
+  segment interface,以及只解码指定绝对帧的稀疏 RGB reader。
 
 input/cache 使用 fp16 或 bf16;normalization、distance、centers 和统计累积使用 fp32。descriptor、
 residual 和全量 code assignment 都只在当前 batch 中产生,不作为默认永久 cache。
@@ -603,11 +793,13 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 57 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 77 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 patience resume、RQ residual 下降、artifact round-trip、双 rank resume 与单卡 centers 等价、
-DROID pooled export evidence、Wan causal-prefix 正反例和 Q2/Q3/Q5 train/held-out 一键流程。
+DROID pooled export evidence、Wan causal-prefix 正反例、candidate workflow、跨 parent folds
+、对齐 multi-family contribution、scene-diverse retrieval provenance 和冻结 temporal
+counterfactual。
 
 ## 12. 命令与产物
 
@@ -643,14 +835,42 @@ PYTHONPATH=. python scripts/build_droid_manifest.py \
 python scripts/prepare_streaming_codebook_run.py \
   --pooled-export-dir "$POOLED_ROOT" \
   --output-dir "$RQ_ROOT" \
-  --pool 4 --k 16 --levels 3 --device cuda:0
+  --cameras wrist_image_left \
+  --strides 2 3 5 \
+  --pool 4 --k 8 --levels 3 --device cuda:0
 
-python scripts/train_streaming_codebooks.py train \
-  --config "$RQ_ROOT/configs/train_g4_k16_l3.yaml"
-
-python scripts/evaluate_streaming_codebooks.py \
-  --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
+python scripts/run_streaming_codebook_candidate.py \
+  --train-config "$RQ_ROOT/configs/train_g4_k8_l3.yaml" \
+  --evaluation-config "$RQ_ROOT/configs/evaluate_g4_k8_l3.yaml"
 ```
+
+跨场景 RGB 检索先用单独 held-out config 把 `representatives_per_code` 提高到 32,不得覆盖标准
+三样本报告。随后运行:
+
+```bash
+python scripts/render_codebook_retrievals.py \
+  --source-manifest "$DROID_MANIFEST" \
+  --pooled-manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --droid-data-dir "$DROID_RLDS_ROOT" \
+  --evaluation-report "$Q2_HELDOUT_32/evaluation_report.json" \
+  --evaluation-report "$Q3_HELDOUT_32/evaluation_report.json" \
+  --evaluation-report "$Q5_HELDOUT_32/evaluation_report.json" \
+  --output-dir "$RQ_ROOT/rgb_retrieval_scene" \
+  --splits test --levels 1 --diversity-by scene
+
+python scripts/probe_codebook_temporal_sensitivity.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact Q2="$Q2_ROOT/Q2/codebook.pt" \
+  --artifact Q3="$Q3_ROOT/Q3/codebook.pt" \
+  --artifact Q5="$Q5_ROOT/Q5/codebook.pt" \
+  --output-dir "$RQ_ROOT/temporal_sensitivity" \
+  --splits val test --device cuda:0
+```
+
+renderer 的 L1 是可独立解释的粗中心。若显式请求 L2/L3,输出表示不同 earlier prefix 下对同一
+residual center 的使用,不能把单个 suffix code 当成完整状态类别。temporal probe 只改变
+held-out descriptor 并重新读取 frozen centers,不更新 artifact。
 
 每个 family 的标准输出:
 
@@ -693,16 +913,16 @@ BridgeData V2。
 
 ## 14. 下一张工程单
 
-下一阶段完成真实数据 Gate 1/2,不提前把未验证码本接入完整模型:
+下一阶段完成 P1 family/semantic gate,不提前把未验证 code 接入完整模型:
 
 ```text
-1. 用当前 4xA800 导出 canonical DROID-10k pooled cache并验证 rank resume/finalize
-2. 在原始 scene-isolated val/test 上运行 frozen held-out residual/usage evaluator
-3. 加入 retrieval、camera identity、geometry 与 action probe report
-4. 只用 train 建立 scene/task/event balanced descriptor reservoir
-5. 顺序比较 camera、g、K、RQ prefix,不做全组合暴力搜索
-6. 固定 initialization 后完成 1-GPU/多 GPU 聚合等价测试
-7. Gate 1/2 通过后实现 FrozenRQAdapter 与模型 mask tests
+1. 对同一 DROID clips 运行 translation/scale/photometric perturbation 与 code stability report
+2. 把 gripper/contact/action event 加入跨 scene retrieval agreement,区分运动量与运动类型
+3. 用 LIBERO controlled scenes 复核位置/尺度/光照/任务敏感性
+4. 仅在上述测试失败时比较 absolute-triplet 与可逆 endpoint+deltas descriptor basis
+5. 定义 FrozenRQAdapter、ModeCodeMask、RoleState typed contracts
+6. 实现 continuous base belief、Policy/World measurement routers 与 mask invariance tests
+7. 比较 H-only/C-only/H+C minimal policy probe;H+C 稳定胜出后才实现 WorldExpert
 ```
 
 验收不以“程序跑完”为准:
@@ -713,3 +933,4 @@ BridgeData V2。
 - 任意 iteration/level 中断后可恢复。
 - train/val/test 与 source checksums 可从 artifact 反查。
 - future frame、跨 episode frame 和 held-out statistics 无法进入训练。
+- 被 Policy role mask 屏蔽的 code 无法经 belief、memory 或 World activation 旁路进入动作。

@@ -8,6 +8,7 @@ from codewam.codebook_eval.manifest import EpisodeManifest, EpisodeRecord
 from codewam.data.droid_rlds import (
     DroidRLDSEpisode,
     plan_droid_rank_assignments,
+    read_manifest_droid_rlds_frames,
 )
 
 
@@ -82,6 +83,33 @@ class DroidRankAssignmentTests(unittest.TestCase):
         manifest = EpisodeManifest.from_records((first, second))
         with self.assertRaisesRegex(ValueError, "Duplicate DROID shard position"):
             plan_droid_rank_assignments(manifest, world_size=1)
+
+    def test_sparse_frame_requests_validate_before_tensorflow_io(self) -> None:
+        manifest = EpisodeManifest.from_records(
+            (make_record("shard", 100, 0, 0),)
+        )
+        key = manifest.records[0].key
+
+        self.assertEqual(
+            read_manifest_droid_rlds_frames(
+                "/missing",
+                manifest,
+                {},
+            ),
+            {},
+        )
+        with self.assertRaisesRegex(KeyError, "Unknown DROID manifest keys"):
+            read_manifest_droid_rlds_frames(
+                "/missing",
+                manifest,
+                {"droid-1.0.1:missing": [0]},
+            )
+        with self.assertRaisesRegex(IndexError, r"outside \[0, 10\)"):
+            read_manifest_droid_rlds_frames(
+                "/missing",
+                manifest,
+                {key: [10]},
+            )
 
 
 class DroidEligibleSegmentTests(unittest.TestCase):

@@ -15,10 +15,16 @@ CodeWAM/
 │   │   ├── streaming.py       # causal descriptors and streaming RQ
 │   │   ├── pipeline.py        # canonical Q2/Q3/Q5 launcher
 │   │   ├── evaluation.py      # frozen-artifact val/test evaluator
+│   │   ├── association.py     # train-fit held-out single-family probes
+│   │   ├── concentration.py   # cross-parent context concentration
+│   │   ├── family_association.py # aligned multi-family contribution
+│   │   ├── retrieval.py       # exact RGB retrieval and montage provenance
+│   │   ├── temporal_sensitivity.py # frozen temporal counterfactuals
+│   │   ├── workflow.py        # resumable candidate end-to-end workflow
 │   │   └── droid_pooled_export.py # rank-aware Wan pooled exporter
 │   ├── data/
 │   │   ├── droid_manifest.py  # exact official join and balanced sample
-│   │   ├── droid_rlds.py      # exact-position, rank-aware DROID reader
+│   │   ├── droid_rlds.py      # exact-position, rank-aware and sparse RGB reader
 │   │   └── package_scan_v6.py # local regression adapter
 │   ├── model.py               # current FastWAM-compatible prototype
 │   ├── probe.py               # legacy compatibility probe
@@ -214,18 +220,20 @@ pooled shards 就绪后训练与 held-out 评估:
 python scripts/prepare_streaming_codebook_run.py \
   --pooled-export-dir "$POOLED_ROOT" \
   --output-dir "$RQ_ROOT" \
-  --cameras exterior_image_1_left wrist_image_left \
+  --cameras wrist_image_left \
   --strides 2 3 5 \
-  --pool 4 --k 16 --levels 3 --device cuda:0
+  --pool 4 --k 8 --levels 3 --device cuda:0
 
-python scripts/train_streaming_codebooks.py train \
-  --config "$RQ_ROOT/configs/train_g4_k16_l3.yaml"
-
-python scripts/evaluate_streaming_codebooks.py \
-  --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
+python scripts/run_streaming_codebook_candidate.py \
+  --train-config "$RQ_ROOT/configs/train_g4_k8_l3.yaml" \
+  --evaluation-config "$RQ_ROOT/configs/evaluate_g4_k8_l3.yaml"
 ```
 
-冻结评估完成后，可在不更新 center 的前提下运行 train-fit/val-test-only 关联探针:
+该单进程命令依次续跑 train、frozen held-out evaluation、单族 association 和跨 parent
+context concentration,最后写出带四份报告 SHA 的 `candidate_workflow.json`。任何阶段已有
+合法报告都会复用;contract 不一致时拒绝混用。
+
+冻结评估完成后，也可单独运行 train-fit/val-test-only 关联探针:
 
 ```bash
 python scripts/probe_frozen_codebook_associations.py \
@@ -241,19 +249,76 @@ python scripts/probe_frozen_codebook_associations.py \
 `t+s`，绝不加入 descriptor。条件均值和 target normalization 只由 train 统计，
 val/test 遇到样本不足的 tuple 会依次回退到更短 RQ prefix 或 train global mean。
 
+三族 artifact 完成后,用严格对齐的 tick 和共同目标测量互补性:
+
+```bash
+python scripts/probe_codebook_family_contributions.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact Q2="$RQ_ROOT/Q2/codebook.pt" \
+  --artifact Q3="$RQ_ROOT/Q3/codebook.pt" \
+  --artifact Q5="$RQ_ROOT/Q5/codebook.pt" \
+  --depth-profile policy-hybrid=Q2:3,Q3:3,Q5:2 \
+  --output-dir "$RQ_ROOT/family_association" \
+  --device cuda:0
+```
+
+它只在 train 上拟合加性类别岭回归,在完全相同的 val/test 时间点比较三个 single、三个 pair
+和 joint model。报告 `joint - best single` 以及 joint 相对每个 leave-one-family-out model
+的增量,避免不同 stride 的有效窗口或 future horizon 混进横向比较。默认
+`max_pair_cells=2,000,000` 会阻止不受控的大容量 prefix table。`--depth-profile` 直接拟合
+指定的合法 mixed prefix,不会用 leave-one-out 间接猜测 hybrid 性能。
+
+时间反事实不需要原始 RGB 或重训 centers:
+
+```bash
+python scripts/probe_codebook_temporal_sensitivity.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact Q2="$Q2_ROOT/Q2/codebook.pt" \
+  --artifact Q3="$Q3_ROOT/Q3/codebook.pt" \
+  --artifact Q5="$Q5_ROOT/Q5/codebook.pt" \
+  --output-dir "$RQ_ROOT/temporal_sensitivity" \
+  --splits val test --device cuda:0
+```
+
+它分别测试保持当前端点的 history swap、完整 time reversal 和 static-current repetition,
+报告逐层与合法 prefix 的 code change、true-descriptor cross-reconstruction penalty。
+结果属于 representation sensitivity,不等同于物理环境因果干预。
+
+生成可审查 RGB retrieval 时,先在独立 held-out output 中把
+`representatives_per_code` 设为 32,再从不同 scene 选最近 anchor:
+
+```bash
+python scripts/render_codebook_retrievals.py \
+  --source-manifest "$DROID_MANIFEST" \
+  --pooled-manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --droid-data-dir "$DROID_RLDS_ROOT" \
+  --evaluation-report "$Q2_HELDOUT_32/evaluation_report.json" \
+  --evaluation-report "$Q3_HELDOUT_32/evaluation_report.json" \
+  --evaluation-report "$Q5_HELDOUT_32/evaluation_report.json" \
+  --output-dir "$RQ_ROOT/rgb_retrieval_scene" \
+  --splits test --levels 1 --diversity-by scene
+```
+
+reader 根据 pooled shard 中的 `absolute_latent_frame_indices` 只解码请求 JPEG。L2/L3 montage
+展示 residual center 在不同 earlier prefixes 下的使用,不能单独解释为完整状态类别。
+
 选定最终规格后可让每个 rank 读取独立 pooled shards,共享 rank-0 全局 reservoir 初始化并只
 all-reduce `K x D` 统计量:
 
 ```bash
 torchrun --standalone --nproc-per-node=8 \
   scripts/train_streaming_codebooks.py train \
-  --config "$RQ_ROOT/configs/train_g4_k16_l3.yaml"
+  --config "$RQ_ROOT/configs/train_g4_k8_l3.yaml"
 ```
 
 训练默认 `cpu_threads=4`,避免短 segment tensor 操作在 64 线程机器上过度并行;
 K-Means++、Lloyd assignment 和 residual quantization 使用 `training.device`。评估只读取
 frozen train normalization/centers,不会用 val/test 重估统计量。配置生成器只接受已经
 finalize 的 export,并复核 contract、pooled manifest 以及每个 shard 的大小和 SHA-256。
+端到端 candidate workflow 本身只接受单进程;多卡训练后在 rank 0 分别运行 evaluation 和
+probes。
 
 官方 DROID manifest 的构建命令、数据 contract、搜索顺序、评估指标和 8xA100 布局都在
 `CODEBOOK.md`。一次性下载器和官方数据索引放在共享数据根目录,不放进本仓库。旧

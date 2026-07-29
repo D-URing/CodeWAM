@@ -9,8 +9,8 @@ Video DiT、ActionDiT 和 flow matching 等基座能力,但不把 FastWAM 的对
 ```text
 unquantized Wan latent -> continuous state H -> 精确几何与动作微调
 three frozen RQ-3     -> 9 code tokens     -> 多时间尺度状态坐标
-H + code + L/P        -> belief B          -> continuous action policy
-shared state + action -> world expert      -> training-only future-code objective
+H + L/P               -> shared belief B0
+B0 + role-masked code -> B-policy/B-world  -> action / future-code experts
 ```
 
 三套码本使用严格因果窗口:
@@ -94,13 +94,32 @@ python scripts/train_streaming_codebooks.py smoke \
 python scripts/prepare_streaming_codebook_run.py \
   --pooled-export-dir "$POOLED_ROOT" \
   --output-dir "$RQ_ROOT" \
-  --pool 4 --k 16 --levels 3 --device cuda:0
+  --cameras wrist_image_left \
+  --strides 2 3 5 \
+  --pool 4 --k 8 --levels 3 --device cuda:0
 
-python scripts/train_streaming_codebooks.py train \
-  --config "$RQ_ROOT/configs/train_g4_k16_l3.yaml"
+python scripts/run_streaming_codebook_candidate.py \
+  --train-config "$RQ_ROOT/configs/train_g4_k8_l3.yaml" \
+  --evaluation-config "$RQ_ROOT/configs/evaluate_g4_k8_l3.yaml"
 
-python scripts/evaluate_streaming_codebooks.py \
-  --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
+python scripts/probe_codebook_family_contributions.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact Q2="$RQ_ROOT/Q2/codebook.pt" \
+  --artifact Q3="$RQ_ROOT/Q3/codebook.pt" \
+  --artifact Q5="$RQ_ROOT/Q5/codebook.pt" \
+  --depth-profile policy-hybrid=Q2:3,Q3:3,Q5:2 \
+  --output-dir "$RQ_ROOT/family_association" \
+  --device cuda:0
+
+python scripts/probe_codebook_temporal_sensitivity.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact Q2="$RQ_ROOT/Q2/codebook.pt" \
+  --artifact Q3="$RQ_ROOT/Q3/codebook.pt" \
+  --artifact Q5="$RQ_ROOT/Q5/codebook.pt" \
+  --output-dir "$RQ_ROOT/temporal_sensitivity" \
+  --splits val test --device cuda:0
 ```
 
 真实数据导出前用 `scripts/audit_wan_causality.py` 做 full-vs-prefix latent 一致性审计,
@@ -122,18 +141,23 @@ BridgeData V2 frozen-transfer and independent-refit replication
 
 ## 当前状态
 
-- 已锁定:连续状态路径、三套独立 causal RQ、九个只读 code measurements、belief aggregator、
-  mode-specific masks 和可选 MemoryPort。
+- 已锁定:连续状态路径、三套独立 causal RQ、九个只读 code measurements、continuous base
+  belief、role-specific measurement routers 和可选 MemoryPort。
 - 已实现:episode manifest、scene-level split、pooled-feature shard、Q2/Q3/Q5 causal iterator、
   train-only normalization、共享初始化的多卡 streaming RQ、可恢复 patience、frozen artifact、
-  带 temporal/retrieval anchors 的只读 held-out evaluator,以及 DROID 1.0.1 精确
-  metadata/RLDS join、rank-aware reader、keep-range audit 和 canonical pooled exporter。
-- 已验证:54 项单元测试、单卡/双 rank centers 等价、synthetic Q2/Q3/Q5 train/eval smoke、
-  58,116-episode canonical DROID manifest,以及 26-episode/13-institution 真实 Wan latent
-  与 RQ 工程 pilot。
+  只读 held-out evaluator、单族关联、跨 parent context concentration、对齐的多族增量探针,
+  scene-diverse RGB retrieval、冻结 temporal counterfactual probe,以及 DROID 1.0.1 精确
+  metadata/RLDS join、稀疏 RGB reader、keep-range audit 和 canonical pooled exporter。
+- 已验证:77 项单元测试、单卡/双 rank centers 等价、synthetic Q2/Q3/Q5 端到端 smoke、
+  58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
+  causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较,以及 val/test 一致的时间
+  反事实敏感性。
+- 当前候选:wrist-only frozen RQ 使用 `g=4,K=8,L=3`;连续 latent 路径仍保留 exterior+wrist。
+  L1 主要承载粗内容,时间顺序敏感性主要进入 L2/L3;这是 DROID-10k 规格候选,不是对象级
+  运动语义或跨数据集结论。
 - 默认关闭:legacy online-EMA single-token codebook。
-- 下一步:4 卡导出 canonical DROID-10k pooled cache,在原始 scene-isolated val/test 上完成
-  held-out residual/usage、retrieval、camera 与 action probes,再冻结 K、pool 和有效 RQ prefix。
+- 下一步:完成 geometry/photometric probe 和 LIBERO controlled validation,再实现
+  `FrozenRQAdapter`、role router 与 mask invariance tests;随后比较 `H-only` 和 `H+C`。
 
 外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
 checkpoints 和运行结果始终放在 git 之外。
