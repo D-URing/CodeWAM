@@ -432,6 +432,103 @@ Q2 `2.62/6.17/19.10%`,Q3 `2.73/8.78/36.48%`,Q5 `4.12/33.47/24.63%`。
 `delta-only`;只有 held-out original-space distortion、action/future probe 和跨场景
 retrieval 同时改善时才替换当前输入。
 
+#### P1 RGB-to-RQ usability gate: 2026-07-29
+
+冻结 canonical wrist `g=4,K=8,L=3` artifacts 后,直接从原始 RGB 重走
+`resize -> Wan-VAE -> pooled_g4 -> Q2/Q3/Q5`。DROID 使用 32 个 val 和 32 个 test
+clip,每个 split 优先选择不同 scene;LIBERO 使用 32 个 clip,覆盖
+`spatial/object/goal/10` 四套 suite 的 9/9/7/7 个任务。每个 clip 同时编码 17 个条件:
+identity、轻度 brightness/contrast、全局平移/缩放,以及只作用于目标 latent tick 对应末四帧
+的平移/缩放。后者仍是整帧合成干预,不是带 object mask 的物理位姿干预。
+Wan 每个 224x224 latent tick 是 `48x14x14`,canonical cache 只保存 `48x4x4=768` 维
+pooled state;每个 family 的三状态 absolute triplet 因而是 2,304 维,不是把一帧压成
+“仅 48 维”再聚类。
+
+identity 路径对 DROID cache 的三族 pooled MSE 和 maximum absolute error 均为 0,九个 level
+code 与全部 RQ prefix 100% 一致。因此 raw RGB、Wan causal tick、pooled cache 和 frozen
+codes 的端到端时间/预处理 contract 已闭合。
+
+下面的 `photo RQ/natural` 是轻度光照扰动造成的完整 RQ center 位移,除以真实相邻 latent
+一步的 center 位移;`endpoint` 是强端点平移/缩放使任一完整 prefix code 改变的比例;
+`opposite` 是相反方向产生不同 prefix 的比例:
+
+| family | photo L1 change val/test | photo full change val/test | photo RQ/natural val/test | endpoint change val/test | opposite val/test |
+|---|---:|---:|---:|---:|---:|
+| Q2 | 10.16% / 10.16% | 65.63% / 60.94% | 1.44 / 2.30 | 33.33% / 27.60% | 51.04% / 39.58% |
+| Q3 | 15.63% / 15.63% | 50.78% / 46.88% | 0.78 / 2.32 | 29.17% / 13.02% | 39.58% / 23.96% |
+| Q5 | 15.63% / 15.63% | 60.16% / 46.09% | 0.83 / 0.68 | 32.29% / 20.31% | 43.75% / 33.33% |
+
+三个 family、两个 split 的 8px center 位移都不小于 4px,说明存在 dose response。但判定按
+最差 `family x split` 而不是总平均:geometry 为 **conditional**,因为 Q3 test 的 endpoint
+与 opposite 只有 13.02%/23.96%;photometric 为 **fail**,因为 Q2/Q3 test 的量化位移超过
+两个自然步。对应 raw descriptor 位移最多只有 0.266 个自然步,L1 change 也最多 15.63%,
+所以失败点主要是硬 RQ suffix 边界放大外观扰动,不是 Wan latent 对几何完全失明。强
+endpoint geometry 的 raw descriptor 位移达到自然一步的 0.607--0.871,但量化后只有
+0.250--0.851,进一步把“Wan 是否感知变化”和“RQ 是否保留变化”分成两个问题。
+
+动作事件探针仍只把绝对视觉 triplet 编码为 code;`proprio[t]-proprio[t-s]` 只定义 held-out
+监督标签。完整 prefix 在 unseen val/test scenes 上对平移/旋转幅值的 normalized accuracy
+gain 为 10.74--18.50%,方向为 2.83--10.85%,任何 code coverage 为 100%。gripper gain
+仅在 -0.895% 到 +0.324% 间摆动,没有稳定信号。Q5 translation-direction 的平均增益从
+L1 2.98% 到 L2 8.36%,L3 仅到 8.60%,独立支持 Policy 的 Q5-L2 mask。轨迹 tick 相关,
+这些值是描述性 held-out association,不是显著性或对象因果证明。L3 exact-prefix coverage
+为 99.97--100%,但 motion balanced accuracy 仅 0.188--0.379,NMI 仅 0.029--0.056;
+因此弱语义不是 backoff 造成,也不足以支持 code-only control。
+
+冻结 DROID artifacts 在 LIBERO 上发生明确 domain collapse:
+
+| family | min active/K | min perplexity/K | photo RQ/natural | endpoint change | opposite |
+|---|---:|---:|---:|---:|---:|
+| Q2 | 0.50 | 0.189 | 1.44 | 11.98% | 17.71% |
+| Q3 | 0.25 | 0.158 | 4.13 | 3.13% | 4.17% |
+| Q5 | 0.25 | 0.144 | 7.01 | 4.69% | 8.33% |
+
+因此 cross-domain stress 为 **fail**。这不否定 DROID 域内码本,但禁止把 frozen DROID
+artifacts 称为通用视觉 tokenizer。LIBERO 下一步必须分开比较同规格独立 refit、显式
+normalization/calibration,以及 simulator 中真正的 object-pose intervention;不同数据域不要求
+numeric code id 对齐。
+
+seed 7/19/31 使用完全相同的 descriptors、train-only normalization、`K=8,L=3` 和
+`tol=1e-3,patience=2`;只有 initialization seed 不同。所有 27 个 level 都由 early stop
+结束,实际轮数和 train residual reduction 为:
+
+| seed | Q2 iterations / reduction | Q3 iterations / reduction | Q5 iterations / reduction |
+|---|---:|---:|---:|
+| 7 | 11/11/8 / 31.81% | 9/8/8 / 30.23% | 9/14/8 / 28.89% |
+| 19 | 9/7/10 / 31.66% | 7/9/8 / 29.97% | 9/9/7 / 28.28% |
+| 31 | 15/10/8 / 31.51% | 11/8/13 / 30.41% | 10/8/7 / 28.38% |
+
+共享 val/test descriptors 上,full-RQ residual MSE 的最大跨 seed CV 仅 0.55%,最大相对范围
+1.35%;这证明训练目标和 early stop 可重复。但 partition 不可重复:
+
+| family | max distortion CV | minimum NMI L1/L2/L3 | minimum full-prefix NMI |
+|---|---:|---:|---:|
+| Q2 | 0.23% | 0.560 / 0.138 / 0.088 | 0.540 |
+| Q3 | 0.55% | 0.501 / 0.143 / 0.065 | 0.531 |
+| Q5 | 0.33% | 0.510 / 0.154 / 0.086 | 0.523 |
+
+完整 prefix 的 label-mapped agreement 只有 4.68--9.70%,中位数 7.31%;full-prefix ARI 也只有
+0.082--0.165。高基数 tuple 的 NMI 仍在 0.523 以上,不能覆盖低逐层 NMI、低 ARI 和低 exact
+agreement。因此这不是简单的 code id permutation,而是后两层存在多个 distortion 近等价的
+residual partitions。按运行前锁定的门槛,seed stability 为 **fail**。
+
+严格聚合的最终状态是:
+
+```text
+pass:        causal reproduction, quantizer health, RQ hierarchy,
+             Q2/Q3/Q5 complementarity
+conditional: scene leakage, synthetic geometry, action-event semantics
+fail:        photometric robustness, seed stability,
+             frozen DROID -> LIBERO transfer
+verdict:     not_ready
+```
+
+这个 `fail` 不表示 Wan latent 没有视觉信息,也不表示某一份 frozen artifact 不能被读取;
+它阻止的是把当前训练方案称为稳定、可重新生成的视觉坐标系。光照和跨域同样是 semantic
+limiters,不会被健康 distortion 平均掉。当前只允许围绕固定 artifact 做诊断和跨 seed
+functional-equivalence 实验;仍禁止 code-only precision control、在线更新 centers、对象
+运动原语和通用跨域 tokenizer 主张。
+
 ### P2: DROID-Core
 
 优先使用官方具有 improved camera calibration 的约 36k episodes,完成正式的 held-out
@@ -773,6 +870,14 @@ latent spatial-moment change。报告 standardized MSE 相对 train global-mean 
   scene/parent 去重并生成三帧 trajectory、差分 montage 和 machine-readable summary。
 - `temporal_sensitivity.py`:冻结 codebook 后运行 history-swap、time-reversal 和
   static-current 反事实,报告逐层/prefix code change 与 cross-reconstruction penalty。
+- `action_events.py`:train-only event thresholds 和 prefix tables,在 unseen scenes 上测量
+  Cartesian magnitude/direction 与 gripper association;delta 只作标签。
+- `visual_perturbations.py`:从 DROID/LIBERO RGB 重编码 Wan latent,验证 cache reproduction、
+  photometric nuisance、translation/scale、direction、dose response 和 frozen transfer。
+- `seed_stability.py`:在共享 held-out descriptors 上比较独立 seed 的 distortion CV、逐层
+  NMI/ARI、联合 prefix partition 和 label-mapped agreement。
+- `usability.py`:验证所有报告的 contract/artifact/manifest provenance,按十道最差组 gate
+  生成 JSON 与 Markdown;不使用可掩盖失败的单一总分。
 - `workflow.py`:可恢复地串联 train、held-out、association、concentration,并锁定各报告 SHA。
 - `wan_causality.py`:用真实视频完整编码与逐级前缀编码的 latent 一致性审计,显式检测
   Wan-VAE temporal look-ahead。
@@ -793,13 +898,14 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 77 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 101 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 patience resume、RQ residual 下降、artifact round-trip、双 rank resume 与单卡 centers 等价、
-DROID pooled export evidence、Wan causal-prefix 正反例、candidate workflow、跨 parent folds
-、对齐 multi-family contribution、scene-diverse retrieval provenance 和冻结 temporal
-counterfactual。
+DROID pooled export evidence、Wan causal-prefix 正反例、candidate workflow、跨 parent
+folds、对齐 multi-family contribution、scene-diverse retrieval provenance 和冻结 temporal
+counterfactual,以及 RGB-to-cache reproduction、视觉扰动、动作事件、独立 seed
+label-permutation 与十门可用性决策。
 
 ## 12. 命令与产物
 
@@ -868,6 +974,63 @@ python scripts/probe_codebook_temporal_sensitivity.py \
   --splits val test --device cuda:0
 ```
 
+动作事件、RGB 扰动和跨域压力测试:
+
+```bash
+python scripts/probe_codebook_action_events.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact Q2="$Q2_ROOT/Q2/codebook.pt" \
+  --artifact Q3="$Q3_ROOT/Q3/codebook.pt" \
+  --artifact Q5="$Q5_ROOT/Q5/codebook.pt" \
+  --output-dir "$RQ_ROOT/action_events" --device cuda:0
+
+python scripts/probe_rgb_visual_perturbations.py \
+  --source droid \
+  --artifact Q2="$Q2_ROOT/Q2/codebook.pt" \
+  --artifact Q3="$Q3_ROOT/Q3/codebook.pt" \
+  --artifact Q5="$Q5_ROOT/Q5/codebook.pt" \
+  --output-dir "$RQ_ROOT/rgb_perturbation_test" \
+  --vae-path "$WAN_VAE_PATH" --fastwam-src "$FASTWAM_SRC" \
+  --droid-pooled-manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --droid-source-manifest "$DROID_MANIFEST" \
+  --droid-data-dir "$DROID_RLDS_ROOT" \
+  --droid-split test --max-samples 32 --device cuda:0
+
+python scripts/probe_rgb_visual_perturbations.py \
+  --source libero \
+  --artifact Q2="$Q2_ROOT/Q2/codebook.pt" \
+  --artifact Q3="$Q3_ROOT/Q3/codebook.pt" \
+  --artifact Q5="$Q5_ROOT/Q5/codebook.pt" \
+  --output-dir "$RQ_ROOT/rgb_perturbation_libero" \
+  --vae-path "$WAN_VAE_PATH" --fastwam-src "$FASTWAM_SRC" \
+  --libero-root "$LIBERO_ROOT" --max-samples 32 --device cuda:0
+```
+
+三套完整 codebook 分别用至少三个不同 seed 训练后,在完全相同的 held-out descriptors 上比较:
+
+```bash
+python scripts/probe_rq_seed_stability.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact seed7:Q2="$Q2_ROOT/Q2/codebook.pt" \
+  --artifact seed7:Q3="$Q3_ROOT/Q3/codebook.pt" \
+  --artifact seed7:Q5="$Q5_ROOT/Q5/codebook.pt" \
+  --artifact seed19:Q2="$SEED19_Q2" \
+  --artifact seed19:Q3="$SEED19_Q3" \
+  --artifact seed19:Q5="$SEED19_Q5" \
+  --artifact seed31:Q2="$SEED31_Q2" \
+  --artifact seed31:Q3="$SEED31_Q3" \
+  --artifact seed31:Q5="$SEED31_Q5" \
+  --reference-run seed7 \
+  --output-dir "$RQ_ROOT/seed_stability" --device cuda:0
+```
+
+最后用 `scripts/build_rq_usability_report.py` 汇总 comparison、family association、retrieval、
+val/test temporal、causal audit、DROID/LIBERO visual、action events、seed stability 和
+capacity reports。聚合器重算每个 contract hash,并要求所有 canonical 输入共享相同的
+Q2/Q3/Q5 artifact SHA 与 pooled manifest fingerprint;不同版本不能拼成一份结论。
+
 renderer 的 L1 是可独立解释的粗中心。若显式请求 L2/L3,输出表示不同 earlier prefix 下对同一
 residual center 的使用,不能把单个 suffix code 当成完整状态类别。temporal probe 只改变
 held-out descriptor 并重新读取 frozen centers,不更新 artifact。
@@ -913,16 +1076,22 @@ BridgeData V2。
 
 ## 14. 下一张工程单
 
-下一阶段完成 P1 family/semantic gate,不提前把未验证 code 接入完整模型:
+下一阶段先裁决 seed failure,再实现被 P1 证据支持的最小接口,不提前扩建完整 world model:
 
 ```text
-1. 对同一 DROID clips 运行 translation/scale/photometric perturbation 与 code stability report
-2. 把 gripper/contact/action event 加入跨 scene retrieval agreement,区分运动量与运动类型
-3. 用 LIBERO controlled scenes 复核位置/尺度/光照/任务敏感性
-4. 仅在上述测试失败时比较 absolute-triplet 与可逆 endpoint+deltas descriptor basis
-5. 定义 FrozenRQAdapter、ModeCodeMask、RoleState typed contracts
-6. 实现 continuous base belief、Policy/World measurement routers 与 mask invariance tests
-7. 比较 H-only/C-only/H+C minimal policy probe;H+C 稳定胜出后才实现 WorldExpert
+1. 在同一 shared descriptors 上比较 deterministic initialization、multi-start medoid/
+   consensus 和当前 K-Means++,不能只用最低 train distortion 选 artifact
+2. 让 seed 7/19/31 各自冻结、各自训练同规格 minimal readout;比较 H-only 与 H+C 的
+   downstream gain 分布,不要求不同 seed 的 numeric code id 对齐
+3. 在现有 RGB probe 中增加每层 nearest/runner-up margin,验证光照和跨 seed suffix flip
+   是否能被 confidence 检出
+4. 比较 center-only、center+margin gate、prefix dropout 和 paired-photometric consistency
+5. 若跨 seed functional value 不稳定,回到 descriptor/clustering objective,加入时间邻域与
+   paired-view consistency;若稳定,冻结 artifact hash 并定义 FrozenRQAdapter/ModeCodeMask
+6. 在 LIBERO 分开做同规格独立 refit、normalization/calibration 和 simulator object-pose
+   intervention,不得把 frozen-transfer failure 混成一个数字
+7. 实现 continuous base belief、Policy/World measurement routers 与 mask invariance tests
+8. 只有 H+C 在多 seed、低数据和扰动下稳定胜出后才实现 WorldExpert
 ```
 
 验收不以“程序跑完”为准:

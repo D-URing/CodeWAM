@@ -146,18 +146,25 @@ BridgeData V2 frozen-transfer and independent-refit replication
 - 已实现:episode manifest、scene-level split、pooled-feature shard、Q2/Q3/Q5 causal iterator、
   train-only normalization、共享初始化的多卡 streaming RQ、可恢复 patience、frozen artifact、
   只读 held-out evaluator、单族关联、跨 parent context concentration、对齐的多族增量探针,
-  scene-diverse RGB retrieval、冻结 temporal counterfactual probe,以及 DROID 1.0.1 精确
-  metadata/RLDS join、稀疏 RGB reader、keep-range audit 和 canonical pooled exporter。
-- 已验证:77 项单元测试、单卡/双 rank centers 等价、synthetic Q2/Q3/Q5 端到端 smoke、
+  scene-diverse RGB retrieval、冻结 temporal counterfactual、held-out action events、
+  DROID/LIBERO RGB perturbation、independent-seed stability 和 provenance-checked usability
+  report,以及 DROID 1.0.1 精确 metadata/RLDS join、稀疏 RGB reader、keep-range audit 和
+  canonical pooled exporter。
+- 已验证:101 项单元测试、单卡/双 rank centers 等价、synthetic Q2/Q3/Q5 端到端 smoke、
   58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
-  causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较,以及 val/test 一致的时间
-  反事实敏感性。
-- 当前候选:wrist-only frozen RQ 使用 `g=4,K=8,L=3`;连续 latent 路径仍保留 exterior+wrist。
-  L1 主要承载粗内容,时间顺序敏感性主要进入 L2/L3;这是 DROID-10k 规格候选,不是对象级
-  运动语义或跨数据集结论。
+  causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较、val/test 一致的时间反事实
+  敏感性,以及 seed 7/19/31 的九套独立 RQ artifacts。
+- 当前候选:wrist-only frozen RQ 使用 `g=4,K=8,L=3`;DROID 域内 quantizer health、
+  temporal hierarchy 和三族互补通过,geometry/action/scene 为 conditional,photometric
+  robustness 失败。冻结 DROID artifacts 在 LIBERO 发生中心使用与几何响应 collapse,不能
+  作为通用 tokenizer。三 seed distortion CV 最高仅 0.55%,但 L2/L3 最低 NMI 只有
+  0.143/0.065,完整前缀映射一致率中位数为 7.31%,因此严格结论为 `not_ready`。连续 latent
+  路径必须保留 exterior+wrist。
 - 默认关闭:legacy online-EMA single-token codebook。
-- 下一步:完成 geometry/photometric probe 和 LIBERO controlled validation,再实现
-  `FrozenRQAdapter`、role router 与 mask invariance tests;随后比较 `H-only` 和 `H+C`。
+- 下一步:先用 downstream-equivalence、deterministic/consensus initialization 和
+  quantization-margin probe 裁决 suffix partition instability;只有跨 seed 的 `H+C`
+  增量价值稳定后才冻结 canonical artifact 并实现完整 role router。LIBERO 另做同规格独立
+  refit/calibration 和 simulator object-pose intervention。
 
 外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
 checkpoints 和运行结果始终放在 git 之外。

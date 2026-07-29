@@ -20,6 +20,10 @@ CodeWAM/
 │   │   ├── family_association.py # aligned multi-family contribution
 │   │   ├── retrieval.py       # exact RGB retrieval and montage provenance
 │   │   ├── temporal_sensitivity.py # frozen temporal counterfactuals
+│   │   ├── action_events.py    # held-out Cartesian/gripper event semantics
+│   │   ├── visual_perturbations.py # RGB-to-Wan nuisance/geometry stress
+│   │   ├── seed_stability.py   # independent-seed partition comparison
+│   │   ├── usability.py        # provenance-checked ten-gate report
 │   │   ├── workflow.py        # resumable candidate end-to-end workflow
 │   │   └── droid_pooled_export.py # rank-aware Wan pooled exporter
 │   ├── data/
@@ -319,6 +323,18 @@ frozen train normalization/centers,不会用 val/test 重估统计量。配置�
 finalize 的 export,并复核 contract、pooled manifest 以及每个 shard 的大小和 SHA-256。
 端到端 candidate workflow 本身只接受单进程;多卡训练后在 rank 0 分别运行 evaluation 和
 probes。
+
+完整 P1 可用性链路由四个独立入口补齐:
+
+```text
+probe_codebook_action_events.py       absolute-code -> held-out event labels
+probe_rgb_visual_perturbations.py     RGB -> Wan -> frozen RQ perturbation
+probe_rq_seed_stability.py            three seeds -> NMI/ARI/distortion CV
+build_rq_usability_report.py          provenance audit + ten gated decisions
+```
+
+正式命令和结果解释见 `CODEBOOK.md`。每个 probe 都先写 immutable contract,再原子写报告;
+同目录续跑只接受完全相同的 contract。统一报告不会复制数据或模型,只验证并引用输入 SHA。
 
 官方 DROID manifest 的构建命令、数据 contract、搜索顺序、评估指标和 8xA100 布局都在
 `CODEBOOK.md`。一次性下载器和官方数据索引放在共享数据根目录,不放进本仓库。旧

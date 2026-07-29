@@ -292,6 +292,22 @@ M_w-all:      Q2-L3 + Q3-L3 + Q5-L3
 Q5 test 倒放时 L2/L3 code 分别改变 33.47%/24.63%,说明 Q5 的主要方向敏感性确实已在
 合法 L2 prefix 中出现;这支持 hybrid 的信息解释,但同样不替代控制实验。
 
+DROID val/test RGB perturbation 进一步发现:L1 对 brightness/contrast 的 change 只有
+10.16--15.63%,但完整 prefix change 达 46.09--65.63%;Q2/Q3 test 的 center 位移被放大到
+自然相邻一步的 2.30/2.32 倍。因此 `FrozenRQAdapter` 的第一轮 ablation 不只比较 code
+availability,还应比较:
+
+```text
+center-only
+center + per-level residual norm / nearest-runner-up margin gate
+center + prefix dropout
+center + paired-photometric consistency
+```
+
+margin 和 residual norm 都由 frozen centers 的只读距离产生,不是新 encoder,更不是更新
+聚类中心。当前报告尚未保存 runner-up distance,所以 confidence gate 仍是假设,必须先用
+margin probe 验证 code flip 是否集中在低 margin 样本。
+
 ### 5.5 可选工作记忆
 
 v1 预留 MemoryPort,第一轮完整模型可关闭。启用时只允许:
@@ -558,8 +574,26 @@ scene-diverse L1 RGB retrieval 和 frozen temporal counterfactual 已完成。L1
 history-swap/reverse 的 val/test code change 只有约 1.6--4.2%,而完整 L3 prefix 对 reverse
 达到 Q2 21.9--22.8%、Q3 39.3--42.0%、Q5 45.8--48.5%;static-current 达
 66.4--82.0%。这支持“L1 粗内容、L2/L3 动态残差”的层级身份,也同时说明 L1 仍有明显
-场景/外观组织。Gate 1 尚需 geometry/photometric 和 LIBERO controlled validation,不能据此
-宣称对象级运动语义已经通过。
+场景/外观组织。
+
+RGB-to-Wan 复测已在 32 val + 32 test clips 上 100% 重现 canonical cache/codes。合成端点
+平移/缩放的最差 family/split full-prefix change 为 13.02%,相反方向区分为 23.96%,所有
+8px center response 均不小于 4px,所以 geometry 只到 **conditional**。photometric 为
+**fail**,因为某些 suffix 把很小的 raw appearance shift 放大到两个以上自然步。
+held-out Cartesian motion event 有 2.83--18.50% 增益,但 gripper 只有
+-0.895--+0.324%,只能说明腕部/机器人运动关联。
+
+冻结 DROID artifacts 在 32 个 LIBERO clips 上也未迁移:Q3/Q5 最差层只激活 2/8 个中心,
+端点几何响应只有 3.13%/4.69%。独立 seed 7/19/31 的 train/held-out distortion 高度接近,
+最大 CV 仅 0.55%,但 L2/L3 的最差 label-invariant NMI 只有 0.143/0.065,映射后的完整三级
+prefix agreement 中位数只有 7.31%。这说明优化可收敛到多个重建质量相近、边界却不同的
+suffix partition。
+
+因此 Gate 1 的严格状态是 **not ready**:已有 artifact 能作为 DROID 域内冻结测量继续做
+诊断,但还不是可重复训练的稳定视觉坐标系。它外观/场景敏感、不跨域,也不是对象级运动语义
+或通用 tokenizer。先证明不同 seed artifact 在 `H+C` minimal probe 中功能等价,或用
+deterministic/consensus initialization 稳定 partition,才冻结 canonical artifact;LIBERO
+必须独立 refit/calibrate 并做 simulator object-pose intervention。
 
 ### Gate 2: code 对控制表示是否有增量价值
 
@@ -614,10 +648,14 @@ single token` 是早期兼容原型,不是 canonical v1。配置必须默认关�
 可恢复 patience、frozen artifact 和 residual/usage/temporal held-out evaluator 已实现并通过
 GPU pilot。train-fit/held-out action association、cross-parent context concentration 和 aligned
 multi-family contribution probe、scene-diverse RGB retrieval 和 frozen temporal
-counterfactual 也已实现。geometry/photometric perturbation、LIBERO controlled validation、
-`H-only/H+C` probe 以及 distributed held-out aggregation 仍待完成。训练侧的 rank-aware
-shard partition、rank-0 shared initialization 和 distributed RQ all-reduce 已实现。实现
-边界见 `CODEBOOK.md`。
+counterfactual、RGB geometry/photometric perturbation、action-event probe、LIBERO frozen
+stress、independent-seed comparator 和 provenance-checked usability report 也已实现。
+当前 usability verdict 为 `not_ready`,硬阻塞项是 seed stability。cross-seed downstream
+equivalence、deterministic/consensus initialization、LIBERO independent refit/simulator
+intervention、quantization-margin probe、`FrozenRQAdapter`、mask invariance、`H-only/H+C`
+probe 以及 distributed held-out aggregation 仍待完成。训练侧的 rank-aware shard partition、
+rank-0 shared initialization 和 distributed RQ all-reduce 已实现。实现边界见
+`CODEBOOK.md`。
 
 | 早期实现 | canonical v1 |
 |---|---|
