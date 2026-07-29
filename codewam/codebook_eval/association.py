@@ -450,6 +450,7 @@ def probe_frozen_codebook_associations(
     output_dir: str | Path,
     splits: tuple[str, ...] = ("val", "test"),
     device: str = "auto",
+    cpu_threads: int = 4,
     batch_size: int = 8192,
     center_block_size: int = 1024,
     min_train_count: int = 8,
@@ -457,12 +458,20 @@ def probe_frozen_codebook_associations(
 ) -> dict[str, Any]:
     if not artifacts or any(not label for label in artifacts):
         raise ValueError("Association artifact labels must be nonempty and unique.")
-    if batch_size <= 0 or center_block_size <= 0 or min_train_count <= 0:
-        raise ValueError("Association batch, block and count values must be positive.")
+    if (
+        cpu_threads <= 0
+        or batch_size <= 0
+        or center_block_size <= 0
+        or min_train_count <= 0
+    ):
+        raise ValueError(
+            "Association thread, batch, block and count values must be positive."
+        )
     if not splits or any(split not in {"val", "test"} for split in splits):
         raise ValueError("Association splits must be val/test.")
     if len(splits) != len(set(splits)):
         raise ValueError("Association splits must be unique.")
+    torch.set_num_threads(int(cpu_threads))
 
     manifest_path = Path(manifest_path)
     manifest = EpisodeManifest.read_jsonl(manifest_path)
@@ -532,6 +541,7 @@ def probe_frozen_codebook_associations(
         },
         "splits": list(splits),
         "device": device,
+        "cpu_threads": cpu_threads,
         "batch_size": batch_size,
         "center_block_size": center_block_size,
         "min_train_count": min_train_count,
