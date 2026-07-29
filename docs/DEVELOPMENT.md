@@ -31,9 +31,9 @@ CodeWAM/
 │   │   ├── droid_manifest.py  # exact official join and balanced sample
 │   │   ├── droid_rlds.py      # exact-position, rank-aware and sparse RGB reader
 │   │   └── package_scan_v6.py # local regression adapter
-│   ├── model.py               # current FastWAM-compatible prototype
+│   ├── model.py               # legacy FastWAM-compatible prototype
 │   ├── probe.py               # legacy compatibility probe
-│   └── runtime.py             # Hydra factory
+│   └── runtime.py             # legacy Hydra factory
 ├── configs/                   # model, data, task, and codebook configs
 ├── scripts/                   # setup, checks, export, clustering, and training
 ├── requirements/              # local and CUDA dependency sets
@@ -46,19 +46,21 @@ CodeWAM/
 ```
 
 大型公开数据集放在独立共享数据根目录,不复制到仓库。下载、校验和训练 artifact 也不进入 git。
+canonical model 的目标目录是 `codewam/models/`,当前尚未创建;五模块文件清单见
+`ARCHITECTURE.md`。
 
 ## 2. 本机开发
 
-macOS 使用项目内轻量环境:
+macOS 已有项目内轻量环境时:
 
 ```bash
-bash scripts/setup_local_env.sh
 source .venv/bin/activate
-python scripts/check_environment.py --mode local
+python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-该环境用于代码、配置、单元测试和小规模 MPS/CPU smoke,不承担 5B 模型训练。
+该环境用于代码、配置、单元测试和小规模 MPS/CPU smoke,不承担大模型训练。当前
+`scripts/setup_local_env.sh` 会额外准备 FastWAM,只在需要 legacy/F0 环境时使用。
 
 Package Scan v6 是本机回归数据,目录保持为 `package_scan_v6/` 且不入库:
 
@@ -84,7 +86,15 @@ print(torch.cuda.is_available(), torch.cuda.device_count())
 PY
 ```
 
-已有兼容 torch 时,只安装项目和缺失依赖:
+已有兼容 torch 时,canonical source 的最低安装是:
+
+```bash
+python -m pip install -e .
+```
+
+码本导出、DROID reader 或训练分别按入口补齐缺失包,不要替换管理员提供的 torch。当前
+`scripts/setup_cluster_env.sh` 是 legacy/F0 inclusive 环境脚本,会 bootstrap FastWAM;使用时
+必须显式知道这一点:
 
 ```bash
 PYTHON=python \
@@ -92,25 +102,12 @@ INSTALL_TORCH_STACK=false \
 bash scripts/setup_cluster_env.sh
 ```
 
-只有明确需要由项目安装 CUDA 依赖时才使用默认 `INSTALL_TORCH_STACK=true`。可覆盖路径:
+`scripts/check_environment.py` 当前也检查 legacy FastWAM/Wan-DiT/ActionDiT 完整环境,不代表
+canonical five-module model 的最低依赖。独立模型实现时应同时增加分 profile 的环境检查。
 
-```bash
-PYTHON=/path/to/python \
-FASTWAM_DIR=/path/to/FastWAM \
-DIFFSYNTH_MODEL_BASE_PATH=/path/to/models \
-INSTALL_TORCH_STACK=false \
-bash scripts/setup_cluster_env.sh
-```
+## 4. FastWAM 外部对照与 legacy 边界
 
-随后运行:
-
-```bash
-python scripts/check_environment.py --mode cluster
-```
-
-## 4. FastWAM 边界
-
-固定上游:
+只有运行外部 `F0`、旧训练入口或当前已验证的 Wan exporter loader 时才固定上游:
 
 ```bash
 bash scripts/bootstrap_fastwam.sh
@@ -131,17 +128,18 @@ bash scripts/bootstrap_fastwam.sh
 CodeWAM owns:
 
 - frozen Q2/Q3/Q5 artifacts and nine-measurement interface;
-- continuous-state plus code aggregation;
-- Policy/Forward-Dynamics/Video-Prior mask program;
-- future-code objective and codebook evaluation pipeline;
+- `ContinuousStateEncoder`、`FrozenCodebookAdapter` 和 `WorldBeliefCore`;
+- `ActionFlowDecoder`、`CodeDynamicsDecoder` 和两个训练目标;
+- module-level visibility contracts and codebook evaluation pipeline;
 - CodeWAM configs and tests.
 
-FastWAM currently provides Wan-VAE/Video DiT、ActionDiT、MoT、flow-matching scheduler、dataset
-processor 和兼容训练 runtime。它是依赖与实验基线,不是 CodeWAM 的结构上限。
+FastWAM checkout 当前提供两类兼容能力:旧 Video-DiT/ActionDiT/MoT 训练对照,以及已被
+pooled-cache provenance 锁定的 Wan-VAE loader/转换器。前者只属于 `F0`;后者是可替换的
+数据适配器,不是 canonical model runtime。独立 v1 不 import FastWAM model 或 trainer。
 
 ## 5. 模型文件
 
-完整 compatible 模型准备:
+下面的脚本准备 legacy/F0 compatible 模型,不是 canonical v1 的最低下载:
 
 ```bash
 bash scripts/download_models.sh
@@ -162,8 +160,10 @@ DOWNLOAD_TEXT_ENCODER=true bash scripts/download_models.sh
 DOWNLOAD_ROBOTWIN_RELEASE=true bash scripts/download_models.sh
 ```
 
-RoboTwin/3-camera checkpoint 对 codebook Gate 0-2 不是依赖。离线 latent export 只需要固定版本
-Wan-VAE、对应 loader 和预处理配置;完整策略训练才需要 Wan DiT 与 ActionDiT。
+RoboTwin/3-camera checkpoint 对 codebook 或 canonical C0-C2 都不是依赖。离线 latent export
+只需要固定版本 Wan-VAE、对应 loader 和预处理配置。canonical v1 需要 Wan-VAE、一个明确
+版本的 language encoder 和 CodeWAM-owned modules,不需要 Wan DiT 或 ActionDiT checkpoint。
+具体 language encoder 在实现 ticket 中选择并冻结版本。
 
 无法访问 Hugging Face 且 FastWAM loader 支持 ModelScope 时:
 
@@ -344,7 +344,22 @@ profile、target 和 P1-only alpha selection;输出目录不能在不同 train f
 `CODEBOOK.md`。一次性下载器和官方数据索引放在共享数据根目录,不放进本仓库。旧
 `scripts/codebook_eval.py` 和 `codewam.probe` 只用于历史兼容检查。
 
-## 7. Compatible 模型训练
+## 7. Canonical 模型状态
+
+独立 CodeWAM v1 尚未实现,因此当前没有合法的 canonical training command。实现完成的最低
+验收是:
+
+```text
+codewam/models/ 五模块不 import FastWAM
+C0/C1/C2 使用同一 typed batch contract
+action/future-code label 无泄漏
+两个 loss 的梯度路由符合 ARCHITECTURE.md
+basic inference 不构造 future-code queries
+```
+
+在这些条件满足前,旧训练脚本的成功不能记为 CodeWAM v1 训练成功。
+
+## 8. Legacy/F0 模型训练
 
 从 Wan DiT 初始化 ActionDiT backbone:
 
@@ -365,10 +380,10 @@ bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
 bash scripts/train_zero1.sh 8 task=robotwin_codewam_3cam384
 ```
 
-这些命令不是 canonical v1 的完成实现。`state_codebook.enabled=false` 必须保持默认,直到
-`FrozenRQAdapter` 和 Gate 3 mask tests 完成。
+这些命令不是 canonical v1。`state_codebook.enabled=false` 必须保持默认,旧 online-EMA
+codebook 和新 frozen nine-token interface 不能混用。
 
-## 8. 本地状态边界
+## 9. 本地状态边界
 
 以下目录可存在,但不应被 git 跟踪:
 

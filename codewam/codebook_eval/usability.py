@@ -1539,8 +1539,8 @@ def _overall_decision(gates: list[dict[str, Any]]) -> dict[str, Any]:
         )
     if by_name["photometric_robustness"]["status"] != "pass":
         required_followups.append(
-            "test paired photometric augmentation and quantization-margin "
-            "confidence before exposing unstable suffixes"
+            "continue reporting photometric boundary flips and quantization "
+            "margins; do not reinterpret them as a training loss"
         )
     if by_name["geometry_sensitivity"]["status"] != "pass":
         required_followups.append(
@@ -1565,33 +1565,41 @@ def _overall_decision(gates: list[dict[str, Any]]) -> dict[str, Any]:
         )
     elif seed_status == "fail":
         required_followups.append(
-            "revisit the descriptor or initialization, or demonstrate "
-            "downstream robustness across independently trained artifacts "
-            "before selecting a canonical codebook"
+            "bind every downstream run to one artifact seed and demonstrate "
+            "downstream robustness before claiming a reproducible tokenizer"
         )
     if by_name["cross_domain_stress"]["status"] != "pass":
         required_followups.append(
             "independently refit or calibrate the same specification on "
             "LIBERO before any cross-domain claim"
         )
+    scoped_research_ready = (
+        not any(name != "seed_stability" for name in blockers)
+        and seed_status != "not_run"
+    )
+    approved_use = (
+        [
+            "seed-bound DROID frozen read-only multiscale visual measurement",
+            "DROID C0/C1/C2 world-action experiments with all available codes",
+            "action-conditioned future-code transition diagnostics",
+        ]
+        if scoped_research_ready
+        else []
+    )
     return {
         "verdict": verdict,
         "blocking_gates": blockers,
         "semantic_limiters": semantic_limiters,
         "deployment_scope": (
-            "blocked pending required gates"
-            if verdict == "not_ready"
-            else "DROID-in-domain research only"
+            "blocked pending in-domain artifact gates"
+            if not scoped_research_ready
+            else (
+                "fixed-artifact DROID research only; universal tokenizer claims blocked"
+                if verdict == "not_ready"
+                else "DROID-in-domain research only"
+            )
         ),
-        "approved_use": (
-            [
-                "DROID-in-domain frozen read-only multiscale visual measurement",
-                "DROID role-specific Policy/World routing experiments",
-                "DROID continuous-latent-plus-code Gate 2 probes",
-            ]
-            if verdict != "not_ready"
-            else []
-        ),
+        "approved_use": approved_use,
         "not_approved": [
             "code-only precision control",
             "online codebook center updates",

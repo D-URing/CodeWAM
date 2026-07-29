@@ -1,3 +1,5 @@
+# Legacy FastWAM-compatible prototype only. The canonical five-module model
+# will use a separate config after `codewam/models/` is implemented.
 _target_: codewam.runtime.create_codewam
 
 model_id: Wan-AI/Wan2.2-TI2V-5B
@@ -60,7 +62,7 @@ loss:
   lambda_action: 1.0
 
 # Legacy online EMA prototype only. Canonical v1 loads three independent,
-# offline-fitted frozen RQ artifacts through a future FrozenRQAdapter.
+# offline-fitted frozen RQ artifacts through FrozenCodebookAdapter.
 state_codebook:
   enabled: false
   dim: 128

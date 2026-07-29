@@ -1,3 +1,9 @@
+"""Legacy FastWAM-compatible prototype.
+
+This module is retained for F0/regression work. It is not the canonical
+five-module CodeWAM architecture specified in ``docs/ARCHITECTURE.md``.
+"""
+
 from typing import Any, Optional, Sequence, Union
 
 import torch
@@ -16,15 +22,7 @@ logger = get_logger(__name__)
 
 
 class CodeWAM(torch.nn.Module):
-    """CodeWAM —— 码本世界动作模型。
-
-    与 FastWAM 复用同一套基座专家(Wan 视频专家 + ActionDiT 动作专家 + MoT + VAE + flow-matching),
-    但换了不同的组合形式:引入 RQ 离散状态码本(codewam.codebook.StateCodebook),
-      A: 首帧 latent -> 离散状态码 -> 作为额外 token 供动作专家 cross-attend;
-      B: 从当前状态码预测未来帧状态码(离散动力学 CE)+ vq 损失, 作为廉价世界模型信号
-         (对照 FastWAM 的像素级 test-time future imagination)。
-    CodeWAM 是独立方法, 最终与 FastWAM 做对照, 不是 FastWAM 的补丁/子类。
-    """
+    """Legacy online-codebook experiment over FastWAM components."""
 
     def __init__(
         self,

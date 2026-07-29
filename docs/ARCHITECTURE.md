@@ -1,97 +1,94 @@
 # CodeWAM Architecture
 
-Status: canonical architecture and experiment specification.
+Status: canonical CodeWAM v1 architecture and experiment specification.
 
-本文件是 CodeWAM 的唯一结构规范,约束模型接口、训练模式、attention 可见性和实验门。
-码本数据、离线训练与评估见 `CODEBOOK.md`;环境、目录和运行命令见 `DEVELOPMENT.md`。
-历史兼容原型只用于回归和外部基线,不构成另一套并行设计。
+本文件是 CodeWAM 的唯一结构规范,约束模型模块、信息身份、训练目标、可见性和实验门。
+码本数据、离线训练与评估见 `CODEBOOK.md`;环境和工程边界见 `DEVELOPMENT.md`。当前
+`codewam/model.py` 只保留为历史兼容原型,不定义本文件中的 canonical model。
 
 ## 0. 一句话定义
 
-CodeWAM 是一个连续精度与离散状态坐标并存的 world-action model:
+CodeWAM 用冻结的多时间尺度码本定义视觉世界状态与局部变化的离散词典,用未量化连续
+latent 保留词典单元内部的精确状态;共享世界 belief 在此基础上联合学习连续动作和
+action-conditioned code transition。
 
 ```text
-continuous Wan latent -> 保留位置、尺度、接触和动作微调信息
-frozen causal RQ      -> 提供可度量、可预测、可干预的多时间尺度状态坐标
+continuous H  -> 精确位置、尺度、接触、遮挡和微调信息
+frozen C      -> 世界状态与局部变化的离散坐标
+belief B      -> 对当前世界的可学习联合表示
+policy        -> 当前状态与任务条件下的连续 action chunk
+dynamics      -> 该动作会把世界带到哪些 future book IDs
 ```
 
-码本不替代连续视觉,不在 policy 训练中更新,也不把所有历史压成一个万能 token。它首先是
-对当前视觉历史的离散测量。较小 KV cache 或 TTT memory 是可能的伴随收益,不是 v1 的中心目标。
+Codebook 不是动作词典,也不被要求给 latent 增加原始信息。它是 world rules 的静态状态空间;
+动作条件下的 code 转移是规则的动态部分。Policy 从联合训练中学习哪些世界状态与任务动作有关。
 
 ## 1. 不可违反的结构约束
 
-以下约束应直接写成单元测试或训练断言:
+以下约束必须写成接口、断言或单元测试:
 
-1. **严格因果**:决策时刻 `t` 的任何状态输入只来自 `<=t` 的观测和 `<t` 的已执行动作。
-2. **三套 RQ 独立**:`Q_2`、`Q_3`、`Q_5` 的训练样本、中心和每一级索引语义均独立。
-3. **九个 code token 不合并**:三套 family x 三层 RQ 始终保留为 9 个可区分的测量 token。
-4. **码本只读**:Wan-VAE、归一化统计和 RQ centers 在下游训练中冻结并版本化。
-5. **连续路径常驻**:动作头始终可以访问未量化 Wan latent 的下游连续表示。
-6. **状态先于任务分支**:共享状态前缀不能读取当前待生成动作或未来 target。
-7. **动作不看未来**:action branch 中不存在 future slots;GT future code 只能是 world loss label。
-8. **训练模式显式分离**:Policy、Forward Dynamics 和 Video Prior 使用不同输入契约与 mask。
-9. **RQ 层级只用合法前缀**:允许 `{L1}`、`{L1,L2}`、`{L1,L2,L3}`,禁止单独暴露 L2/L3。
-10. **动作保持连续**:v1 使用 flow matching/diffusion action chunk,不建立 action codebook。
-11. **模式路由不能旁路**:被 Policy code mask 屏蔽的测量不能经共享 belief、memory 或 world
-    activation 间接进入 action branch。
+1. **严格因果**:决策时刻 `t` 的状态只来自 `<=t` 的观测和 `<t` 的已执行动作。
+2. **三套 RQ 独立**:`Q2/Q3/Q5` 的 normalization、centers 和 code ID 语义互不共享。
+3. **九个 code measurement 不合并**:三套 family x 三层 RQ 保留为九个可区分 token。
+4. **基座与码本只读**:Wan-VAE、language encoder、RQ normalization 和 centers 在联合训练中
+   冻结并版本化。
+5. **连续路径常驻**:Policy 始终可读取未量化视觉形成的连续状态 `H_t`。
+6. **世界先于任务**:`B_t` 不读取语言、当前待生成动作或未来 target。
+7. **动作不看未来**:GT future code 只能是 CodeDynamics 的监督标签。
+8. **全 code 可见,相关性后学**:v1 不根据 action probe 预先删除光照、背景或某个 family。
+9. **动作保持连续**:v1 使用 flow matching action chunk,不建立 action codebook。
+10. **两个主 loss**:v1 只使用 action flow loss 与 future-code classification loss。
+11. **模块非对称**:ActionFlowDecoder 与 CodeDynamicsDecoder 不共享中间 activation,
+    只共享已经完成的 `B_t`。
+12. **架构独立**:canonical model 不 import FastWAM 的 Video DiT、ActionDiT 或 MoT。
 
-另外,`2/3/5` 只表示时间间隔假设,不能预先命名为“局部/中期/阶段”语义。语义必须由
-held-out 检索、probe 和干预实验得到。
+`2/3/5` 只表示时间间隔,不能预先命名为局部、中期或阶段语义。具体作用由 held-out
+trajectory、code transition 和联合策略实验决定。
 
-## 2. 已知量、未知量与监督标签
+## 2. 已知量、未知量与标签
 
-先固定每个决策时刻的信息边界,再讨论模型结构。
-
-### 2.1 部署时已知
+### 2.1 决策时刻已知
 
 ```text
 x_<=t       当前及历史多相机观测
 p_<=t       当前及历史 proprio
 l           任务语言
-a_<t        已经执行过的动作
+a_<t        已执行动作
 ```
 
-它们可以因果地产生:
+这些已知量可以因果地产生:
 
 ```text
-Z_t         frozen Wan-VAE latent
-H_t         未量化的连续视觉状态
-C_t         9 个当前离散 code 测量
-B_t^0       不读取 code 的共享连续 belief
-B_t^pi      Policy code view 形成的动作 belief
-B_t^w       World code view 形成的动态 belief
-M_t^r       可选的 role-specific 跨步工作记忆
+Z_<=t       frozen Wan-VAE latent
+H_t         ContinuousStateEncoder 的连续状态
+C_t         当前九个 frozen RQ code IDs
+E_t         由 frozen centers 形成的九个 measurement tokens
+B_t         当前任务无关 world belief
 ```
 
-### 2.2 部署时未知
+### 2.2 决策时刻未知
 
 ```text
 A_t         当前需要生成的 action chunk
-C_{t+h}     未来视觉的离散状态
+C_{t+h}     action chunk 结束时的未来 code
 x_{t+h}     未来观测
 ```
 
-训练集中的 GT action 和 GT future code 是监督标签,不因“数据里已经存在”就自动变成模型输入。
-这一区分是全部 mask 设计的起点。
+训练数据中存在 GT `A_t` 和 `C_{t+h}`,不等于部署时已知。`A_t` 是 action loss label,
+也可以作为 CodeDynamics 的训练条件;`C_{t+h}` 始终只作为 future-code label。
 
-## 3. 三套因果、独立的 RQ 测量
+## 3. Codebook 作为静态世界词典
 
-### 3.1 Wan latent 与时间对齐
+### 3.1 Wan latent 与三个时间窗口
 
-在统一帧率和统一 latent tick 上,冻结 Wan-VAE:
+冻结 Wan-VAE,在统一 latent tick 上计算:
 
 ```text
 Z_t = E_vae(x_<=t)
 u_t = flatten(spatial_pool(Z_t, g x g))
 ```
 
-`spatial_pool` 是固定算子,不是聚类前的可学习 encoder。聚类直接发生在 Wan latent 上。
-VAE cache 必须保存 episode、camera、原始时间戳、latent tick 和模型 revision;任何 temporal
-compression/look-ahead 都要通过 prefix-only 编码对齐测试确认不会读取未来。
-
-### 3.2 三个 descriptor
-
-第一版采用互质间隔 `S={2,3,5}`:
+第一版使用:
 
 ```text
 D_2(t) = [u_{t-4},  u_{t-2}, u_t]
@@ -99,29 +96,31 @@ D_3(t) = [u_{t-6},  u_{t-3}, u_t]
 D_5(t) = [u_{t-10}, u_{t-5}, u_t]
 ```
 
-这是三个不同的历史观测窗口,不是同一个 descriptor 的三个名字,也不是 delta-only 表示。
-平移、缩放、姿态变化和物体交互由三个实际 latent 状态共同表达。历史不足时输出 availability
-mask,不得复制最早帧、跨 episode 取帧或使用未来帧补齐。
+每个 descriptor 同时包含当前状态和短时变化,所以 center 可以描述物体出现、消失、移动、
+缩放、机械臂运动、遮挡、背景或光照变化。历史不足时对应 family unavailable,不得 padding、
+跨 episode 拼接或读取未来。
 
-每个 family 只使用训练集统计量归一化:
-
-```text
-\bar D_s(t) = (D_s(t) - mu_s) / sigma_s
-```
-
-`mu_s`、`sigma_s` 属于码本 artifact,验证集和测试集只读取它们。
-
-### 3.3 每套三层 residual quantization
-
-对每个 `s` 独立训练一个三层 RQ:
+三个绝对状态也可无损变换为:
 
 ```text
-r_s^0 = \bar D_s
-c_s^l = argmin_k ||r_s^{l-1} - e_{s,l,k}||^2
-r_s^l = r_s^{l-1} - e_{s,l,c_s^l},  l in {1,2,3}
+[u_t, u_t-u_{t-s}, u_{t-s}-u_{t-2s}]
 ```
 
-因此当前时刻得到:
+但这只是后续可比较的等价基底,不是 v1 默认输入,更不是 delta-only。标准 RQ residual 表示
+未被前序 centers 解释的量化误差,不能在数学上直接等同于时间差。
+
+### 3.2 三套离线 RQ
+
+每个 family 只使用 train statistics:
+
+```text
+Dbar_s = (D_s - mu_s) / sigma_s
+r_s^0 = Dbar_s
+c_s^j = argmin_k ||r_s^{j-1} - e_{s,j,k}||^2
+r_s^j = r_s^{j-1} - e_{s,j,c_s^j}
+```
+
+当前时刻的离散坐标是:
 
 ```text
 C_t = {
@@ -131,582 +130,515 @@ C_t = {
 }
 ```
 
-`c_{2,1}=7` 与 `c_{3,1}=7` 没有共同语义。即使都叫第一层,其输入分布和中心也不同。
-RQ 内部每层确实是对上一层 residual 做 K-Means,但九组中心都不能共享。
+同一个数字在不同 family/level 中没有共同含义。Policy 训练不会更新 centers;每次运行必须
+引用包含 dataset、Wan revision、normalization、centers、seed 和 checksum 的完整 artifact。
 
-候选容量先比较 `K in {8,16,32}`。选择满足 held-out 质量门槛的最小 K;若某层没有带来
-稳定 residual reduction,就删掉该层,而不是因为预设为 RQ-3 强行保留。
+### 3.3 图结构解释
 
-### 3.4 Artifact 契约
-
-一个可加载的 frozen tokenizer 至少包含:
+CodeWAM 可以被理解为三个交错的离散图:
 
 ```text
-manifest.json
-  dataset/split manifest and episode hashes
-  fps, latent tick, camera policy, history offsets
-  Wan model id/revision and preprocessing revision
-  spatial pool, descriptor dimension, K, RQ depth
-  seed, trainer config, source git commit
-normalization/{2,3,5}.pt
-centers/{2,3,5}/level_{1,2,3}.pt
-metrics/heldout_metrics.json
+book IDs / center tuples      图节点与局部轨迹模板
+C_t -> C_{t+h}                世界状态边
+A_t                           边的动作条件
+language                      Policy 选择行动方向的任务条件
+H_t                           节点内部的连续精确坐标
 ```
 
-模型配置只能引用完整 artifact id,不能在 policy 启动时临时拟合或更新中心。
+冻结 codebook 定义静态节点。CodeDynamics 学习哪些边存在以及动作如何影响转移。Policy 学习
+在当前世界、机器人状态和任务条件下应输出什么动作,而不是从 code ID 查一张固定动作表。
 
-## 4. 四种信息身份
+## 4. 五种信息身份
 
-CodeWAM 不把所有 token 混成同一种“状态”。四种信息具有不同生命周期:
+| 身份 | 符号 | 来源 | 生命周期 | 作用 |
+|---|---|---|---|---|
+| 连续测量 | `Z/H` | Wan latent + CodeWAM state encoder | 当前及历史 | 精确视觉状态 |
+| 离散测量 | `C/E` | frozen RQ artifact | 当前及历史 | 静态世界坐标 |
+| 世界 belief | `B` | CodeWAM belief queries | 单步内更新 | 融合 H/C/proprio/过去动作 |
+| 动作 | `A` | ActionFlowDecoder | 当前待生成 | 连续控制 |
+| 未来 code | `C_future` | CodeDynamicsDecoder | 当前待预测 | 动作条件下的世界转移 |
 
-| 身份 | 符号 | 来源 | 是否量化 | 单次 forward 内是否更新 | 作用 |
-|---|---|---|---:|---:|---|
-| 离散测量 | `C_t/E_t` | frozen RQ | yes | no | 状态坐标与动态模式 |
-| 连续状态 | `H_t` | Wan latent + visual backbone | no | 网络层内更新 | 精确几何与局部细节 |
-| 当前 belief | `B_t^0/B_t^pi/B_t^w` | base aggregator + mode router | no | yes | 共享连续证据与按角色读取的 code 证据 |
-| 工作记忆 | `M_t` | causal memory update | no | 跨步更新 | 可选的长期任务上下文 |
+语言不是世界测量,它只进入 Policy。Proprio 和过去动作属于当前世界历史。可选 memory 是未来
+扩展,不属于 v1 必需模块。
 
-动作 `A_t` 和未来 code `F_t` 不属于当前状态,它们是待生成变量。语言 `L`、proprio `P`
-和过去动作是已知条件。
-
-这一区分也回答 codebook 应放在哪里:它位于 frozen perception 与可学习 state reasoning 的边界,
-作为只读测量进入聚合器;它不是 TTT memory,也不是 action token。
-
-## 5. Canonical v1 架构
+## 5. Canonical v1 五模块骨架
 
 ### 5.1 总图
 
 ```text
-                         OFFLINE, train split only
-Wan latent cache -> D2/D3/D5 -> independent RQ2/RQ3/RQ5 -> frozen artifact
+                          OFFLINE, TRAIN SPLIT ONLY
+RGB -> frozen Wan-VAE -> pooled latent -> Q2/Q3/Q5 RQ -> frozen artifacts
 
-                         ONLINE, decision step t
-past/current images
-       |
-       v
-frozen Wan-VAE
-       |
-       +-> unquantized latent -> Visual/State Backbone ---------> H_t
-       |
-       +-> D2/D3/D5 -> frozen RQ2/RQ3/RQ5 -> 9 measurements ---> E_t
+                          ONLINE / JOINT TRAINING
+past and current images
+          |
+          v
+    frozen Wan-VAE
+          |
+          +------> ContinuousStateEncoder --------------------> H_t
+          |
+          +------> FrozenCodebookAdapter ---------------------> C_t, E_t
 
-H_t + language + proprio
-       |
-       v
-Base State Aggregator -> B_t^0
-       |
-       +---------------------------+
-       |                           |
-       v                           v
-Policy Measurement Router     World Measurement Router
-M_pi(E_t) -> [B_t^pi,E_t^pi]  M_w(E_t) -> [B_t^w,E_t^w]
-       |                           |
-       v                           v
-Action DiT                    Code Dynamics Expert
-continuous action chunk      future code distributions
-inference + training         training only by default
+H_t + E_t + proprio + past actions
+          |
+          v
+      WorldBeliefCore
+          |
+          v
+         B_t
+       /     \
+      /       \
+language       GT A (train) / candidate A (optional plan)
+   |                    |
+   v                    v
+ActionFlowDecoder   CodeDynamicsDecoder
+   |                    |
+   v                    v
+  A_t                logits(C_{t+h})
 ```
 
-两个 router 共享同一组只读 `E_t`,但使用不同的结构 mask 和独立的小型 readout parameters。
-`E_t^r` 保留逐 family/level token,不会被压成一个 belief token。
-可选 memory 在第一轮关闭;启用后必须从对应 role belief 更新,不能把 World-only code view 写回
-Policy 可见状态。
-
-FastWAM/Wan 提供初始化、VAE、Video DiT 和 Action DiT 设计参考,但不是此图的强制拓扑。
-特别是 v1 不依赖对称 MoT 让 action/video token 在每层任意互看。
-
-### 5.2 连续视觉路径
-
-`H_t` 必须保留空间 token,不得只用 global average token:
+五个 CodeWAM-owned 模块是:
 
 ```text
-H_t = VisualBackbone(Project_z(Z_<=t), time/camera embeddings)
+ContinuousStateEncoder
+FrozenCodebookAdapter
+WorldBeliefCore
+ActionFlowDecoder
+CodeDynamicsDecoder
 ```
 
-第一版可复用当前 3072-wide Video DiT 的部分权重,但输出通过显式 adapter 进入 state width。
-Action DiT 当前是 1024-wide,因此 code center 不应直接硬塞进两个专家;所有维度差异在接口
-adapter 中解决。投影只是模型接口,不是重新训练一套聚类 encoder。
+Wan-VAE 是冻结感知前端,不是 FastWAM runtime。FastWAM 只保留为外部对照 `F0`。
 
-### 5.3 九个只读 code measurement tokens
-
-每个 RQ center 单独投影:
+### 5.2 ContinuousStateEncoder
 
 ```text
-E_{s,l}(t) = Project_{s,l}(e_{s,l,c_{s,l}(t)})
-             + ScaleEmbedding_s
-             + LevelEmbedding_l
-             + AvailabilityEmbedding_{s,t}
-```
-
-输出是 9 个 token,不是下面这种求和:
-
-```text
-禁止: E_s = e_{s,1} + e_{s,2} + e_{s,3}
-```
-
-原因是 residual level 表示由粗到细的不同误差分量。先相加会抹掉层级身份,也无法做 prefix
-dropout、逐层贡献分析或层级未来预测。
-
-在 measurement router 内,`E_t` 只作为固定 K/V side memory。它们不发 query、不吸收 `H/B/M`
-信息,也不在层间被改写。可学习部分只有 `Project_{s,l}` 与 family/level embeddings。
-若某个 family 因历史不足而 unavailable,对应三个 slot 仍保留稳定位置,但 center lookup 被
-missing embedding 代替且不产生伪 code index。
-
-### 5.4 Per-Step State Aggregator
-
-先用少量 learned belief queries 汇总不含 code 的共享连续证据:
-
-```text
-B_t^0 = BaseAggregator(
-    query=B_init,
-    kv=[H_t, L, P_t]
+H_t = ContinuousStateEncoder(
+    ProjectZ(Z_<=t),
+    camera embeddings,
+    time embeddings
 )
 ```
 
-再为每个角色读取同一组只读测量:
+`H_t` 必须保留多相机空间信息,不能只使用 wrist pooled codebook state 或一个 global average
+token。第一版可使用因果 Transformer 或时空 attention,但接口和层拓扑由 CodeWAM 自己定义。
+是否从官方 Wan 权重初始化是独立 ablation,不能改变模块边界。
+
+### 5.3 FrozenCodebookAdapter
+
+每个 code ID 查询其真实 frozen center:
 
 ```text
-B_t^pi = B_t^0 + g_pi * CrossAttn(Q_pi(B_t^0), readonly_kv(E_t), mask=M_pi)
-B_t^w  = B_t^0 + g_w  * CrossAttn(Q_w(B_t^0),  readonly_kv(E_t), mask=M_w)
+E_{s,j,t} =
+    Project_{s,j}(e_{s,j,c_{s,j,t}})
+    + FamilyEmbedding_s
+    + LevelEmbedding_j
+    + AvailabilityEmbedding_{s,t}
 ```
 
-`H_t` 保存局部连续细节,`E_t` 提供离散坐标,`B_t^0` 保证连续 fallback,两个 role belief
-决定哪些 code 对当前专家可见。`readonly_kv` 表示 token 内容不被 attention layer 改写,
-不表示对可学习 projection 做 `detach`;`g_pi/g_w` 用接近零的门控初始化。
+输出始终是九个 token,不把三级 centers 先求和,也不把 prefix 压成一个 one-hot category。
+center 内容作为只读 K/V measurement;可学习的是投影与身份 embedding。v1 不把 margin、
+quantization residual 或 handcrafted action association 加入模型输入。
 
-这个分叉不是额外复制 Video DiT,只是两个小型 measurement readout。它解决了 shared belief
-会绕过 expert mask 的问题:Policy 看不到的 token 从未写入 `B_t^pi`,World readout 也不能写回
-Policy。DROID-10k aligned code-only probe 给出的初始 mask ablation 是:
+### 5.4 WorldBeliefCore
+
+少量 learned world queries 聚合任务无关的当前证据:
 
 ```text
-M_pi-all:     Q2-L3 + Q3-L3 + Q5-L3
-M_pi-noQ5:    Q2-L3 + Q3-L3
-M_pi-hybrid:  Q2-L3 + Q3-L3 + Q5-L2
-M_w-all:      Q2-L3 + Q3-L3 + Q5-L3
+B_t = WorldBeliefCore(
+    query=WorldQueries,
+    kv=[H_t, readonly(E_t), P_<=t, Embed(a_<t)]
+)
 ```
 
-这里的 `Q5-L2` 表示合法 prefix `{L1,L2}`,不是单独暴露 L2。DROID-10k mixed-prefix probe
-中 `M_pi-hybrid` 的 action gain 为 6.96%/6.96%,在 val/test 都高于另外三个候选,因此把它
-作为 Policy 初始默认;all/no-Q5 仍是必要 ablation。该结论仍需后续 `H+C` policy probe,
-不能把 code-only gain 当作完整策略收益。独立的 frozen temporal counterfactual 还发现,
-Q5 test 倒放时 L2/L3 code 分别改变 33.47%/24.63%,说明 Q5 的主要方向敏感性确实已在
-合法 L2 prefix 中出现;这支持 hybrid 的信息解释,但同样不替代控制实验。
+世界是什么不由语言定义,所以 `l` 不进入 `B_t`。所有 available Q2/Q3/Q5 levels 默认可见,
+不预设 Policy hybrid mask。`L_action` 和 `L_code` 共同训练 `B_t`;具体哪些状态与动作无关,
+由 ActionFlowDecoder 的联合学习决定。
 
-DROID val/test RGB perturbation 进一步发现:L1 对 brightness/contrast 的 change 只有
-10.16--15.63%,但完整 prefix change 达 46.09--65.63%;Q2/Q3 test 的 center 位移被放大到
-自然相邻一步的 2.30/2.32 倍。因此 `FrozenRQAdapter` 的第一轮 ablation 不只比较 code
-availability,还应比较:
+### 5.5 ActionFlowDecoder
 
 ```text
-center-only
-center + per-level residual norm / nearest-runner-up margin gate
-center + prefix dropout
-center + paired-photometric consistency
+v_hat = ActionFlowDecoder(
+    noised_action=A_tau,
+    flow_time=tau,
+    context=[B_t, language, current proprio]
+)
 ```
 
-margin 和 residual norm 都由 frozen centers 的只读距离产生,不是新 encoder,更不是更新
-聚类中心。当前报告尚未保存 runner-up distance,所以 confidence gate 仍是假设,必须先用
-margin probe 验证 code flip 是否集中在低 margin 样本。
+动作 token 在自己的 decoder 中更新,通过 cross-attention 读取完成后的只读 `B_t` 和语言。
+它不能修改世界 belief,也不能读取 GT future code。动作生成使用连续 flow matching,但 decoder
+不是从 FastWAM ActionDiT 继承的对称 Video-DiT 副本。
 
-### 5.5 可选工作记忆
+### 5.6 CodeDynamicsDecoder
 
-v1 预留 MemoryPort,第一轮完整模型可关闭。启用时只允许:
+动作 chunk 的终点定义为 `t+h`;时间对齐必须写入 dataset contract:
 
 ```text
-M_t^r = Update(M_{t-1}^r, B_t^r, visible(E_t, M_r), a_{t-1})
-M_t^r = M_{t-1}^r + tanh(g_t^r) * DeltaM_t^r
+future_logits = CodeDynamicsDecoder(
+    queries=9 FutureCodeQueries,
+    context=[B_t, Embed(A_t)]
+)
 ```
 
-门控初始化在接近 0,避免随机 memory 覆盖当前证据。当前待生成动作 `a_t` 和未来状态不得参与
-更新。`r` 是 Policy/World role;若只实现一个共享 memory,其输入 mask 必须取两个 role 的
-可见性交集。第一版可以使用少量 gated recurrent registers;只有在长时依赖证据成立后再比较
-RoboTTT 式 TTT state。无论采用哪种 memory,`E_t` 仍是只读测量,不能与可更新的 `M_t` 共用
-身份。
-
-## 6. 分阶段计算与硬可见性
-
-v1 用 staged computation 消除含糊的对称 attention。共享连续状态只计算一次,code readout
-随后按角色分叉:
+九个 query 分别输出对应 `(family,level)` 的 K-way logits。所有 future codes 在输入中 absent,
+不用 partial future mask、teacher forcing 或 scheduled sampling。该 decoder 学习:
 
 ```text
-Stage A0:       S_t^0  = StateBase(x_<=t, p_<=t, l, a_<t)
-Stage A-policy: S_t^pi = Route(S_t^0, E_t, M_pi)
-Stage A-world:  S_t^w  = Route(S_t^0, E_t, M_w)
-Stage B-policy: ActionExpert(S_t^pi, A_tau)
-Stage B-FD:     WorldExpert(S_t^w, A_clean, F_query/F_context)
-Stage B-prior:  WorldExpert(S_t^w, no_action, F_query/F_context)
+p(C_{t+h} | B_t, A_t)
 ```
 
-`S_t^r=[H_t,B_t^r,E_t^r,M_t^r,L,P_t]`:role belief 提供汇总证据,原始可见 measurement
-tokens 仍保留各自身份。两条路径使用同一 `M_r`,避免 belief 和 expert direct attention
-看见不同的 code。
+基本 Policy 推理不运行 CodeDynamicsDecoder。以后若增加显式规划,可以对 candidate action
+调用它,但这不是 v1 的部署依赖。
 
-### 6.1 可见性矩阵
+### 5.7 Tensor 与最小 block 契约
 
-`yes` 表示该 query 可以读取该 K/V;`label` 不是 K/V,只参与 loss。
-
-| Query/producer | `Z/H` | current `E` | `L/P` | role belief | memory | `a_prev` | noisy `A_tau` | clean `A_t` | partial future context | GT future target |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `H_t` | yes | no | optional | no | no | no | no | no | no | no |
-| `E_t` | source | self | no | no | no | no | no | no | no | no |
-| `B_t^0` | yes | no | yes | no | no | no | no | no | no | no |
-| `B_t^pi` | via `B^0` | `M_pi` | via `B^0` | base | no | no | no | no | no | no |
-| `B_t^w` | via `B^0` | `M_w` | via `B^0` | base | no | no | no | no | no | no |
-| `M_t^r` | no | `M_r` | no | role | previous role | yes | no | no | no | no |
-| Policy action query | yes | `M_pi` | yes | policy | policy | yes | self | no | absent | label only |
-| FD future query | yes | `M_w` | yes | world | world | yes | no | yes | world-only | label only |
-| Prior future query | yes | `M_w` | yes | world | world | yes | no | absent | world-only | label only |
-
-实际实现中各 query 读取预先构造的 role state,表中展开来源是为了审计。
-
-### 6.2 四条必须自动测试的防泄漏规则
-
-1. Policy mode 的 token sequence 和 attention mask 中都没有 future slot,不是仅把未来值设为 0。
-2. 同一 `S_t^0` 分叉出的 world activations不能作为 action branch 的 K/V,也不能写回共享
-   状态。
-3. 把 GT future code 随机置换时,固定噪声下的 policy 输出必须逐位不变;否则存在结构泄漏。
-4. 随机置换 `M_pi` 屏蔽的当前 code 时,`B_t^pi` 与固定噪声 policy 输出必须逐位不变;
-   否则 code 经 base belief 或 memory 绕过了 role mask。
-
-## 7. Mask Program: 三种训练模式
-
-一个 batch item 先采样 mode,再由 mode builder 构造 token、timestep、mask 和 loss。不要用一个
-“万能 mask”依靠隐式位置关系同时表达所有任务。
-
-### 7.1 Policy mode
-
-目的:从当前状态生成连续 action chunk。
+隐藏宽度和层数留给规模实验,但接口形状固定:
 
 ```text
-known:    S_t^pi, diffusion/flow timestep tau, noised action A_tau
-unknown:  clean action A_t
-absent:   all future-code slots and world branch activations
-loss:     flow-matching action loss
+Z             [B,T,V,Cz,Hz,Wz]        frozen Wan latent
+H             [B,Nh,d]                 continuous visual tokens
+code_ids      [B,3,3]                  Q2/Q3/Q5 x RQ-3
+available     [B,3]                    whole-family availability
+E             [B,9,d]                  readonly measurement tokens
+P             [B,Np,d]                 proprio/history tokens
+B             [B,Nb,d]                 learned world-belief queries
+L             [B,Nl,d]                 frozen language tokens
+A             [B,Ha,Da]                continuous action chunk
+future_logits 9 x [B,K_{s,j}]          one head per family/level
 ```
 
-动作 chunk 内部使用与执行语义一致的 group-causal 或 chunk mask。每个序列 chunk 独立采样
-action noise/timestep,避免整段轨迹共享噪声而泄露简单时间模板。
+第一版的最小内部拓扑是:
 
-### 7.2 Forward Dynamics mode
+1. `ContinuousStateEncoder`:latent patch projection 加 camera/time identity;先做帧内空间 attention,
+   再做带 causal mask 的时间 attention,输出仍保留多视角空间 token。
+2. `FrozenCodebookAdapter`:九个 center 各自投影;measurement 只作为下游 K/V,不在 block 间改写。
+3. `WorldBeliefCore`:learned world queries 做 self-attention,再 cross-attend
+   `[H,E,P,Embed(a_<t)]`;重复少量 block 后输出 `B`。
+4. `ActionFlowDecoder`:noised action tokens 带 chunk-position 与 flow-time embedding;chunk 内
+   双向 self-attention,再 cross-attend `[B,L,p_t]`,逐 token 输出 velocity。
+5. `CodeDynamicsDecoder`:先把完整 action chunk 编成 action tokens;九个 future queries 可彼此
+   self-attend,再 cross-attend `[B,ActionTokens]`,由九个分类 head 输出 logits。
 
-目的:学习“当前状态 + 已执行动作 -> 未来离散视觉状态”。
+`d/Nb/blocks/heads` 可以缩放,但 C0/C1/C2 必须固定 ActionFlowDecoder、state width、训练步数和
+主参数预算。两个 decoder 不共享 block 参数;future query 不嵌入任何 GT future code。
+
+### 5.8 Memory 边界
+
+v1 不实现 recurrent/TTT memory。`C_<=t` 的紧凑历史可能在长时任务中形成 MemoryPort,但必须
+先证明固定窗口 `B_t` 无法解决的可测问题。Memory 只能读取过去 belief/code/action,不能读取
+当前待生成动作或 future target。
+
+## 6. 硬信息流与防泄漏
+
+### 6.1 训练样本
+
+一条 joint-training 样本是:
 
 ```text
-known:    S_t^w, clean executed action chunk A_t
-unknown:  future code slots C_{t+h}
-loss:     hierarchical future-code loss + short rollout loss
+known state:   x_<=t, p_<=t, a_<t, language
+action label:  A_t
+world input:   GT A_t
+world label:   C_{t+h}
 ```
 
-该模式的 clean action 只进入 WorldExpert。ActionExpert 不运行,或与其共享同一个只读
-`S_t^0` 并行运行,但二者的 role readout 与 activation 永不互通。
+`C_{t+h}` 由同一版本 frozen tokenizer 在 `no_grad` 下离线生成。训练时给 CodeDynamics 的
+GT action 是已执行转移条件,不是 Policy 输入。以后可单独比较 predicted-action conditioning,
+但不能混进 v1 首个对照。
 
-### 7.3 Video Prior mode
+### 6.2 可见性矩阵
 
-目的:利用无动作视频学习 action-free 视觉动态先验。
+`label` 表示只参与 loss,不作为 K/V。
+
+v1 不把所有变量拼成一个 joint sequence 后再依赖复杂方阵消除泄漏。只保留三类 mask:
 
 ```text
-known:    S_t^w
-absent:   action condition
-unknown:  future code slots C_{t+h}
-loss:     action-free future-code loss
+temporal causal mask   H_t 不能读取 t 之后的视觉或动作
+availability mask     历史不足的 Q2/Q3/Q5 family 使用 missing token
+module access mask    由函数参数和张量类型限制每个 decoder 能接收什么
 ```
 
-它可以使用没有 robot action 的公开视频,但必须带显式 `no_action` type embedding,不能把缺失动作
-填成零向量并与真实静止动作混淆。第一轮 `lambda_prior` 可设为 0,待 FD 基线成立后再启用。
+第三类主要由 API 边界实现,不是一张容易配错的 attention mask。future-code token 根本不进入
+Policy graph,语言也根本不进入 WorldBeliefCore。模块内部可以正常使用 self/cross-attention。
 
-### 7.4 Optional IDM mode
+| Producer/query | `Z/H` | current `E` | `P/a_<t` | language | noisy action | GT action | GT future code |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ContinuousStateEncoder | yes | no | no | no | no | no | no |
+| FrozenCodebookAdapter | source | self | no | no | no | no | no |
+| WorldBeliefCore | yes | yes | yes | no | no | no | no |
+| ActionFlowDecoder | via B | via B | yes | yes | self | label only | no |
+| CodeDynamicsDecoder | via B | via B | via B | no | no | yes | label only |
 
-`current state + observed future -> action` 只保留为后续 representation probe,不是 v1 policy
-训练默认项。若加入,其 branch 与部署 action branch 参数和 mask 必须显式区分,不能让观测未来
-形成训练捷径。
+### 6.3 必须自动测试
 
-## 8. Future-code world objective
+1. Policy token sequence 不存在 future-code slots。
+2. 置换 GT future code 时,固定 action noise 的 Policy 输出逐位不变。
+3. 置换 GT action 时,已构造的 `B_t` 与 Policy 输出逐位不变,只有 CodeDynamics 输出可变。
+4. Policy/CodeDynamics 的中间 activation 不写回 `B_t`。
+5. frozen artifact hashes 在 optimizer step 前后不变。
+6. unavailable family 使用 missing token,不产生伪 code ID。
+7. 九个 `(family,level)` token 身份在投影和 belief attention 中可追踪。
 
-### 8.1 Future mask 分布
+### 6.4 推理路径
 
-只在 WorldExpert 内构造 future slots:
+默认部署:
 
 ```text
-50% batches: all future code slots masked
-50% batches: mask_ratio ~ Uniform(0.5, 1.0)
+x_<=t -> Z/H/C/E -> B_t -> ActionFlowDecoder -> A_t
 ```
 
-未遮挡 future code 只用于学习同一 world branch 内的时空条件结构。它们永远不进入
-`S_t^0/S_t^pi` 或 ActionExpert。所有 mask 都遵守 family availability 和合法 RQ prefix。
-
-mask 先以 `(h,s)` family slot 为单位采样,再在 slot 内选择合法 prefix。一个待预测的 L2/L3
-query 在 teacher forcing 时只能读取同一 slot 的更低层 GT prefix,不能读取自身或更细层 target。
-partial-mask 指标与 all-masked rollout 指标分开报告,模型选择以 all-masked 结果为主。
-
-### 8.2 每个 family 独立、每个 RQ 层级自回归
-
-对 `s in {2,3,5}` 和未来 horizon `h`,预测:
+CodeDynamics 是 training-time world objective,不要求先生成未来视觉或 future code 才能输出
+动作。可选规划模式以后才增加:
 
 ```text
-p(c_{s,1}^{t+h} | S_t^w, A_t)
-p(c_{s,2}^{t+h} | S_t^w, A_t, c_{s,1}^{t+h})
-p(c_{s,3}^{t+h} | S_t^w, A_t, c_{s,1}^{t+h}, c_{s,2}^{t+h})
+candidate A -> predicted C_future -> task-conditioned scoring
 ```
 
-family 之间不共享分类器语义;可以共享 WorldExpert trunk,但每个 `(s,l)` 使用独立输出 head。
-训练先用 teacher forcing,再以短 scheduled sampling 检查预测误差是否沿 RQ 层级失控。
+## 7. 两个训练目标
 
-### 8.3 Loss
+### 7.1 Action flow loss
 
 ```text
-L_policy = FlowMatch(ActionExpert(S_t^pi, A_tau), target_velocity)
-
-L_FD = sum_{h,s,l} w_{h,s,l} * CE(
-           p_{h,s,l}(S_t^w, A_t, c_{h,s,<l}), c_{h,s,l})
-       + beta_metric * L_center_distance
-       + beta_roll * L_2step_rollout
-
-L_prior = action-free future-code loss
-
-L_total = L_policy + lambda_fd * L_FD + lambda_prior * L_prior
+L_action = FlowMatch(
+    ActionFlowDecoder(B_t, l, p_t, A_tau, tau),
+    target_velocity(A_t, noise, tau)
+)
 ```
 
-`L_center_distance` 使用 frozen center distance 给“错到邻近中心”和“错到远端中心”不同代价;
-不能代替 CE。两步 rollout 用第一步预测 code 的 embedding 和下一 action 预测第二步,GT 第二步
-仍只作为 label。第一轮先做 `lambda_fd in {0, small}` 对照,并记录共享 state trunk 上 policy/world
-梯度范数与夹角。
+每个 action chunk 独立采样 flow time 与 noise。Action loss 更新 ContinuousStateEncoder、
+Codebook projection、WorldBeliefCore 和 ActionFlowDecoder,但不更新 Wan-VAE/RQ centers。
 
-### 8.4 梯度路由
+### 7.2 Future-code loss
 
-| 模块 | `L_policy` | `L_FD/L_prior` | 是否冻结 |
+```text
+L_code =
+    mean_available_{s,j} CE(
+        logits_{s,j}(B_t, A_t),
+        c_{s,j}^{t+h}
+    )
+```
+
+九个 head 等权起步,只用 availability mask 排除历史不足的 label。v1 不加入 center-distance、
+photometric consistency、contrastive、continuous-future 或 multi-step rollout loss。
+
+### 7.3 Total loss
+
+```text
+L_total = L_action + lambda_code * L_code
+```
+
+只有一个可调权重 `lambda_code`。首轮只比较 `0` 与一个预注册非零值;若 future-code accuracy
+提高但 Policy 无收益,不能继续叠加辅助 loss 掩盖结论。
+
+### 7.4 梯度路由
+
+| 模块 | `L_action` | `L_code` | 冻结 |
 |---|---:|---:|---:|
 | Wan-VAE | no | no | yes |
+| language encoder | no | no | yes |
 | RQ normalization/centers | no | no | yes |
-| Visual/State Backbone | yes | yes | no |
-| code projections | yes | yes | no |
-| Base State Aggregator | yes | yes | no |
-| Policy Measurement Router/Memory | yes | no | no |
-| World Measurement Router/Memory | no | yes | no |
-| ActionExpert | yes | no | no |
-| WorldExpert/heads | no | yes | no |
+| ContinuousStateEncoder | yes | yes | no |
+| Codebook center projections | yes | yes | no |
+| WorldBeliefCore | yes | yes | no |
+| ActionFlowDecoder | yes | no | no |
+| CodeDynamicsDecoder | no | yes | no |
 
-future target 必须在 `no_grad` 下由同一版本 frozen tokenizer 计算。world loss 不应更新 ActionExpert。
+这张表定义“联合学习”:两个目标只在世界表示处相遇,不让两个 decoder 互相泄漏 activation。
 
-## 9. 输入可用性与抗捷径 mask
+## 8. 保持简单的边界
 
-这些 mask 只作用于当前已知信息,并与 Policy/FD/Prior mode mask 正交:
-
-| Mask | 粒度 | 规则 | 目的 |
-|---|---|---|---|
-| history availability | whole family | 历史不足则 Q2/Q3/Q5 对应 family unavailable | 保持真实因果边界 |
-| expert role | family/RQ prefix | `M_pi` 与 `M_w` 独立,屏蔽项不得写入对应 belief/memory | 不把 control/world 证据强行同质化 |
-| family dropout | 3 levels together | 整套丢 Q2、Q3 或 Q5 | 检查 family 冗余 |
-| RQ prefix | within family | 仅 L1 / L1+L2 / L1+L2+L3 | 保持 residual 语义 |
-| all-code dropout | all 9 tokens | 小概率全部丢弃 | 保留 latent-only fallback |
-| proprio history | past P only | 保留当前 proprio | 降低轨迹模板捷径 |
-| camera dropout | whole camera | 多相机时整路丢弃 | 相机缺失鲁棒性 |
-| visual patch mask | spatial patches | 不常规删除全部 H | 逼迫跨区域证据整合 |
-| action-loss mask | sample | 无 action 数据不计算 imitation loss | 合法利用公开视频 |
-
-建议在 Gate 3 前只启用 availability mask;其余逐项 on/off,不要一次全部叠加后无法归因。
-
-mask 只能阻断非法信息,不能证明模型正确使用合法信息。必须配套以下反事实诊断:
+以下能力不是 v1 默认项:
 
 ```text
-code family shuffle across episodes
-replace code with nearest/far center
-drop one family or one valid RQ suffix
-shuffle proprio history while keeping current proprio
-mask one camera or selected latent patches
-reset/freeze optional memory
+future-video generation
+Video Prior mode
+IDM future-observation shortcut
+partial future masking
+hierarchical future teacher forcing
+center-distance auxiliary loss
+photometric invariance loss
+multi-step rollout loss
+code-conditioned low-rank adapters
+recurrent or TTT memory
 ```
 
-固定 action noise 后测量动作分布、gripper event 和 world prediction 的变化。attention weight 只作
-可视化,不作为“模型使用了 code”的证据。
+它们只能针对一个已经被测量的具体失败逐项加入。诊断量如 assignment margin、光照响应和
+retrieval 可以继续计算,但不是训练 loss。
 
-## 10. 研究借鉴与明确取舍
+## 9. 实验门
 
-| 工作 | 采用的原则 | 不直接照搬的部分 |
+### Gate 0: 数据与因果
+
+- episode/scene split 先于 normalization 和 RQ。
+- VAE prefix-only audit 不读取未来。
+- descriptor 不跨 episode、keep-range gap 或 camera。
+- artifact 记录数据、模型、实现和中心 hashes。
+
+### Gate 1: 静态世界词典是否健康
+
+检查:
+
+```text
+usage/dead codes/perplexity
+held-out RQ distortion
+RQ levels 是否持续降低 residual
+时间顺序与状态变化是否产生稳定响应
+retrieval 是否覆盖多 scene 的相似状态/变化
+code transitions 是否平滑而非随机边界跳转
+domain/revision 边界是否明确
+```
+
+光照、背景或物体外观属于可见世界状态,code 对它们变化不是自动失败。应区分稳定可预测的
+状态响应与低 margin 的随机跳转。动作/gripper association 只作描述性诊断,不能用于删除
+world-state code。
+
+现有 DROID usability report 的 `not_ready` 仍适用于“可重复、跨域通用 tokenizer”主张。
+对于绑定固定 artifact 的 DROID 域内 CodeWAM 原型,低 cross-seed NMI 和 photometric code
+change 不单独阻止 joint training;冻结 DROID -> LIBERO collapse 仍禁止通用跨域声称。
+
+### Gate 2: code transition 是否形成 world rule
+
+使用真实 joint-training tuple 测量:
+
+```text
+p(C_{t+h} | B_t, A_t)
+```
+
+至少比较:
+
+```text
+current-code persistence baseline
+B_t without action
+B_t + true action
+shuffled-action control
+```
+
+如果真实 action 不能稳定降低 held-out future-code NLL,code graph 尚未形成可学习的
+action-conditioned dynamics。当前动作线性读出不再是 Gate 2。
+
+已完成的 P0/P1/P2/P3 ridge screen 保留为历史接口诊断。它说明 hard categorical additive
+feature 没有超过连续 H,也说明该 proxy 受 absolute action/proprio shortcut 和高维小样本
+过拟合影响;它不裁决 CodeWAM 架构。
+
+### Gate 3: 独立架构正确性
+
+- 五模块可分别构造和保存 state dict。
+- canonical model 不 import FastWAM model/MoT。
+- 所有第 6.3 节防泄漏测试通过。
+- C0/C1/C2 在同一 batch contract 下各跑一个 optimizer step。
+- `L_action/L_code` 梯度只到达第 7.4 节允许模块。
+- basic inference 完全不构造 CodeDynamics future queries。
+
+### Gate 4: 联合 world-action 价值
+
+只保留三个主对照:
+
+```text
+C0: H -> B -> ActionFlowDecoder
+    loss = L_action
+
+C1: H + frozen C/E -> B -> ActionFlowDecoder
+    loss = L_action
+
+C2: H + frozen C/E -> B -> ActionFlowDecoder + CodeDynamicsDecoder
+    loss = L_action + lambda_code * L_code
+
+F0: FastWAM, external baseline only
+```
+
+`C0-C2` 保持 state width、action decoder、训练数据、步数和主参数预算可比。主指标是闭环
+task success;其次是 action loss、future-code NLL/accuracy、学习速度、延迟和显存。
+
+```text
+C1 > C0  当前离散世界坐标直接帮助 Policy
+C2 > C1  学习 code transition 反过来帮助动作
+code 指标提高而控制不提高  world objective 可学但无控制增益
+```
+
+只有在固定窗口模型出现明确长时失败后才增加 C3 memory。
+
+## 10. 研究借鉴与取舍
+
+| 工作 | 吸收的原则 | CodeWAM 的取舍 |
 |---|---|---|
-| FastWAM | 训练期 world objective 可帮助 policy,推理不必生成未来 | 对称 MoT 不是 canonical topology |
-| UWM | 用 modality/timestep/mask 明确区分 Policy、FD、IDM | 不用一个含糊 mask 混合已知未知量 |
-| EgoSteer | training-only world expert 可读取 GT action | world activation 不回流 action |
-| V-JEPA2 | frozen target encoder、action-conditioned predictor、短 rollout | 不先承担像素级长 rollout |
-| MaskViT | 变化的 future mask 与部分上下文 | 部分 future 只留在 world branch |
-| RoboTTT | 动态 working state、近零门控、sequence action forcing | codebook 不是可更新 TTT state |
-| Genie | state tokenizer、action、dynamics 分工 | 不用离散 state 取代全部连续视觉 |
-| VLANeXt | 多视角/proprio 融合和历史输入需要实证 | 不默认越长 raw history 越好 |
-| DiT4DiT | 中间连续 video feature 对动作有价值 | 不只保留最终离散 code |
+| FastWAM | training-time world objective 可辅助 Policy | 只作 F0,不采用双 DiT/MoT |
+| Genie | state tokenizer、action、dynamics 分工 | 保留连续 H,code 不替代精确视觉 |
+| V-JEPA2 | frozen target 与 action-conditioned prediction | 预测离散 world code,先不做长 rollout |
+| UWM | 显式区分已知、未知和监督标签 | 用模块边界而不是万能 attention mask |
+| MaskViT | 离散视觉状态可作为预测目标 | v1 不使用 partial future masking |
+| RoboTTT | 紧凑历史状态可能替代长 KV | memory 延后,codebook 本身不在线更新 |
+| DiT4DiT | 连续中间视觉特征对精细动作有价值 | H 永久保留 |
+| tau0-WM | 困难状态可按需验证候选动作 | basic path 不 rollout,规划作为后续可选层 |
 
-创新不来自把这些模块并排堆叠,而来自一套清楚的信息契约:冻结的多尺度视觉坐标负责模式,
-连续 latent 负责精度,belief/memory 负责推理,world expert 只在合法模式下学习未来。
+这些工作共同支持四个 v1 决策:状态、动作和动态分工;world objective 只在训练期塑造表示;
+连续视觉精度常驻;future prediction 必须由动作条件化。它们没有共同证明 mixed attention、
+partial-future mask、fast weights 或 test-time rollout 应成为默认结构。
 
-## 11. 实验门
+下一轮 research library 复盘优先寻找三类证据:离散状态图与 inverse/forward dynamics 的关系、
+task-free world state 如何被 Policy 选择性读取、以及简单双目标联合训练何时优于复杂辅助 loss。
+任何新增模块必须先能用本文件的信息身份解释,再对应一个已测得的失败。
 
-上一道门不通过,下一道门不扩建。
+预留扩展只通过以下触发条件进入:
 
-### Gate 0: 数据与因果正确性
+| 已测得的失败 | 允许比较的扩展 | 主要参考 |
+|---|---|---|
+| 相同当前观测对应不同任务阶段,固定窗口无法消歧 | belief/code/action history `MemoryPort` | RoboTTT |
+| 多步 future-code rollout 比单步 transition 明确改善规划 | masked/iterative code decoder | MaskViT |
+| CodeDynamics entropy 与真实动作失败稳定相关 | 只对高不确定状态做 candidate rerank/rollout | tau0-WM |
+| 需要利用无 action 视频扩大 world pretraining | world-only transition data 或独立 latent-action adapter | UWM / Genie |
 
-- 先按 episode/task 划分,再计算 normalization 和 RQ centers。
-- 固定 fps 与 latent tick,抽查 `(t-2s,t-s,t)` 对应原图和动作区间。
-- 检查 VAE prefix-only cache 不读取未来,不跨 episode/camera。
-- artifact 完整记录 split、revision、seed、config 和 git commit。
+这些是接口预留,不是 v1 backlog。尤其是 latent-action adapter 不替代真实机器人连续动作头。
 
-Package Scan v6 只用于本机链路、可视化和回归测试,不支撑论文结论。
+## 11. 与 FastWAM 的边界
 
-### Gate 1: 码本是否是健康的视觉状态坐标
+CodeWAM 在三个层面独立:
 
-主规格先在 DROID 搜索,再用 LIBERO controlled scenes 和 BridgeData V2 复核。顺序搜索:
+1. **方法独立**:五模块、两个 loss 和信息流不以 FastWAM 为模板。
+2. **代码独立**:canonical model/runtime 不 import FastWAM 的 model、MoT 或 trainer。
+3. **权重开放**:Wan-VAE 使用官方权重;其他兼容权重只能作为可选初始化实验。
 
-```text
-spatial pool g = 1,2,4
-capacity K     = 8,16,32
-family stride  = 2,3,5
-RQ prefix      = L1 / L1+L2 / L1+L2+L3
-```
-
-评价 usage/dead fraction/perplexity、held-out residual reduction、translation/scale sensitivity、
-photometric invariance、retrieval montage、阶段/动作事件 agreement。三套联合 probe 必须优于最佳
-单 family;无独立贡献的 family 删除。`delta-only` 只作 code-change 诊断,不是主输入。
-
-DROID-10k wrist `g=4,K=8,L=3` 的 aligned additive probe 已通过“joint 优于 best single”:
-在共同 ticks/targets、val/test 和 `ridge={2,8,32}` 上全部同向。Q5-L3 对两个共同 future
-targets 有稳定正增量,对 current action 却为轻微负增量,因此保留 Q5 并进入 role-mask
-ablation,而不是删除 family 或让所有专家无差别读取。mixed-prefix 复测进一步选择
-`Q2-L3+Q3-L3+Q5-L2` 作为 Policy 初始 mask。该 probe 不含连续 `H`,不能代替 Gate 2。
-
-scene-diverse L1 RGB retrieval 和 frozen temporal counterfactual 已完成。L1 对
-history-swap/reverse 的 val/test code change 只有约 1.6--4.2%,而完整 L3 prefix 对 reverse
-达到 Q2 21.9--22.8%、Q3 39.3--42.0%、Q5 45.8--48.5%;static-current 达
-66.4--82.0%。这支持“L1 粗内容、L2/L3 动态残差”的层级身份,也同时说明 L1 仍有明显
-场景/外观组织。
-
-RGB-to-Wan 复测已在 32 val + 32 test clips 上 100% 重现 canonical cache/codes。合成端点
-平移/缩放的最差 family/split full-prefix change 为 13.02%,相反方向区分为 23.96%,所有
-8px center response 均不小于 4px,所以 geometry 只到 **conditional**。photometric 为
-**fail**,因为某些 suffix 把很小的 raw appearance shift 放大到两个以上自然步。
-held-out Cartesian motion event 有 2.83--18.50% 增益,但 gripper 只有
--0.895--+0.324%,只能说明腕部/机器人运动关联。
-
-冻结 DROID artifacts 在 32 个 LIBERO clips 上也未迁移:Q3/Q5 最差层只激活 2/8 个中心,
-端点几何响应只有 3.13%/4.69%。独立 seed 7/19/31 的 train/held-out distortion 高度接近,
-最大 CV 仅 0.55%,但 L2/L3 的最差 label-invariant NMI 只有 0.143/0.065,映射后的完整三级
-prefix agreement 中位数只有 7.31%。这说明优化可收敛到多个重建质量相近、边界却不同的
-suffix partition。
-
-因此 Gate 1 的严格状态是 **not ready**:已有 artifact 能作为 DROID 域内冻结测量继续做
-诊断,但还不是可重复训练的稳定视觉坐标系。它外观/场景敏感、不跨域,也不是对象级运动语义
-或通用 tokenizer。先证明不同 seed artifact 在 `H+C` minimal probe 中功能等价,或用
-deterministic/consensus initialization 稳定 partition,才冻结 canonical artifact;LIBERO
-必须独立 refit/calibrate 并做 simulator object-pose intervention。
-
-### Gate 2: code 对控制表示是否有增量价值
-
-在相同 probe 容量下比较:
-
-```text
-P0: language + proprio
-P1: H + language + proprio
-P2: C + language + proprio
-P3: H + C + language + proprio
-```
-
-使用 episode-held-out split、`5%/20%/100%` 数据和至少 3 seeds。只有 `P3` 相对 `P1` 在低数据、
-held-out scene/task 或扰动鲁棒性中出现稳定增益,才进入完整模型。P2 不要求胜过 P3。
-
-DROID-10k 的第一轮 minimal additive screen 已完成。它没有语言或 DiT,`H` 是 Q2/Q3/Q5
-实际读取的七个未量化 wrist `g=4` 状态,`C` 是
-`Q2-L3+Q3-L3+Q5-L2`,target 为当前 7D action。三个 frozen artifact seeds 使用相同的
-train/val/test、P1-selected ridge alpha 和闭式读出。test `P3-P1` 在 5%/20%/100% train
-分别为 `[-2.131,-1.880]`、`[-0.163,-0.134]`、`[-0.023,-0.019] pp`;val 同向全负。
-
-所以当前 Gate 2 状态为 **additive screen not passed**。跨 seed downstream 结果在 full data
-上高度等价,说明低 suffix NMI 没有导致不同的线性功能结果;但 hard code 没有提供 H 之外的
-正增量。下一步只允许测试预注册、参数受控的 center+margin confidence 与
-code-conditioned low-rank interaction,并将 current-action 和 future-state targets 分开。
-在任一接口稳定胜过对应 H-only 之前,不实现完整 router 或 WorldExpert。
-
-### Gate 3: 结构和 mask 正确性
-
-- 所有防泄漏单测通过,包括 future-label permutation invariance。
-- 九个 code token 的 family/level/availability identity 在所有层保持可追踪。
-- `M_pi` 屏蔽 code 的置换不能改变 `B_t^pi`、Policy memory 或固定噪声动作输出。
-- Policy/World router 参数与 activation 不互通,只共享只读测量和 `S_t^0`。
-- frozen artifact hash 在训练前后不变。
-- latent-only、code-only、latent+code 三条路径可独立运行。
-- Policy、FD、Prior batch 可单独和混合跑一个 optimizer step。
-- 每个 loss 的梯度只到达表 8.4 允许的模块。
-
-### Gate 4: 完整策略价值
-
-只保留递进对照:
-
-```text
-C0: continuous state core, H only
-C1: C0 + 9 frozen code measurements + role-specific readout
-C2: C1 + Forward Dynamics objective
-C3: C2 + individually validated structured masks
-C4: C3 + optional working memory, only if long-horizon task needs it
-F0: FastWAM reference, external architecture baseline
-```
-
-`C0-C4` 保持 backbone、参数预算、训练步数和数据一致。主指标是闭环 task success,其次是 action
-error、future-code accuracy、扰动鲁棒性、延迟和显存。若 C1 不胜 C0,返回 Gate 1/2;若 C2
-只降低 code CE 而不改善控制或泛化,删除 world objective;若 C4 无长时收益,保持 memory 关闭。
+FastWAM checkout、ActionDiT conversion 和旧训练脚本只服务 `F0` 对照。它们不能成为 CodeWAM
+训练环境的必需依赖。
 
 ## 12. 当前代码边界与实现顺序
 
-当前 `codewam/codebook.py` 和 `codewam/model.py` 中的 `StateEncoder + online EMA RQ + first-frame
-single token` 是早期兼容原型,不是 canonical v1。配置必须默认关闭该路径。
+已完成的是数据、Wan pooled cache、离线 RQ、held-out diagnostics 和大规模 artifact workflow。
+独立 CodeWAM v1 model 尚未实现。当前 `codewam/model.py`、`codewam/codebook.py` 和相关
+FastWAM-compatible configs 全部是 legacy。
 
-公开数据角色、DROID 数据阶梯、pooled feature cache、distributed streaming RQ 和 8xA100
-作业布局以 `CODEBOOK.md` 为准。
-截至当前提交,episode manifest、rank-aware DROID pooled exporter、单机/多 rank streaming RQ、
-可恢复 patience、frozen artifact 和 residual/usage/temporal held-out evaluator 已实现并通过
-GPU pilot。train-fit/held-out action association、cross-parent context concentration 和 aligned
-multi-family contribution probe、scene-diverse RGB retrieval 和 frozen temporal
-counterfactual、RGB geometry/photometric perturbation、action-event probe、LIBERO frozen
-stress、independent-seed comparator 和 provenance-checked usability report 也已实现。
-跨 seed `P0/P1/P2/P3` minimal functional readout 与 5%/20%/100% scale curve 也已实现并完成;
-它裁决了 downstream equivalence,但 additive `H+C` 未胜过 `H`。当前 Gate 1 usability
-verdict 仍为 `not_ready`,Gate 2 additive screen 同样未通过。deterministic/consensus
-initialization、LIBERO independent refit/simulator intervention、quantization-margin、
-mode-conditioned interaction、`FrozenRQAdapter`、mask invariance 和 distributed held-out
-aggregation 仍待完成。训练侧的 rank-aware shard partition、rank-0 shared initialization 和
-distributed RQ all-reduce 已实现。实现边界见 `CODEBOOK.md`。
-
-| 早期实现 | canonical v1 |
-|---|---|
-| `current/future/delta` evaluator | causal `[past,past,current]` descriptors |
-| 全量数据内部标准化 | train-only stats applied unchanged to val/test |
-| trainable StateEncoder | direct Wan latent + fixed pooling |
-| 单个在线 EMA code token | 3 independent frozen RQ x 3 level tokens |
-| policy loss 更新码本 | immutable artifact, learned interface projection only |
-| action 与 future 混合 | staged state prefix + separate mode-specific branches |
-| 单步 flat code head | independent hierarchical heads + short rollout |
-
-工程顺序固定为:
+目标 package:
 
 ```text
-1. 实现 episode manifest、streaming pooled-feature shards 和 deterministic splits
-2. 实现 train-only streaming stats、distributed K-Means/RQ 和 checkpoint/resume
-3. 迁移 evaluator: causal descriptors、held-out metrics、retrieval、时间与几何扰动
-4. 用 Package Scan v6/DROID-100 做 smoke,再在 DROID/Bridge/LIBERO 完成 Gate 1/2
-5. 定义 StateBase/CodeMeasurement/ModeCodeMask/RoleState/ModeBatch typed interfaces
-6. 实现 role router、mask program 与防泄漏/梯度路由单测
-7. 实现 continuous C0 和 FrozenRQAdapter,完成 C0/C1
-8. 实现独立 WorldExpert 与 hierarchical heads,完成 C2
-9. 逐项验证 structured masks
-10. 最后才接入可选 recurrent/TTT MemoryPort
+codewam/models/
+  continuous_state.py
+  frozen_codebook.py
+  belief_core.py
+  action_flow.py
+  code_dynamics.py
+  codewam_v1.py
 ```
 
-在 Gate 2 之前不继续扩建在线码本原型,也不下载 3-camera 权重或在本机启动大模型训练。
-
-## 13. 最终判定
-
-CodeWAM v1 的可证伪主张是:
+下一工程顺序:
 
 ```text
-Frozen causal multi-scale RQ measurements add a stable and dynamically useful
-state coordinate system to continuous Wan latent features, improving control
-data efficiency or robustness without sacrificing precise action generation or
-requiring future-video rollout at inference time.
+1. 定义 StateInputs/CodeMeasurements/WorldBelief/ActionBatch/FutureCodeTargets
+2. 实现 FrozenCodebookAdapter 和九 token identity tests
+3. 实现 ContinuousStateEncoder 与 WorldBeliefCore
+4. 实现独立 ActionFlowDecoder,先完成 C0/C1
+5. 从 pooled trajectory 构造 action-chunk-end future-code labels
+6. 实现 CodeDynamicsDecoder 与 L_code,完成 C2
+7. 加入 gradient-routing、future-permutation 和 inference-path tests
+8. 在 DROID/LIBERO 进行 C0/C1/C2,FastWAM 仅作 F0
+9. 只在证据要求时增加 memory 或新的 loss
 ```
 
-如果离散坐标没有超过连续路径,就删除它;如果 world objective 只会预测 code 而不改善控制,
-就删除它;如果 memory 没有解决可测得的长时问题,就不启用它。结构只由实验保留,不由名字保留。
+## 13. 可证伪主张
+
+```text
+A frozen multi-scale codebook provides a compact, static vocabulary of visual
+world states and local changes. Jointly learning continuous actions and
+action-conditioned transitions between book IDs improves world-structured
+policy learning while unquantized visual state preserves precise control.
+```
+
+这项主张不要求 `C` 比 `H` 包含更多信息,也不要求 code 直接对应动作。若 `L_code` 只提高
+future-code accuracy 而不改善 Policy 学习或闭环控制,删除 CodeDynamics objective;若 `C1`
+也不胜 `C0`,码本只保留为分析工具。结构由可归因的 C0/C1/C2 结果决定。

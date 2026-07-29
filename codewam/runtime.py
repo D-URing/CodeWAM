@@ -1,7 +1,6 @@
-"""CodeWAM runtime factory (hydra `_target_`)。
+"""Legacy FastWAM-compatible Hydra runtime factory.
 
-复用 FastWAM 的底层组件加载(基座专家),组装成 CodeWAM 模型。
-与 FastWAM 共享数据/评测管线以便公平对照。
+The canonical five-module CodeWAM runtime is not implemented in this module.
 """
 import torch
 from omegaconf import DictConfig, OmegaConf

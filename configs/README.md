@@ -1,6 +1,6 @@
 # Configs
 
-CodeWAM 使用与 FastWAM 相同的 Hydra 组织方式:
+当前目录保存 FastWAM-compatible legacy 配置和 codebook evaluation 配置:
 
 ```text
 configs/
@@ -33,9 +33,9 @@ state_codebook:
 ```
 
 canonical v1 不在 policy 训练中拟合该模块。正式结构使用三套离线训练、冻结且彼此独立的
-`Q2/Q3/Q5` RQ artifacts,接口和 mask program 见 `docs/ARCHITECTURE.md`;数据与训练 contract
-见 `docs/CODEBOOK.md`。在
-`FrozenRQAdapter` 完成前,下列训练命令只验证现有 FastWAM-compatible 链路。
+`Q2/Q3/Q5` RQ artifacts;五模块接口和可见性 contract 见 `docs/ARCHITECTURE.md`,数据与训练
+contract 见 `docs/CODEBOOK.md`。独立 `codewam/models/` 与对应 config 尚未实现,所以下列
+命令只验证 FastWAM-compatible legacy/F0 链路。
 
 训练示例:
 

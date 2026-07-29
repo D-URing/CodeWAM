@@ -118,13 +118,50 @@ class UsabilityTests(unittest.TestCase):
 
         self.assertEqual(decision["verdict"], "not_ready")
         self.assertEqual(decision["blocking_gates"], ["seed_stability"])
-        self.assertEqual(decision["approved_use"], [])
+        self.assertEqual(
+            decision["deployment_scope"],
+            "fixed-artifact DROID research only; universal tokenizer claims blocked",
+        )
+        self.assertIn(
+            "DROID C0/C1/C2 world-action experiments with all available codes",
+            decision["approved_use"],
+        )
         self.assertTrue(
             any(
-                "independently trained artifacts" in followup
+                "bind every downstream run to one artifact seed" in followup
                 for followup in decision["required_followups"]
             )
         )
+
+    def test_overall_decision_blocks_scoped_use_when_causality_fails(self) -> None:
+        names = (
+            "causal_reproduction",
+            "quantizer_health",
+            "rq_hierarchy",
+            "family_complementarity",
+            "context_leakage",
+            "photometric_robustness",
+            "geometry_sensitivity",
+            "action_event_semantics",
+            "seed_stability",
+            "cross_domain_stress",
+        )
+        gates = [
+            {
+                "name": name,
+                "status": "fail" if name == "causal_reproduction" else "pass",
+            }
+            for name in names
+        ]
+
+        decision = _overall_decision(gates)
+
+        self.assertEqual(decision["verdict"], "not_ready")
+        self.assertEqual(
+            decision["deployment_scope"],
+            "blocked pending in-domain artifact gates",
+        )
+        self.assertEqual(decision["approved_use"], [])
 
     def test_visual_gates_use_quantized_geometry_response(self) -> None:
         condition_rows = []

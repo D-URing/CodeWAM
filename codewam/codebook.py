@@ -1,19 +1,7 @@
-"""World Fast Codebook —— 以 FastWAM 为 base 融合 RQ 离散状态码本。
+"""Legacy train-time online-EMA codebook prototype.
 
-设计(见 project memory `FastWAM×RQ-VAE 世界快速码本方向`):
-- 共享 RQ 状态码本同时充当三角色:
-  A 条件: 把当前观测(Wan-VAE latent 帧)量化成离散状态码, 作为额外 token 供动作专家 cross-attend。
-  B 离散世界模型: DynamicsHead 从当前状态码(+动作特征)预测未来帧的状态码(交叉熵), 取代/补充像素扩散想象。
-  C 小数据微调: 大数据预训码本, 真机冻结码本只调动作头。
-
-本文件只依赖 torch, 不 import 5B 视频专家, 因此:
-- 可被 P1/P2 探针脚本独立调用(冻结 Wan-VAE latent 上评测可离散性 + 动力学可预测性);
-- 通过后再由 fastwam.py 引入(A/B), runtime.py 透传 config。
-
-关键工程(直击 ElimWM 头号失败=码本坍塌, 利用率曾仅 0.06~0.20):
-- EMA 码本更新(非梯度) + commitment loss(只训 encoder) + 死码重置(dead-code reset)。
-- RQ 多级残差, 保留粗→细层次; 可选保留一路连续残差防"抽象丢精度"。
-- forward 返回每级利用率/困惑度, 供 P1 直接读数。
+The canonical CodeWAM path uses independently trained, immutable Q2/Q3/Q5 RQ
+artifacts. This module remains cheap to import for regression probes only.
 """
 
 from __future__ import annotations

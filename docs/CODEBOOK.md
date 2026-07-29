@@ -6,6 +6,9 @@ Status: canonical codebook execution specification and implementation status.
 执行方式。模型结构与 mask 以 `ARCHITECTURE.md` 为准;环境和通用运行命令见
 `DEVELOPMENT.md`。旧 window evaluator 只保留为兼容代码,不能生成正式 artifact。
 
+文中带日期的 P0/P1 段落保留实验发生时的假设、数字和判定,用于审计研究演化;它们不是
+当前模型结构规范。若历史解释与 `ARCHITECTURE.md` 或本文件第 14 节冲突,以后两者为准。
+
 ## 1. 决策摘要
 
 ```text
@@ -22,10 +25,12 @@ action schema 相对一致的数据上回答:
 ```text
 Q1  Wan latent 中是否存在健康、稳定的多尺度 RQ 状态坐标?
 Q2  这些坐标是否描述视觉状态,而不是 camera/dataset/robot identity?
-Q3  code 是否给 continuous latent 带来可复现的控制增量?
+Q3  给定当前 world belief 和动作,未来 code transition 是否可学习?
+Q4  该 world objective 是否改善策略学习、泛化或闭环控制?
 ```
 
-三问成立后才扩大到多 embodiment 数据。
+Q1/Q2 决定 artifact 能声称什么范围,Q3/Q4 决定码本是否值得进入 world-action model。它们
+不能由一个 `code -> current action` 线性读出互相替代。
 
 ## 2. 数据集分工
 
@@ -369,16 +374,16 @@ current action 上稳定为轻微负值,val 为 -0.20% 至 -0.16%,test 为 -0.03
 Q2+Q3 的 L3 action gain 为 6.76%/6.89%,略高于 all-family 的 6.57%/6.86%;但在 L2,Q5
 action increment 又为正。
 
-因此当前结论不是删除 Q5,而是 **保留三族并做 role-specific measurement routing**:
-World/Forward-Dynamics 候选读取全部合法 L3;Policy 必须比较 all-L3、Q2+Q3-L3 和
-`Q2-L3 + Q3-L3 + Q5-L2`。
+因此实验层面的结论是 **保留三族**。Q5 对 future targets 有独立贡献,而对 current action
+的 code-only 线性关联较弱;这描述了 probe 行为,不等于模型应删除或遮蔽 Q5-L3。
 
 mixed-prefix 直接复测中,最后一个 hybrid 的 action gain 为 6.96%/6.96%,高于 all-L3 的
 6.57%/6.86%、Q2+Q3-L3 的 6.76%/6.89% 和 all-L2 的 6.82%/6.21%。hybrid 的 future
 proprio 为 2.66%/3.06%、future latent moment 为 2.14%/2.09%,与 all-L3 的
-2.69%/3.02%、2.13%/2.10% 基本持平。因此 **Policy 初始默认使用 hybrid mask**,
-同时保留 all-L3/no-Q5 ablation;World 初始保留 all-L3,等真实 future-code objective 再裁剪。
-这些实验仍是 code-only probe,尚未回答 `H+C` 是否优于 continuous `H`。
+2.69%/3.02%、2.13%/2.10% 基本持平。这个 `Q2-L3+Q3-L3+Q5-L2` profile 继续保留为
+**历史 readout ablation**,不再定义 Policy visibility。canonical v1 让九个 available
+measurement 全部进入任务无关 `B`,由联合训练学习相关性。这些实验仍是 code-only probe,
+尚未回答 action-conditioned code transition 或闭环控制价值。
 
 #### P1 cross-scene retrieval 与时间反事实: 2026-07-29
 
@@ -422,7 +427,8 @@ Q2 `2.62/6.17/19.10%`,Q3 `2.73/8.78/36.48%`,Q5 `4.12/33.47/24.63%`。
 
 - L1 主要是当前内容与粗状态坐标,不能单独当成动态类别。
 - 时间顺序主要进入 residual levels;Q2/Q3 更集中于 L3,Q5 的方向信号在 L2 最强。
-- Q5-L2 的结果与 aligned action probe 选择 Policy hybrid mask 相互支持;World 仍保留 L3。
+- Q5 的方向信号在 L2 最强,与 aligned action probe 的 mixed-prefix 结果一致;这只说明层级
+  时间敏感性,不决定 Policy visibility,canonical v1 仍读取全部 available levels。
 - 反事实是 frozen representation sensitivity,不是物理环境因果干预;对象级平移/缩放仍需
   controlled geometry probe。
 
@@ -470,7 +476,7 @@ endpoint geometry 的 raw descriptor 位移达到自然一步的 0.607--0.871,�
 监督标签。完整 prefix 在 unseen val/test scenes 上对平移/旋转幅值的 normalized accuracy
 gain 为 10.74--18.50%,方向为 2.83--10.85%,任何 code coverage 为 100%。gripper gain
 仅在 -0.895% 到 +0.324% 间摆动,没有稳定信号。Q5 translation-direction 的平均增益从
-L1 2.98% 到 L2 8.36%,L3 仅到 8.60%,独立支持 Policy 的 Q5-L2 mask。轨迹 tick 相关,
+L1 2.98% 到 L2 8.36%,L3 仅到 8.60%,再次说明 Q5-L2 的描述性信号较强。轨迹 tick 相关,
 这些值是描述性 held-out association,不是显著性或对象因果证明。L3 exact-prefix coverage
 为 99.97--100%,但 motion balanced accuracy 仅 0.188--0.379,NMI 仅 0.029--0.056;
 因此弱语义不是 backoff 造成,也不足以支持 code-only control。
@@ -524,10 +530,10 @@ verdict:     not_ready
 ```
 
 这个 `fail` 不表示 Wan latent 没有视觉信息,也不表示某一份 frozen artifact 不能被读取;
-它阻止的是把当前训练方案称为稳定、可重新生成的视觉坐标系。光照和跨域同样是 semantic
-limiters,不会被健康 distortion 平均掉。当前只允许围绕固定 artifact 做诊断和跨 seed
-functional-equivalence 实验;仍禁止 code-only precision control、在线更新 centers、对象
-运动原语和通用跨域 tokenizer 主张。
+它阻止的是把当前训练方案称为稳定、可重新生成、跨域通用的视觉 tokenizer。光照响应和
+跨域 collapse 必须继续完整披露。绑定 dataset/revision/seed/checksum 的 DROID artifact
+可以进入域内 C1/C2 原型,但不得据此声称 code-only precision control、对象运动原语或
+跨域 numeric ID 语义;centers 也仍禁止在线更新。
 
 #### P1 frozen-code functional-equivalence screen: 2026-07-29
 
@@ -586,13 +592,14 @@ val 的 `P3-P1` 同样全部为负:5% 为 `[-2.126,-1.719] pp`,20% 为
 
 1. **functional seed equivalence 成立**:随着数据增加,三个 seed 的 `P3-P1` range 从
    0.251 pp 收缩到 0.004 pp。不同 residual partitions 没有产生不同的 full-data 功能结果。
-2. **Gate 2 additive screen 未通过**:`P3-P1` 在所有 fraction/split/seed 都不为正。它不证明
-   RQ 在非线性 router 或 future-state objective 中无效,但禁止仅凭现有码本继续扩建完整模型。
+2. **additive action screen 未通过**:`P3-P1` 在所有 fraction/split/seed 都不为正。它拒绝
+   “把 hard categorical code 加进线性 current-action readout 就会带来增益”这一接口,不拒绝
+   code 作为静态 world vocabulary 或 future-transition label。
 
-下一项实验应先区分“码本没有额外价值”和“additive one-hot 接口没有利用 mode structure”:
-在预注册的同一 split 上比较 hard prefix、center+margin confidence 和受控的
-code-conditioned low-rank interaction,并把 current-action 与 future-state target 分开。
-只有某个接口在 held-out 数据上稳定胜过对应 H-only,才进入 `FrozenRQAdapter` 和正式 router。
+下一项模型实验不再继续拟合 `code -> current action` proxy,而是在同一真实轨迹 tuple 上比较
+`current-code persistence`、`B without action`、`B + true action` 和
+`B + shuffled action` 的 future-code NLL。margin 与跨 seed 指标继续作为 artifact 诊断,
+不是进入 `FrozenCodebookAdapter` 的先决条件。
 
 ### P2: DROID-Core
 
@@ -965,7 +972,7 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 105 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 106 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 patience resume、RQ residual 下降、artifact round-trip、双 rank resume 与单卡 centers 等价、
@@ -1171,22 +1178,19 @@ BridgeData V2。
 
 ## 14. 下一张工程单
 
-下一阶段先解释 additive Gate 2 的负结果,不提前扩建完整 world model:
+下一阶段把已经冻结的信息分工实现成最小独立 world-action model:
 
 ```text
-1. 保留已完成的 5%/20%/100% x seed 7/19/31 P0/P1/P2/P3 报告作为 additive baseline
-2. 在现有 RGB probe 中增加每层 nearest/runner-up margin,验证光照和跨 seed suffix flip
-   是否能被 confidence 检出
-3. 在完全相同的 split/容量下比较 hard prefix、center+margin 和 code-conditioned low-rank
-   interaction;current action 与 future proprio/latent target 分开报告
-4. 比较 prefix dropout 和 paired-photometric consistency,不得用 val/test 更新 centers
-5. 只有 H+C 在至少一个预注册目标上跨 seed 稳定胜过 H-only,才定义
-   FrozenRQAdapter/ModeCodeMask;否则回到 descriptor/clustering objective
-6. deterministic/consensus initialization 只解决 artifact reproducibility,不能代替增量价值
-7. 在 LIBERO 分开做同规格独立 refit、normalization/calibration 和 simulator object-pose
-   intervention,不得把 frozen-transfer failure 混成一个数字
-8. 通过 Gate 2 后再实现 continuous base belief、Policy/World routers 与 mask invariance
-9. 只有 H+C 在多 seed、低数据和扰动下稳定胜出后才实现 WorldExpert
+1. 保留全部 P0/P1 和 P0/P1/P2/P3 报告,明确标为 historical diagnostics
+2. 冻结一个带 dataset/revision/seed/checksum 的 DROID g=4,K=8,L=3 scoped artifact
+3. 定义 StateInputs、CodeMeasurements、WorldBelief、ActionBatch、FutureCodeTargets
+4. 实现九 token FrozenCodebookAdapter;不求和、不在线更新、不使用 role mask
+5. 实现 ContinuousStateEncoder 与 task-free WorldBeliefCore,全部 available code 可见
+6. 实现独立 ActionFlowDecoder,先跑参数预算一致的 C0/C1
+7. 构造 action-chunk-end future-code labels,实现 CodeDynamicsDecoder 与单一 CE objective
+8. 比较 persistence/no-action/true-action/shuffled-action,再跑 C2 对 C1
+9. 在 LIBERO 分开做独立 refit/calibration 和 simulator object-pose intervention
+10. 只有测得长时失败后才新增 MemoryPort;只有测得规划收益后才新增 future-code rollout
 ```
 
 验收不以“程序跑完”为准:
@@ -1197,4 +1201,9 @@ BridgeData V2。
 - 任意 iteration/level 中断后可恢复。
 - train/val/test 与 source checksums 可从 artifact 反查。
 - future frame、跨 episode frame 和 held-out statistics 无法进入训练。
-- 被 Policy role mask 屏蔽的 code 无法经 belief、memory 或 World activation 旁路进入动作。
+- canonical model/runtime 不 import FastWAM model、MoT 或 trainer。
+- 九个 `(family,level)` measurement identities 在 belief attention 中保持可追踪。
+- 置换 future-code labels 不改变固定噪声下的 Policy 输出。
+- 置换 GT action 不改变已构造的 `B` 或 Policy 输出,只允许改变 CodeDynamics 输出。
+- frozen centers 和 normalization 在 optimizer step 前后 hash 不变。
+- `L_action/L_code` 的梯度只到达 `ARCHITECTURE.md` 指定模块。
