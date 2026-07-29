@@ -82,6 +82,30 @@ def _write_run(root: Path) -> None:
         json.dumps(heldout),
         encoding="utf-8",
     )
+    association = {
+        "contract_hash": "association-contract",
+        "rows": [
+            {
+                "family": "Q3",
+                "split": "val",
+                "stride": 3,
+                "pool": 4,
+                "camera_ids": ["exterior"],
+                "k": 2,
+                "target": "future_proprio_change",
+                "prefix_depth": 2,
+                "levels": 2,
+                "normalized_mse_reduction": 0.12,
+                "exact_prefix_coverage": 0.7,
+                "any_code_coverage": 0.95,
+            }
+        ],
+    }
+    (root / "association").mkdir()
+    (root / "association/association_report.json").write_text(
+        json.dumps(association),
+        encoding="utf-8",
+    )
 
 
 class StreamingComparisonTests(unittest.TestCase):
@@ -104,8 +128,10 @@ class StreamingComparisonTests(unittest.TestCase):
         row = report["rows"][0]
         self.assertAlmostEqual(row["generalization_gap"], 0.05)
         self.assertEqual(row["active_codes_by_level"], [2, 2])
+        self.assertEqual(len(report["association_rows"]), 1)
         self.assertIn("exterior-g4", markdown)
         self.assertIn("35.00%", markdown)
+        self.assertIn("future_proprio_change", markdown)
 
     def test_comparison_rejects_train_heldout_identity_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

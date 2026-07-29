@@ -185,12 +185,49 @@ def _markdown(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "This report deliberately leaves action alignment, scene/camera "
-            "concentration, geometry and retrieval quality unresolved until "
-            "their dedicated probes are present.",
+            "Distortion alone leaves scene/camera concentration, geometry and "
+            "retrieval quality unresolved.",
             "",
         ]
     )
+    if report["association_rows"]:
+        lines.extend(
+            [
+                "## Full-prefix held-out association",
+                "",
+                "| run | family | split | target | normalized MSE gain | "
+                "exact tuple coverage | any prefix coverage |",
+                "|---|---|---|---|---:|---:|---:|",
+            ]
+        )
+        for row in report["association_rows"]:
+            lines.append(
+                "| {label} | {family} | {split} | {target} | {gain} | "
+                "{exact} | {any_coverage} |".format(
+                    label=row["label"],
+                    family=row["family"],
+                    split=row["split"],
+                    target=row["target"],
+                    gain=_format_percent(
+                        row["normalized_mse_reduction"]
+                    ),
+                    exact=_format_percent(
+                        row["exact_prefix_coverage"]
+                    ),
+                    any_coverage=_format_percent(
+                        row["any_code_coverage"]
+                    ),
+                )
+            )
+        lines.append("")
+    else:
+        lines.extend(
+            [
+                "No frozen association reports were present in the run "
+                "directories.",
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -206,6 +243,7 @@ def compare_streaming_runs(
         raise ValueError("Comparison labels must be nonempty and unique.")
 
     rows: list[dict[str, Any]] = []
+    association_rows: list[dict[str, Any]] = []
     inputs = []
     for label, run_dir in normalized:
         train_path = run_dir / "train_summary.json"
@@ -222,6 +260,18 @@ def compare_streaming_runs(
         heldout_rows = heldout_report.get("rows", ())
         if not heldout_rows:
             raise ValueError(f"Held-out report has no rows: `{heldout_path}`.")
+        heldout_identities = {
+            (
+                row["family"],
+                row["split"],
+                row["stride"],
+                row["pool"],
+                json.dumps(row.get("camera_ids"), sort_keys=True),
+                row["k"],
+                row["levels"],
+            )
+            for row in heldout_rows
+        }
         for heldout in heldout_rows:
             family = str(heldout["family"])
             if family not in train_by_family:
@@ -236,15 +286,60 @@ def compare_streaming_runs(
                     heldout=heldout,
                 )
             )
-        inputs.append(
-            {
-                "label": label,
-                "run_dir": str(run_dir.resolve()),
-                "train_summary_sha256": file_sha256(train_path),
-                "heldout_report_sha256": file_sha256(heldout_path),
-                "heldout_contract_hash": heldout_report.get("contract_hash"),
-            }
-        )
+        input_row = {
+            "label": label,
+            "run_dir": str(run_dir.resolve()),
+            "train_summary_sha256": file_sha256(train_path),
+            "heldout_report_sha256": file_sha256(heldout_path),
+            "heldout_contract_hash": heldout_report.get("contract_hash"),
+            "association_report_sha256": None,
+            "association_contract_hash": None,
+        }
+        association_path = run_dir / "association/association_report.json"
+        if association_path.is_file():
+            association = _load_json(association_path)
+            input_row["association_report_sha256"] = file_sha256(
+                association_path
+            )
+            input_row["association_contract_hash"] = association.get(
+                "contract_hash"
+            )
+            for row in association.get("rows", ()):
+                if int(row["prefix_depth"]) != int(row["levels"]):
+                    continue
+                identity = (
+                    row["family"],
+                    row["split"],
+                    row["stride"],
+                    row["pool"],
+                    json.dumps(row.get("camera_ids"), sort_keys=True),
+                    row["k"],
+                    row["levels"],
+                )
+                if identity not in heldout_identities:
+                    raise RuntimeError(
+                        f"Association row does not match held-out run `{label}`."
+                    )
+                association_rows.append(
+                    {
+                        "label": label,
+                        "run_dir": str(run_dir.resolve()),
+                        "family": row["family"],
+                        "split": row["split"],
+                        "target": row["target"],
+                        "prefix_depth": int(row["prefix_depth"]),
+                        "normalized_mse_reduction": float(
+                            row["normalized_mse_reduction"]
+                        ),
+                        "exact_prefix_coverage": float(
+                            row["exact_prefix_coverage"]
+                        ),
+                        "any_code_coverage": float(
+                            row["any_code_coverage"]
+                        ),
+                    }
+                )
+        inputs.append(input_row)
 
     report = {
         "schema": COMPARISON_SCHEMA,
@@ -255,6 +350,15 @@ def compare_streaming_runs(
                 row["label"],
                 row["family"],
                 row["split"],
+            ),
+        ),
+        "association_rows": sorted(
+            association_rows,
+            key=lambda row: (
+                row["label"],
+                row["family"],
+                row["split"],
+                row["target"],
             ),
         ),
     }
