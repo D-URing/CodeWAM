@@ -89,6 +89,36 @@ class CodebookFamilyAssociationTests(unittest.TestCase):
             targets["common_future_proprio_change"][0].item(),
             2.0,
         )
+        changed_future = pooled.clone()
+        changed_future[7] += 10_000.0
+        changed_episode = PooledFeatureEpisode(
+            episode_id="episode",
+            split="train",
+            timestamps=episode.timestamps,
+            pooled_g4=changed_future,
+            camera_ids=("camera",),
+            action=episode.action,
+            proprio=episode.proprio,
+        )
+        changed_vectors, changed_targets = _episode_aligned_probe_values(
+            changed_episode,
+            artifacts,
+            future_offset=1,
+        )
+        torch.testing.assert_close(
+            changed_vectors["Q2"][0],
+            vectors["Q2"][0],
+        )
+        torch.testing.assert_close(
+            changed_vectors["Q3"][0],
+            vectors["Q3"][0],
+        )
+        self.assertFalse(
+            torch.equal(
+                changed_targets["common_future_latent_moment_change"][0],
+                targets["common_future_latent_moment_change"][0],
+            )
+        )
 
     def test_additive_fit_recovers_complementary_family_effects(self) -> None:
         statistics = _AdditiveCodeStatistics(
@@ -130,6 +160,9 @@ class CodebookFamilyAssociationTests(unittest.TestCase):
                 row["family"]: row["artifact"] for row in trained
             }
             output = root / "family-association"
+            depth_profiles = {
+                "hybrid": {"Q2": 1, "Q3": 1, "Q5": 1}
+            }
 
             first = probe_codebook_family_contributions(
                 manifest_path=root / "manifest.jsonl",
@@ -140,6 +173,7 @@ class CodebookFamilyAssociationTests(unittest.TestCase):
                 cpu_threads=1,
                 batch_size=32,
                 center_block_size=4,
+                depth_profiles=depth_profiles,
             )
             resumed = probe_codebook_family_contributions(
                 manifest_path=root / "manifest.jsonl",
@@ -150,12 +184,18 @@ class CodebookFamilyAssociationTests(unittest.TestCase):
                 cpu_threads=1,
                 batch_size=32,
                 center_block_size=4,
+                depth_profiles=depth_profiles,
             )
 
         self.assertEqual(first, resumed)
         self.assertEqual(first["families"], ["Q2", "Q3", "Q5"])
         self.assertEqual(len(first["rows"]), 42)
         self.assertEqual(len(first["summary_rows"]), 6)
+        self.assertEqual(len(first["profile_rows"]), 6)
+        self.assertEqual(
+            first["profile_rows"][0]["depths_by_family"],
+            {"Q2": 1, "Q3": 1, "Q5": 1},
+        )
         self.assertEqual(
             {row["split"] for row in first["summary_rows"]},
             {"val", "test"},

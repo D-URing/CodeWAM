@@ -19,6 +19,36 @@ def _parse_artifact(value: str) -> tuple[str, str]:
     return label, path
 
 
+def _parse_depth_profile(value: str) -> tuple[str, dict[str, int]]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError(
+            "Depth profile must use NAME=FAMILY:DEPTH,..."
+        )
+    name, configured = value.split("=", 1)
+    if not name or not configured:
+        raise argparse.ArgumentTypeError(
+            "Depth profile name and family depths must be nonempty."
+        )
+    depths = {}
+    for item in configured.split(","):
+        if ":" not in item:
+            raise argparse.ArgumentTypeError(
+                "Depth profile entries must use FAMILY:DEPTH."
+            )
+        family, raw_depth = item.split(":", 1)
+        if not family or family in depths:
+            raise argparse.ArgumentTypeError(
+                "Depth profile family labels must be nonempty and unique."
+            )
+        try:
+            depths[family] = int(raw_depth)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError(
+                "Depth profile depths must be integers."
+            ) from error
+    return name, depths
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -40,6 +70,15 @@ def main() -> None:
     parser.add_argument("--future-offset", type=int, default=1)
     parser.add_argument("--ridge", type=float, default=8.0)
     parser.add_argument("--max-pair-cells", type=int, default=2_000_000)
+    parser.add_argument(
+        "--depth-profile",
+        action="append",
+        type=_parse_depth_profile,
+        help=(
+            "Aligned mixed prefix as NAME=Q2:3,Q3:3,Q5:2; repeat for "
+            "additional profiles."
+        ),
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=8192)
@@ -49,6 +88,11 @@ def main() -> None:
     labels = [label for label, _ in args.artifact]
     if len(labels) != len(set(labels)):
         parser.error("Artifact labels must be unique.")
+    profile_names = [
+        name for name, _ in (args.depth_profile or ())
+    ]
+    if len(profile_names) != len(set(profile_names)):
+        parser.error("Depth profile names must be unique.")
 
     report = probe_codebook_family_contributions(
         manifest_path=args.manifest,
@@ -59,6 +103,7 @@ def main() -> None:
         future_offset=args.future_offset,
         ridge=args.ridge,
         max_pair_cells=args.max_pair_cells,
+        depth_profiles=dict(args.depth_profile or ()),
         device=args.device,
         cpu_threads=args.cpu_threads,
         batch_size=args.batch_size,
@@ -77,6 +122,13 @@ def main() -> None:
             f"{row['best_single_normalized_mse_reduction']:.4f} "
             f"delta={row['full_gain_over_best_single']:.4f} "
             f"leave-one-out=[{contributions}]"
+        )
+    for row in report["profile_rows"]:
+        print(
+            f"{row['split']} {row['target']} {row['profile']} "
+            f"({row['model']}): "
+            f"gain={row['normalized_mse_reduction']:.4f} "
+            f"coverage={row['all_family_code_coverage']:.4f}"
         )
     print(f"Wrote family contribution report to {args.output_dir}.")
 

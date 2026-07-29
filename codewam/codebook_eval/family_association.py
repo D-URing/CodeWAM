@@ -546,6 +546,52 @@ def _family_subsets(labels: Sequence[str]) -> tuple[tuple[str, ...], ...]:
     )
 
 
+def _validate_depth_profiles(
+    profiles: dict[str, dict[str, int]] | None,
+    *,
+    labels: tuple[str, ...],
+    levels: int,
+    artifacts: dict[str, FrozenRQArtifact],
+    max_pair_cells: int,
+) -> dict[str, dict[str, int]]:
+    result = {}
+    for name, configured_depths in (profiles or {}).items():
+        if not name:
+            raise ValueError("Depth profile names must be nonempty.")
+        if set(configured_depths) != set(labels):
+            raise ValueError(
+                f"Depth profile `{name}` must configure every family."
+            )
+        depths = {
+            label: int(configured_depths[label]) for label in labels
+        }
+        invalid = [
+            label
+            for label, depth in depths.items()
+            if depth <= 0 or depth > levels
+        ]
+        if invalid:
+            raise ValueError(
+                f"Depth profile `{name}` has invalid families {invalid}."
+            )
+        capacities = {
+            label: int(artifacts[label].centers[0].shape[0])
+            ** depths[label]
+            for label in labels
+        }
+        largest_pair = max(
+            capacities[left] * capacities[right]
+            for left, right in itertools.combinations(labels, 2)
+        )
+        if largest_pair > max_pair_cells:
+            raise ValueError(
+                f"Depth profile `{name}` needs {largest_pair:,} pair cells, "
+                f"above max_pair_cells={max_pair_cells:,}."
+            )
+        result[str(name)] = depths
+    return result
+
+
 def _encode_family_codes(
     vectors: dict[str, torch.Tensor],
     artifacts: dict[str, FrozenRQArtifact],
@@ -615,6 +661,7 @@ def probe_codebook_family_contributions(
     future_offset: int = 1,
     ridge: float = 8.0,
     max_pair_cells: int = 2_000_000,
+    depth_profiles: dict[str, dict[str, int]] | None = None,
     device: str = "auto",
     cpu_threads: int = 4,
     batch_size: int = 8192,
@@ -686,6 +733,13 @@ def probe_codebook_family_contributions(
                 f"RQ prefix L{depth} needs {largest_pair:,} pair cells, "
                 f"above max_pair_cells={max_pair_cells:,}."
             )
+    selected_profiles = _validate_depth_profiles(
+        depth_profiles,
+        labels=labels,
+        levels=levels,
+        artifacts=loaded_artifacts,
+        max_pair_cells=max_pair_cells,
+    )
 
     expected_by_split = {
         split: {
@@ -736,6 +790,7 @@ def probe_codebook_family_contributions(
         "future_offset": future_offset,
         "ridge": ridge,
         "max_pair_cells": max_pair_cells,
+        "depth_profiles": selected_profiles,
         "device": device,
         "cpu_threads": cpu_threads,
         "batch_size": batch_size,
@@ -782,6 +837,7 @@ def probe_codebook_family_contributions(
         expected_by_split["train"],
     )
     statistics: dict[int, _AdditiveCodeStatistics] = {}
+    profile_statistics: dict[str, _AdditiveCodeStatistics] = {}
     train_vectors = 0
     for vectors, targets in _iter_aligned_probe_batches(
         train_factory,
@@ -814,6 +870,19 @@ def probe_codebook_family_contributions(
                 )
                 for depth in range(1, levels + 1)
             }
+            profile_statistics = {
+                name: _AdditiveCodeStatistics(
+                    {
+                        label: int(
+                            loaded_artifacts[label].centers[0].shape[0]
+                        )
+                        ** depths[label]
+                        for label in labels
+                    },
+                    target_dimensions,
+                )
+                for name, depths in selected_profiles.items()
+            }
         for depth, stats in statistics.items():
             stats.update(
                 {
@@ -823,6 +892,21 @@ def probe_codebook_family_contributions(
                             loaded_artifacts[label].centers[0].shape[0]
                         ),
                         depth=depth,
+                    )
+                    for label in labels
+                },
+                targets,
+            )
+        for name, stats in profile_statistics.items():
+            depths = selected_profiles[name]
+            stats.update(
+                {
+                    label: _prefix_keys(
+                        codes[label],
+                        k=int(
+                            loaded_artifacts[label].centers[0].shape[0]
+                        ),
+                        depth=depths[label],
                     )
                     for label in labels
                 },
@@ -849,10 +933,20 @@ def probe_codebook_family_contributions(
         }
         for depth, stats in statistics.items()
     }
+    fitted_profiles = {
+        name: stats.fit(
+            labels,
+            ridge=ridge,
+            device=target_device,
+        )
+        for name, stats in profile_statistics.items()
+    }
     rows = []
     summary_rows = []
+    profile_rows = []
     for split in splits:
         accumulators = {}
+        profile_accumulators = {}
         split_factory = _episode_factory(
             shard_paths,
             split,
@@ -911,6 +1005,45 @@ def probe_codebook_family_contributions(
                             variance=variance,
                             effective=effective,
                         )
+            for name, stats in profile_statistics.items():
+                depths = selected_profiles[name]
+                keys = {
+                    label: _prefix_keys(
+                        codes[label],
+                        k=int(
+                            loaded_artifacts[label].centers[0].shape[0]
+                        ),
+                        depth=depths[label],
+                    )
+                    for label in labels
+                }
+                for target, values in targets.items():
+                    mean, variance, effective = stats.global_statistics(target)
+                    predictions, seen = _predict_additive(
+                        keys,
+                        fitted_profiles[name][target],
+                        mean,
+                        stats.counts,
+                    )
+                    key = (target, name)
+                    accumulator = profile_accumulators.setdefault(
+                        key,
+                        _AdditiveRegressionAccumulator(
+                            dimension=stats.target_dimensions[target],
+                            effective_dimensions=int(
+                                effective.sum().item()
+                            ),
+                            family_count=len(labels),
+                        ),
+                    )
+                    accumulator.update(
+                        targets=values,
+                        predictions=predictions,
+                        seen=seen,
+                        global_mean=mean,
+                        variance=variance,
+                        effective=effective,
+                    )
         for (target, depth, subset), accumulator in sorted(
             accumulators.items()
         ):
@@ -922,6 +1055,26 @@ def probe_codebook_family_contributions(
                     "families": list(subset),
                     "family_count": len(subset),
                     "model": "+".join(subset),
+                    "ridge": ridge,
+                    "train_vectors": train_vectors,
+                    **accumulator.row(),
+                }
+            )
+        for (target, name), accumulator in sorted(
+            profile_accumulators.items()
+        ):
+            depths = selected_profiles[name]
+            profile_rows.append(
+                {
+                    "split": split,
+                    "target": target,
+                    "profile": name,
+                    "depths_by_family": depths,
+                    "model": "+".join(
+                        f"{label}-L{depths[label]}" for label in labels
+                    ),
+                    "families": list(labels),
+                    "family_count": len(labels),
                     "ridge": ridge,
                     "train_vectors": train_vectors,
                     **accumulator.row(),
@@ -999,6 +1152,7 @@ def probe_codebook_family_contributions(
         "target_definitions": target_definitions,
         "rows": rows,
         "summary_rows": summary_rows,
+        "profile_rows": profile_rows,
     }
     write_json_report(report_path, report)
     return report
