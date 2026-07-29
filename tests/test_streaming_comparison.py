@@ -120,6 +120,36 @@ def _write_run(root: Path) -> None:
         json.dumps(association),
         encoding="utf-8",
     )
+    concentration = {
+        "contract_hash": "concentration-contract",
+        "rows": [
+            {
+                "family": "Q3",
+                "split": "val",
+                "stride": 3,
+                "pool": 4,
+                "camera_ids": ["exterior"],
+                "k": 2,
+                "levels": 2,
+                "grouping": "scene",
+                "prefix_depth": depth,
+                "groups": 4,
+                "missing_group_fraction": 0.0,
+                "group_information_gain": information,
+                "normalized_mutual_information": information,
+                "normalized_purity_gain": purity,
+            }
+            for depth, information, purity in (
+                (1, 0.1, 0.2),
+                (2, 0.3, 0.4),
+            )
+        ],
+    }
+    (root / "concentration").mkdir()
+    (root / "concentration/concentration_report.json").write_text(
+        json.dumps(concentration),
+        encoding="utf-8",
+    )
 
 
 class StreamingComparisonTests(unittest.TestCase):
@@ -149,9 +179,17 @@ class StreamingComparisonTests(unittest.TestCase):
             report["association_rows"][0]["best_prefix_depth"],
             1,
         )
+        self.assertEqual(len(report["concentration_rows"]), 1)
+        self.assertEqual(
+            report["concentration_rows"][0][
+                "group_information_gain_by_prefix"
+            ],
+            [0.1, 0.3],
+        )
         self.assertIn("exterior-g4", markdown)
         self.assertIn("35.00%", markdown)
         self.assertIn("future_proprio_change", markdown)
+        self.assertIn("context concentration", markdown)
 
     def test_comparison_rejects_train_heldout_identity_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -229,6 +229,49 @@ def _markdown(report: dict[str, Any]) -> str:
                 "",
             ]
         )
+    if report["concentration_rows"]:
+        lines.extend(
+            [
+                "## Held-out context concentration",
+                "",
+                "Higher scene or institution concentration can indicate "
+                "background memorization. Exact-task concentration is reported "
+                "without semantic task merging.",
+                "",
+                "| run | family | split | grouping | information gain "
+                "L1/.../Ln | purity gain L1/.../Ln | groups | missing |",
+                "|---|---|---|---|---|---|---:|---:|",
+            ]
+        )
+        for row in report["concentration_rows"]:
+            lines.append(
+                "| {label} | {family} | {split} | {grouping} | {information} "
+                "| {purity} | {groups} | {missing} |".format(
+                    label=row["label"],
+                    family=row["family"],
+                    split=row["split"],
+                    grouping=row["grouping"],
+                    information=_format_levels(
+                        row["group_information_gain_by_prefix"]
+                    ),
+                    purity=_format_levels(
+                        row["normalized_purity_gain_by_prefix"]
+                    ),
+                    groups=row["groups"],
+                    missing=_format_percent(
+                        row["missing_group_fraction"]
+                    ),
+                )
+            )
+        lines.append("")
+    else:
+        lines.extend(
+            [
+                "No frozen context-concentration reports were present in the "
+                "run directories.",
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -257,6 +300,7 @@ def compare_streaming_runs(
 
     rows: list[dict[str, Any]] = []
     association_rows: list[dict[str, Any]] = []
+    concentration_rows: list[dict[str, Any]] = []
     inputs = []
     for label, run_dir in normalized:
         train_path = run_dir / "train_summary.json"
@@ -316,6 +360,8 @@ def compare_streaming_runs(
             "heldout_contract_hash": heldout_report.get("contract_hash"),
             "association_report_sha256": None,
             "association_contract_hash": None,
+            "concentration_report_sha256": None,
+            "concentration_contract_hash": None,
         }
         association_path = run_dir / "association/association_report.json"
         if association_path.is_file():
@@ -393,6 +439,102 @@ def compare_streaming_runs(
                         ),
                     }
                 )
+        concentration_path = (
+            run_dir / "concentration/concentration_report.json"
+        )
+        if concentration_path.is_file():
+            concentration = _load_json(concentration_path)
+            input_row["concentration_report_sha256"] = file_sha256(
+                concentration_path
+            )
+            input_row["concentration_contract_hash"] = concentration.get(
+                "contract_hash"
+            )
+            selected_concentration_rows = []
+            for row in concentration.get("rows", ()):
+                if (
+                    selected_families is not None
+                    and row["family"] not in selected_families
+                ):
+                    continue
+                identity = (
+                    row["family"],
+                    row["split"],
+                    row["stride"],
+                    row["pool"],
+                    json.dumps(row.get("camera_ids"), sort_keys=True),
+                    row["k"],
+                    row["levels"],
+                )
+                if identity not in heldout_identities:
+                    raise RuntimeError(
+                        "Concentration row does not match held-out run "
+                        f"`{label}`."
+                    )
+                selected_concentration_rows.append(row)
+            groups: dict[
+                tuple[str, str, str],
+                list[dict[str, Any]],
+            ] = {}
+            for row in selected_concentration_rows:
+                groups.setdefault(
+                    (row["family"], row["split"], row["grouping"]),
+                    [],
+                ).append(row)
+            for (family, split, grouping), group in groups.items():
+                ordered = sorted(
+                    group,
+                    key=lambda row: int(row["prefix_depth"]),
+                )
+                levels = int(ordered[0]["levels"])
+                if [int(row["prefix_depth"]) for row in ordered] != list(
+                    range(1, levels + 1)
+                ):
+                    raise RuntimeError(
+                        "Concentration group has incomplete RQ prefixes for "
+                        f"`{label}`."
+                    )
+                if any(
+                    int(row["groups"]) != int(ordered[0]["groups"])
+                    for row in ordered
+                ):
+                    raise RuntimeError(
+                        f"Concentration group counts differ for `{label}`."
+                    )
+                if any(
+                    float(row["missing_group_fraction"])
+                    != float(ordered[0]["missing_group_fraction"])
+                    for row in ordered
+                ):
+                    raise RuntimeError(
+                        f"Concentration missing fractions differ for `{label}`."
+                    )
+                concentration_rows.append(
+                    {
+                        "label": label,
+                        "run_dir": str(run_dir.resolve()),
+                        "family": family,
+                        "split": split,
+                        "grouping": grouping,
+                        "levels": levels,
+                        "groups": int(ordered[0]["groups"]),
+                        "missing_group_fraction": float(
+                            ordered[0]["missing_group_fraction"]
+                        ),
+                        "group_information_gain_by_prefix": [
+                            float(row["group_information_gain"])
+                            for row in ordered
+                        ],
+                        "normalized_mutual_information_by_prefix": [
+                            float(row["normalized_mutual_information"])
+                            for row in ordered
+                        ],
+                        "normalized_purity_gain_by_prefix": [
+                            float(row["normalized_purity_gain"])
+                            for row in ordered
+                        ],
+                    }
+                )
         inputs.append(input_row)
 
     report = {
@@ -418,6 +560,15 @@ def compare_streaming_runs(
                 row["family"],
                 row["split"],
                 row["target"],
+            ),
+        ),
+        "concentration_rows": sorted(
+            concentration_rows,
+            key=lambda row: (
+                row["label"],
+                row["family"],
+                row["split"],
+                row["grouping"],
             ),
         ),
     }
