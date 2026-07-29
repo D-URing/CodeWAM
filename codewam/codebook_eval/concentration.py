@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
@@ -177,6 +177,153 @@ def _categorical_association_metrics(
     }
 
 
+def _cross_parent_prediction_metrics(
+    fit_counts: Counter[tuple[int, str]],
+    evaluation_counts: Counter[tuple[int, str]],
+) -> dict[str, Any]:
+    fit_total = int(sum(fit_counts.values()))
+    evaluation_total = int(sum(evaluation_counts.values()))
+    if fit_total <= 0 or evaluation_total <= 0:
+        return {
+            "cross_parent_available": False,
+            "cross_parent_fit_vectors": fit_total,
+            "cross_parent_evaluation_vectors": evaluation_total,
+            "cross_parent_fit_groups": 0,
+            "cross_parent_fit_active_codes": 0,
+            "cross_parent_exact_code_coverage": None,
+            "cross_parent_accuracy": None,
+            "cross_parent_global_baseline_accuracy": None,
+            "cross_parent_normalized_accuracy_gain": None,
+        }
+    fit_group_counts: Counter[str] = Counter()
+    fit_code_counts: Counter[int] = Counter()
+    labels_by_code: dict[int, Counter[str]] = defaultdict(Counter)
+    for (code, group), count in fit_counts.items():
+        fit_group_counts[group] += int(count)
+        fit_code_counts[int(code)] += int(count)
+        labels_by_code[int(code)][group] += int(count)
+    global_label = min(
+        (
+            (-count, group)
+            for group, count in fit_group_counts.items()
+        )
+    )[1]
+    predicted_by_code = {
+        code: min(
+            (-count, group)
+            for group, count in group_counts.items()
+        )[1]
+        for code, group_counts in labels_by_code.items()
+    }
+
+    correct = 0
+    baseline_correct = 0
+    covered = 0
+    for (code, group), count in evaluation_counts.items():
+        prediction = predicted_by_code.get(int(code), global_label)
+        correct += int(count) if prediction == group else 0
+        baseline_correct += int(count) if global_label == group else 0
+        covered += int(count) if int(code) in fit_code_counts else 0
+    accuracy = correct / float(evaluation_total)
+    baseline_accuracy = baseline_correct / float(evaluation_total)
+    normalized_accuracy_gain = (
+        (accuracy - baseline_accuracy) / (1.0 - baseline_accuracy)
+        if baseline_accuracy < 1.0
+        else 0.0
+    )
+    return {
+        "cross_parent_available": True,
+        "cross_parent_fit_vectors": fit_total,
+        "cross_parent_evaluation_vectors": evaluation_total,
+        "cross_parent_fit_groups": len(fit_group_counts),
+        "cross_parent_fit_active_codes": len(fit_code_counts),
+        "cross_parent_exact_code_coverage": (
+            covered / float(evaluation_total)
+        ),
+        "cross_parent_accuracy": accuracy,
+        "cross_parent_global_baseline_accuracy": baseline_accuracy,
+        "cross_parent_normalized_accuracy_gain": (
+            normalized_accuracy_gain
+        ),
+    }
+
+
+def _parent_episode_id(record: EpisodeRecord) -> str:
+    value = str(record.metadata.get("parent_episode_id", ""))
+    return value or record.episode_id
+
+
+def _cross_parent_folds(
+    records_by_episode: dict[str, EpisodeRecord],
+    group_labels: dict[str, dict[str, str]],
+    groupings: tuple[str, ...],
+) -> tuple[
+    dict[str, dict[str, str]],
+    dict[str, dict[str, dict[str, int]]],
+]:
+    folds = {
+        episode_id: {} for episode_id in records_by_episode
+    }
+    summaries: dict[str, dict[str, dict[str, int]]] = {}
+    for grouping in groupings:
+        parents_by_group: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for episode_id, record in records_by_episode.items():
+            if record.split is None:
+                raise ValueError(
+                    f"Concentration episode `{episode_id}` has no split."
+                )
+            parents_by_group[
+                (record.split, group_labels[episode_id][grouping])
+            ].add(
+                _parent_episode_id(record)
+            )
+
+        fold_by_group_parent: dict[tuple[str, str, str], str] = {}
+        summaries[grouping] = {}
+        for split in ("train", "val", "test"):
+            split_groups = {
+                group: parents
+                for (group_split, group), parents in parents_by_group.items()
+                if group_split == split
+            }
+            summaries[grouping][split] = {
+                "groups": len(split_groups),
+                "eligible_groups": 0,
+                "fit_parent_episodes": 0,
+                "evaluation_parent_episodes": 0,
+            }
+        for (split, group), parents in parents_by_group.items():
+            ordered = sorted(
+                parents,
+                key=lambda parent: hashlib.sha256(
+                    f"{split}|{grouping}|{group}|{parent}".encode("utf-8")
+                ).hexdigest(),
+            )
+            if len(ordered) < 2:
+                for parent in ordered:
+                    fold_by_group_parent[
+                        (split, group, parent)
+                    ] = "ineligible"
+                continue
+            summaries[grouping][split]["eligible_groups"] += 1
+            for index, parent in enumerate(ordered):
+                fold = "fit" if index % 2 == 0 else "evaluation"
+                fold_by_group_parent[(split, group, parent)] = fold
+                summaries[grouping][split][
+                    f"{fold}_parent_episodes"
+                ] += 1
+
+        for episode_id, record in records_by_episode.items():
+            if record.split is None:
+                raise RuntimeError("Concentration split validation drifted.")
+            group = group_labels[episode_id][grouping]
+            parent = _parent_episode_id(record)
+            folds[episode_id][grouping] = fold_by_group_parent[
+                (record.split, group, parent)
+            ]
+    return folds, summaries
+
+
 def _write_contract(
     path: Path,
     contract: dict[str, Any],
@@ -269,6 +416,11 @@ def probe_frozen_codebook_concentration(
         }
         for episode_id, record in records_by_episode.items()
     }
+    cross_parent_folds, cross_parent_summaries = _cross_parent_folds(
+        records_by_episode,
+        group_labels,
+        groupings,
+    )
     shard_paths = tuple(expand_shard_paths(pooled_shards))
     shard_checksums = [file_sha256(path) for path in shard_paths]
     artifact_paths = {
@@ -320,6 +472,12 @@ def probe_frozen_codebook_concentration(
         "groupings": list(groupings),
         "grouping_definitions": GROUPING_DEFINITIONS,
         "weighting": "descriptor-tick",
+        "cross_parent_policy": (
+            "Within each held-out split and grouping, parent episodes are "
+            "hash-ordered inside groups with at least two parents, then "
+            "alternated between fit and evaluation. Single-parent groups are "
+            "excluded from cross-parent prediction."
+        ),
         "device": device,
         "cpu_threads": int(cpu_threads),
         "batch_size": int(batch_size),
@@ -364,6 +522,18 @@ def probe_frozen_codebook_concentration(
                 for grouping in groupings
                 for depth in range(1, levels + 1)
             }
+            cross_parent_fit_counts = {
+                (grouping, depth): Counter()
+                for grouping in groupings
+                for depth in range(1, levels + 1)
+            }
+            cross_parent_evaluation_counts = {
+                (grouping, depth): Counter()
+                for grouping in groupings
+                for depth in range(1, levels + 1)
+            }
+            descriptor_vectors = 0
+            eligible_vectors = Counter()
             source = CausalDescriptorSource(
                 episode_factory=_episode_factory(
                     shard_paths,
@@ -394,6 +564,14 @@ def probe_frozen_codebook_concentration(
                     ]
                     for grouping in groupings
                 }
+                batch_folds = {
+                    grouping: [
+                        cross_parent_folds[episode_id][grouping]
+                        for episode_id in batch.episode_ids
+                    ]
+                    for grouping in groupings
+                }
+                descriptor_vectors += len(batch.episode_ids)
                 prefix = torch.zeros(codes.shape[0], dtype=torch.long)
                 for depth in range(1, levels + 1):
                     prefix = prefix * k + codes[:, depth - 1]
@@ -402,10 +580,32 @@ def probe_frozen_codebook_concentration(
                         joint_counts[(grouping, depth)].update(
                             zip(keys, batch_group_labels[grouping])
                         )
+                        fit = cross_parent_fit_counts[(grouping, depth)]
+                        evaluation = cross_parent_evaluation_counts[
+                            (grouping, depth)
+                        ]
+                        for key, group, fold in zip(
+                            keys,
+                            batch_group_labels[grouping],
+                            batch_folds[grouping],
+                        ):
+                            if fold == "fit":
+                                fit[(key, group)] += 1
+                            elif fold == "evaluation":
+                                evaluation[(key, group)] += 1
+                        if depth == 1:
+                            eligible_vectors[grouping] += sum(
+                                fold != "ineligible"
+                                for fold in batch_folds[grouping]
+                            )
 
             for (grouping, depth), counts in sorted(
                 joint_counts.items()
             ):
+                fit_counts = cross_parent_fit_counts[(grouping, depth)]
+                evaluation_counts = cross_parent_evaluation_counts[
+                    (grouping, depth)
+                ]
                 rows.append(
                     {
                         "label": label,
@@ -422,9 +622,20 @@ def probe_frozen_codebook_concentration(
                         "split": split,
                         "grouping": grouping,
                         "prefix_depth": depth,
+                        "cross_parent_eligible_vector_fraction": (
+                            eligible_vectors[grouping]
+                            / float(descriptor_vectors)
+                        ),
+                        "cross_parent_split": cross_parent_summaries[
+                            grouping
+                        ][split],
                         **_categorical_association_metrics(
                             counts,
                             capacity=k**depth,
+                        ),
+                        **_cross_parent_prediction_metrics(
+                            fit_counts,
+                            evaluation_counts,
                         ),
                     }
                 )
@@ -435,6 +646,7 @@ def probe_frozen_codebook_concentration(
         "manifest_fingerprint": manifest_fingerprint,
         "grouping_definitions": GROUPING_DEFINITIONS,
         "weighting": "descriptor-tick",
+        "cross_parent_splits": cross_parent_summaries,
         "rows": rows,
     }
     write_json_report(report_path, report)

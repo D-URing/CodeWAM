@@ -138,6 +138,11 @@ def _write_run(root: Path) -> None:
                 "group_information_gain": information,
                 "normalized_mutual_information": information,
                 "normalized_purity_gain": purity,
+                "cross_parent_eligible_vector_fraction": 0.8,
+                "cross_parent_normalized_accuracy_gain": (
+                    0.05 * depth
+                ),
+                "cross_parent_exact_code_coverage": 1.0 - 0.1 * depth,
             }
             for depth, information, purity in (
                 (1, 0.1, 0.2),
@@ -185,6 +190,12 @@ class StreamingComparisonTests(unittest.TestCase):
                 "group_information_gain_by_prefix"
             ],
             [0.1, 0.3],
+        )
+        self.assertEqual(
+            report["concentration_rows"][0][
+                "cross_parent_normalized_accuracy_gain_by_prefix"
+            ],
+            [0.05, 0.1],
         )
         self.assertIn("exterior-g4", markdown)
         self.assertIn("35.00%", markdown)

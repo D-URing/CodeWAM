@@ -130,6 +130,13 @@ def _format_levels(values: Iterable[float], *, percent: bool = True) -> str:
     return "/".join(f"{float(value):.2f}" for value in values)
 
 
+def _format_optional_levels(values: Iterable[float | None]) -> str:
+    return "/".join(
+        "n/a" if value is None else _format_percent(float(value))
+        for value in values
+    )
+
+
 def _markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Streaming RQ comparison",
@@ -238,29 +245,35 @@ def _markdown(report: dict[str, Any]) -> str:
                 "background memorization. Exact-task concentration is reported "
                 "without semantic task merging.",
                 "",
-                "| run | family | split | grouping | information gain "
-                "L1/.../Ln | purity gain L1/.../Ln | groups | missing |",
-                "|---|---|---|---|---|---|---:|---:|",
+                "| run | family | split | grouping | cross-parent accuracy "
+                "gain L1/.../Ln | exact-code coverage L1/.../Ln | descriptive "
+                "information gain L1/.../Ln | eligible vectors | groups |",
+                "|---|---|---|---|---|---|---|---:|---:|",
             ]
         )
         for row in report["concentration_rows"]:
             lines.append(
-                "| {label} | {family} | {split} | {grouping} | {information} "
-                "| {purity} | {groups} | {missing} |".format(
+                "| {label} | {family} | {split} | {grouping} | {prediction} "
+                "| {coverage} | {information} | {eligible} | {groups} |".format(
                     label=row["label"],
                     family=row["family"],
                     split=row["split"],
                     grouping=row["grouping"],
+                    prediction=_format_optional_levels(
+                        row[
+                            "cross_parent_normalized_accuracy_gain_by_prefix"
+                        ]
+                    ),
+                    coverage=_format_optional_levels(
+                        row["cross_parent_exact_code_coverage_by_prefix"]
+                    ),
                     information=_format_levels(
                         row["group_information_gain_by_prefix"]
                     ),
-                    purity=_format_levels(
-                        row["normalized_purity_gain_by_prefix"]
+                    eligible=_format_percent(
+                        row["cross_parent_eligible_vector_fraction"]
                     ),
                     groups=row["groups"],
-                    missing=_format_percent(
-                        row["missing_group_fraction"]
-                    ),
                 )
             )
         lines.append("")
@@ -509,6 +522,19 @@ def compare_streaming_runs(
                     raise RuntimeError(
                         f"Concentration missing fractions differ for `{label}`."
                     )
+                if any(
+                    float(row["cross_parent_eligible_vector_fraction"])
+                    != float(
+                        ordered[0][
+                            "cross_parent_eligible_vector_fraction"
+                        ]
+                    )
+                    for row in ordered
+                ):
+                    raise RuntimeError(
+                        "Concentration eligible fractions differ for "
+                        f"`{label}`."
+                    )
                 concentration_rows.append(
                     {
                         "label": label,
@@ -521,6 +547,11 @@ def compare_streaming_runs(
                         "missing_group_fraction": float(
                             ordered[0]["missing_group_fraction"]
                         ),
+                        "cross_parent_eligible_vector_fraction": float(
+                            ordered[0][
+                                "cross_parent_eligible_vector_fraction"
+                            ]
+                        ),
                         "group_information_gain_by_prefix": [
                             float(row["group_information_gain"])
                             for row in ordered
@@ -531,6 +562,36 @@ def compare_streaming_runs(
                         ],
                         "normalized_purity_gain_by_prefix": [
                             float(row["normalized_purity_gain"])
+                            for row in ordered
+                        ],
+                        "cross_parent_normalized_accuracy_gain_by_prefix": [
+                            (
+                                None
+                                if row[
+                                    "cross_parent_normalized_accuracy_gain"
+                                ]
+                                is None
+                                else float(
+                                    row[
+                                        "cross_parent_normalized_accuracy_gain"
+                                    ]
+                                )
+                            )
+                            for row in ordered
+                        ],
+                        "cross_parent_exact_code_coverage_by_prefix": [
+                            (
+                                None
+                                if row[
+                                    "cross_parent_exact_code_coverage"
+                                ]
+                                is None
+                                else float(
+                                    row[
+                                        "cross_parent_exact_code_coverage"
+                                    ]
+                                )
+                            )
                             for row in ordered
                         ],
                     }
