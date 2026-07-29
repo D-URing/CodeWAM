@@ -1,6 +1,7 @@
 # CodeWAM Architecture
 
-Status: canonical CodeWAM v1 architecture and experiment specification.
+Status: canonical CodeWAM v1 architecture implemented; real-data joint-window
+exporter/trainer and online frozen assigner pending.
 
 本文件是 CodeWAM 的唯一结构规范,约束模型模块、信息身份、训练目标、可见性和实验门。
 码本数据、离线训练与评估见 `CODEBOOK.md`;环境和工程边界见 `DEVELOPMENT.md`。当前
@@ -148,6 +149,22 @@ H_t                           节点内部的连续精确坐标
 冻结 codebook 定义静态节点。CodeDynamics 学习哪些边存在以及动作如何影响转移。Policy 学习
 在当前世界、机器人状态和任务条件下应输出什么动作,而不是从 code ID 查一张固定动作表。
 
+### 3.4 Domain chart 而不是跨域共享 ID
+
+DROID、LIBERO 或其他域独立 refit 后得到的是不同离散坐标图:
+
+```text
+DROID/Q2/L1/code=3  !=  LIBERO/Q2/L1/code=3
+```
+
+每个 chart 保留自己的 normalization、centers、revision 和 checksum。
+`FrozenCodebookAdapter` 按样本 chart 查询本地 center,再通过 chart-local projection 和
+chart identity 映射到共享 belief width;它不对齐或翻译原始 ID。一个联合模型当前要求各
+chart 使用相同 family、RQ 深度和每层 K,因为 future heads 必须有固定输出形状;不同 K 的
+artifact 应分开实验,不能用 padding 伪造共享 vocabulary。同一 chart 的 Q2/Q3/Q5 还必须
+共享 manifest、Wan/preprocess revision 和 source checksums,禁止拼接不同 provenance。
+adapter state dict 也携带完整 chart/family metadata,加载到不同 provenance 时必须失败。
+
 ## 4. 五种信息身份
 
 | 身份 | 符号 | 来源 | 生命周期 | 作用 |
@@ -175,9 +192,12 @@ past and current images
           v
     frozen Wan-VAE
           |
-          +------> ContinuousStateEncoder --------------------> H_t
+          +------> ContinuousStateEncoder ------------------------------> H_t
           |
-          +------> FrozenCodebookAdapter ---------------------> C_t, E_t
+          +------> causal descriptor + frozen RQ assignment -> C_t
+                                                                |
+                                                                v
+                                                   FrozenCodebookAdapter -> E_t
 
 H_t + E_t + proprio + past actions
           |
@@ -225,19 +245,24 @@ token。第一版可使用因果 Transformer 或时空 attention,但接口和层
 
 ### 5.3 FrozenCodebookAdapter
 
-每个 code ID 查询其真实 frozen center:
+`FrozenCodebookAdapter` 消费已经由相同 chart 的 frozen assigner 生成的 `CodeMeasurements`,
+不在模型 forward 内从 RGB/latent 重新聚类或改变 center。每个 code ID 查询其真实 frozen
+center:
 
 ```text
-E_{s,j,t} =
-    Project_{s,j}(e_{s,j,c_{s,j,t}})
-    + FamilyEmbedding_s
-    + LevelEmbedding_j
-    + AvailabilityEmbedding_{s,t}
+E_{s,j,t} = FamilyEmbedding_s + LevelEmbedding_j + ChartEmbedding_d
+              + Project_{d,s,j}(e_{d,s,j,c})  if family available
+              + MissingToken_{s,j}            otherwise
 ```
 
 输出始终是九个 token,不把三级 centers 先求和,也不把 prefix 压成一个 one-hot category。
 center 内容作为只读 K/V measurement;可学习的是投影与身份 embedding。v1 不把 margin、
 quantization residual 或 handcrafted action association 加入模型输入。
+
+训练时 current/future IDs 由 `JointWindowCache` 离线保存并逐样本复算验真。部署时还需要
+冻结的 batched causal assigner:从 wrist Wan latent 历史构造 Q2/Q3/Q5 descriptor,使用对应
+chart 的 train-only normalization 和 centers 赋码。它属于确定性 perception preprocessing,
+不是可训练第六模块;当前尚未实现 canonical online runtime。
 
 ### 5.4 WorldBeliefCore
 
@@ -274,13 +299,23 @@ v_hat = ActionFlowDecoder(
 
 ```text
 future_logits = CodeDynamicsDecoder(
-    queries=9 FutureCodeQueries,
+    queries=FutureCodeQueries,
     context=[B_t, Embed(A_t)]
 )
 ```
 
-九个 query 分别输出对应 `(family,level)` 的 K-way logits。所有 future codes 在输入中 absent,
-不用 partial future mask、teacher forcing 或 scheduled sampling。该 decoder 学习:
+所有 future codes 在输入中 absent,不用 partial future mask、teacher forcing 或 scheduled
+sampling。第一轮注册两种输出 factorization:
+
+```text
+independent  9 个 query/head,每个 (family,level) 输出 K-way logits
+prefix       3 个 query/head,每个 family 输出 product(K_l)-way RQ tuple
+```
+
+`independent` 样本效率和逐层诊断更好,但近似
+`p(c1,c2,c3)=p(c1)p(c2)p(c3)`;`prefix` 直接预测完整 RQ 路径,保留层间依赖,但类别更稀疏。
+对 `K=8,L=3` 每族 prefix 有 512 类,仍可作为 Gate 2 对照。两者只改变 future head,不改变
+belief、action decoder 或主信息流。该 decoder 学习:
 
 ```text
 p(C_{t+h} | B_t, A_t)
@@ -303,7 +338,8 @@ P             [B,Np,d]                 proprio/history tokens
 B             [B,Nb,d]                 learned world-belief queries
 L             [B,Nl,d]                 frozen language tokens
 A             [B,Ha,Da]                continuous action chunk
-future_logits 9 x [B,K_{s,j}]          one head per family/level
+future_logits independent: 9 x [B,K_{s,j}]
+              prefix:      3 x [B,product_j K_{s,j}]
 ```
 
 第一版的最小内部拓扑是:
@@ -315,8 +351,8 @@ future_logits 9 x [B,K_{s,j}]          one head per family/level
    `[H,E,P,Embed(a_<t)]`;重复少量 block 后输出 `B`。
 4. `ActionFlowDecoder`:noised action tokens 带 chunk-position 与 flow-time embedding;chunk 内
    双向 self-attention,再 cross-attend `[B,L,p_t]`,逐 token 输出 velocity。
-5. `CodeDynamicsDecoder`:先把完整 action chunk 编成 action tokens;九个 future queries 可彼此
-   self-attend,再 cross-attend `[B,ActionTokens]`,由九个分类 head 输出 logits。
+5. `CodeDynamicsDecoder`:先把完整 action chunk 编成 action tokens;future queries 可彼此
+   self-attend,再 cross-attend `[B,ActionTokens]`,由 independent 或 prefix heads 输出 logits。
 
 `d/Nb/blocks/heads` 可以缩放,但 C0/C1/C2 必须固定 ActionFlowDecoder、state width、训练步数和
 主参数预算。两个 decoder 不共享 block 参数;future query 不嵌入任何 GT future code。
@@ -376,6 +412,8 @@ Policy graph,语言也根本不进入 WorldBeliefCore。模块内部可以正常
 5. frozen artifact hashes 在 optimizer step 前后不变。
 6. unavailable family 使用 missing token,不产生伪 code ID。
 7. 九个 `(family,level)` token 身份在投影和 belief attention 中可追踪。
+8. 整段 padded action 不产生 NaN。
+9. independent/prefix 对同一 tuple 概率给出相同 normalized NLL。
 
 ### 6.4 推理路径
 
@@ -392,7 +430,42 @@ CodeDynamics 是 training-time world objective,不要求先生成未来视觉或
 candidate A -> predicted C_future -> task-conditioned scoring
 ```
 
-## 7. 两个训练目标
+### 6.5 轨迹角色只控制监督,不定义世界是否存在
+
+数据角色通过 per-sample mask 控制哪些 objective 合法:
+
+| role | codebook/temporal | action imitation | code dynamics |
+|---|---:|---:|---:|
+| expert | yes | yes | yes |
+| failure | yes | no | yes |
+| recovery | yes | yes | yes |
+| unlabeled interaction | yes | no | yes,如果有 action |
+| action-free video | yes | no | no |
+
+失败、停滞、碰撞和恢复都是真实世界状态,不应从 codebook 或 temporal learning 中删除;
+但失败动作不是专家 policy label。这个分工由 `TrajectoryRole` 和 `SupervisionMasks` 实现,
+不通过修改 attention mask 或 code visibility 实现。最终 action/dynamics mask 还必须与
+“完整 action chunk 可用”相交;role 不能凭空创造动作监督。任何数据仍须先通过域、质量和
+授权检查。
+
+## 7. 分阶段初始化与两个联合目标
+
+### 7.0 可选 Stage-0 temporal initialization
+
+在 joint training 前可单独训练 `ContinuousStateEncoder`,让时刻 `t` 的连续 token 预测冻结
+Wan-VAE 的较晚 raw latent patch:
+
+```text
+H_t = ContinuousStateEncoder(Z_<=t)
+Z_hat_{t+d} = TemporalLatentPredictor(H_t)
+L_temporal = masked MSE(Z_hat_{t+d}, stopgrad(Z_{t+d}))
+```
+
+实现会从传给 encoder 的 tensor 中直接裁掉 `>t` 的未来,同时保留 temporal causal mask,
+并按 target-view availability 排除缺失相机。这一阶段不读取 code、语言或动作;预测 head 在
+初始化完成后丢弃。它只提供
+“连续状态应包含可预测动态”的初始化候选,不是第三个 joint loss。正式实验必须比较
+scratch 与 Stage-0 init,不能预设预训练一定有益。
 
 ### 7.1 Action flow loss
 
@@ -416,8 +489,20 @@ L_code =
     )
 ```
 
-九个 head 等权起步,只用 availability mask 排除历史不足的 label。v1 不加入 center-distance、
-photometric consistency、contrastive、continuous-future 或 multi-step rollout loss。
+`independent` 对九个 level CE 等权平均。`prefix` 对每族完整 tuple 做 CE,再除以 RQ 深度
+`L`,使 `lambda_code` 的单位仍是“每 RQ level NLL”。只用 availability mask 排除历史不足的
+label。评估同时报告:
+
+```text
+normalized NLL             family-prefix NLL / L,两种 factorization 可比
+raw family-prefix NLL      完整三级路径的负对数似然
+family-prefix accuracy     完整三级路径全对才算正确
+per-head accuracy/ECE      诊断量;不同 factorization 不能直接横比
+center reconstruction MSE chart-local RQ center sum 的几何误差
+```
+
+v1 不加入 center-distance、photometric consistency、contrastive、continuous-future 或
+multi-step rollout loss。
 
 ### 7.3 Total loss
 
@@ -598,37 +683,53 @@ CodeWAM 在三个层面独立:
 FastWAM checkout、ActionDiT conversion 和旧训练脚本只服务 `F0` 对照。它们不能成为 CodeWAM
 训练环境的必需依赖。
 
-## 12. 当前代码边界与实现顺序
+## 12. 当前实现与唯一下一张工程单
 
-已完成的是数据、Wan pooled cache、离线 RQ、held-out diagnostics 和大规模 artifact workflow。
-独立 CodeWAM v1 model 尚未实现。当前 `codewam/model.py`、`codewam/codebook.py` 和相关
-FastWAM-compatible configs 全部是 legacy。
+`codewam/models/` 已实现五模块、typed contracts、C0/C1/C2 factory、Stage-0 head、两种
+future-code factorization 和 held-out metrics。`codewam/data/roles.py` 已实现数据角色到
+supervision masks 的映射。单元测试覆盖因果性、防泄漏、梯度路由、跨域 chart、冻结 centers、
+padding 和 state-dict;`scripts/smoke_codewam_v1.py` 完成四条合成前反向/推理路径。
 
-目标 package:
+这表示 **模型工程骨架已成立**,不表示真实训练/部署链路已成立。当前 canonical pooled cache 只保存
+`pooled_g4` 和 latent-tick 下采样后的 action/proprio。它适合 RQ 拟合与静态/粗粒度转移诊断,
+但不包含策略需要的原始频率 action chunk,也不保留 `ContinuousStateEncoder` 需要的 unpooled
+多相机 latent window。canonical batched online assigner 也仍待实现。
 
-```text
-codewam/models/
-  continuous_state.py
-  frozen_codebook.py
-  belief_core.py
-  action_flow.py
-  code_dynamics.py
-  codewam_v1.py
-```
-
-下一工程顺序:
+下一张工程单固定为 `JointWindowCache v1`。物理 tensor 按 episode/keep-range 去重保存,
+window index 必须能原子还原以下逻辑样本:
 
 ```text
-1. 定义 StateInputs/CodeMeasurements/WorldBelief/ActionBatch/FutureCodeTargets
-2. 实现 FrozenCodebookAdapter 和九 token identity tests
-3. 实现 ContinuousStateEncoder 与 WorldBeliefCore
-4. 实现独立 ActionFlowDecoder,先完成 C0/C1
-5. 从 pooled trajectory 构造 action-chunk-end future-code labels
-6. 实现 CodeDynamicsDecoder 与 L_code,完成 C2
-7. 加入 gradient-routing、future-permutation 和 inference-path tests
-8. 在 DROID/LIBERO 进行 C0/C1/C2,FastWAM 仅作 F0
-9. 只在证据要求时增加 memory 或新的 loss
+identity       dataset/chart, episode, keep-range, split, trajectory role
+time contract  observation index/time, action [start,stop), future observation index/time
+overlap        current/future descriptor source indices and per-family overlap count
+state input    <=t 的 unpooled multi-view Wan latent, validity, proprio history, a_<t
+policy label   原始控制频率的 continuous action chunk 与逐步 validity
+world input    当前 Q2/Q3/Q5 IDs/availability 与 chart artifact hashes
+world label    action chunk 真实终点观测的 Q2/Q3/Q5 IDs/availability
+task           raw instruction 与 frozen language encoder revision/tokens
+provenance     source shard/checksum, Wan/preprocess revision, codebook hashes
 ```
+
+在写 exporter 前必须先用官方 DROID transition 语义审计“第 `i` 条 observation、action 和
+下一 observation”的关系;不能仅凭数组下标猜 `future_observation=i+h`。exporter 还必须拒绝
+跨 keep-range gap、episode 或不可用 family 的窗口,并验证 Policy 输入最大索引严格早于
+future-code label。
+
+随后按以下顺序推进:
+
+```text
+1. DROID observation/action endpoint audit + JointWindowCache reference test
+2. 小规模真实 cache,逐样本复算 current/future IDs 和 action endpoint
+3. Gate 2: persistence / no-action / true-action / shuffled-action
+4. 全量与 changed-family 子集分别评估,排除 persistence/窗口重叠假象
+5. independent vs prefix dynamics,以 normalized NLL 与 family-prefix accuracy 决策
+6. scratch vs Stage-0 continuous-state initialization
+7. 只有 Gate 2 通过才启动参数预算一致的 DROID C0/C1/C2
+8. LIBERO 使用独立 chart/refit 后重复,FastWAM 仅作 F0
+```
+
+当前 `codewam/model.py`、`codewam/codebook.py`、`codewam/runtime.py` 和相应旧训练配置仍是
+legacy,不能接到 canonical v1 上冒充真实 trainer。
 
 ## 13. 可证伪主张
 

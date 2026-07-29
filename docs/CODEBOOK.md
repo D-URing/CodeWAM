@@ -972,7 +972,8 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 106 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 139 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
+DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 patience resume、RQ residual 下降、artifact round-trip、双 rank resume 与单卡 centers 等价、
@@ -1160,7 +1161,9 @@ held-out evaluator 同样锁定 manifest、pooled shard、codebook 和实现 SHA
 `public_latent_codebooks.yaml` 属于旧 window evaluator。它们可用于本机回归或历史结果复算,
 不能生成 canonical artifact。
 
-## 13. 旧 cache 的边界
+## 13. Cache 边界
+
+### 13.1 旧 Package Scan cache
 
 旧 Package Scan cache 使用匿名重叠 window:
 
@@ -1176,34 +1179,94 @@ meta:    window index and prompt only
 Package Scan v6 只用于本机链路、可视化和回归测试。研究结论使用 DROID、LIBERO 和
 BridgeData V2。
 
-## 14. 下一张工程单
+### 13.2 Canonical `pooled_g4` 也不是 Policy cache
 
-下一阶段把已经冻结的信息分工实现成最小独立 world-action model:
+DROID pooled exporter 保存:
 
 ```text
-1. 保留全部 P0/P1 和 P0/P1/P2/P3 报告,明确标为 historical diagnostics
-2. 冻结一个带 dataset/revision/seed/checksum 的 DROID g=4,K=8,L=3 scoped artifact
-3. 定义 StateInputs、CodeMeasurements、WorldBelief、ActionBatch、FutureCodeTargets
-4. 实现九 token FrozenCodebookAdapter;不求和、不在线更新、不使用 role mask
-5. 实现 ContinuousStateEncoder 与 task-free WorldBeliefCore,全部 available code 可见
-6. 实现独立 ActionFlowDecoder,先跑参数预算一致的 C0/C1
-7. 构造 action-chunk-end future-code labels,实现 CodeDynamicsDecoder 与单一 CE objective
-8. 比较 persistence/no-action/true-action/shuffled-action,再跑 C2 对 C1
-9. 在 LIBERO 分开做独立 refit/calibration 和 simulator object-pose intervention
-10. 只有测得长时失败后才新增 MemoryPort;只有测得规划收益后才新增 future-code rollout
+pooled_g4       [T_latent,V,48,4,4]
+action/proprio  [T_latent,D]
 ```
 
-验收不以“程序跑完”为准:
+这里的 action/proprio 由 `relative_latent_frame_indices` 从 RLDS step 序列抽样,目的是把
+held-out code 诊断对齐到 latent tick。它没有保存相邻 latent ticks 之间原始控制频率上的完整
+action 序列;`pooled_g4` 也丢掉了 `ContinuousStateEncoder` 所需的 unpooled 空间细节。因此:
 
-- peak RAM/VRAM 只随 batch/K/D 变化,不随总 vectors 变化。
-- 固定 initialization 时,streaming 与 reference centers/metrics 在小数据上数值一致。
-- 1-GPU 与 8-GPU 聚合结果在设定 tolerance 内一致。
-- 任意 iteration/level 中断后可恢复。
-- train/val/test 与 source checksums 可从 artifact 反查。
-- future frame、跨 episode frame 和 held-out statistics 无法进入训练。
-- canonical model/runtime 不 import FastWAM model、MoT 或 trainer。
-- 九个 `(family,level)` measurement identities 在 belief attention 中保持可追踪。
-- 置换 future-code labels 不改变固定噪声下的 Policy 输出。
-- 置换 GT action 不改变已构造的 `B` 或 Policy 输出,只允许改变 CodeDynamics 输出。
-- frozen centers 和 normalization 在 optimizer step 前后 hash 不变。
-- `L_action/L_code` 的梯度只到达 `ARCHITECTURE.md` 指定模块。
+```text
+可以: RQ fit/eval、retrieval、temporal sensitivity、粗粒度 transition probe
+不可以: 直接构造 action chunk、训练 canonical C0/C1/C2、声称精细控制链路已对齐
+```
+
+不能对两行下采样 action 做插值后伪造 GT action chunk。正式联合样本必须回到原始 RLDS
+step/action 序列,并使用同一 Wan revision 导出未池化 latent。
+
+## 14. 下一张工程单
+
+五模块模型骨架已经实现。下一阶段只做 `JointWindowCache v1 + Gate 2`,不同时扩展 memory、
+规划或新 loss。
+
+物理存储按 episode/keep-range 去重,避免把重叠窗口复制多次:
+
+```text
+joint_cache/
+  contract.json
+  episode_shards/
+    unpooled_latent          [T_latent,V,48,H_z,W_z]
+    latent_source_indices    [T_latent]
+    source_action/proprio    [T_source,D]
+    current_code_ids         [T_latent,3,3]
+    current_available        [T_latent,3]
+  windows.jsonl
+    episode/range/chart/role
+    state latent slice and <=t history indices
+    action [source_start,source_stop) and per-step validity
+    future observation/latent tick
+    current/future descriptor source indices and overlap count
+    current/future code IDs and artifact hashes
+```
+
+`windows.jsonl` 是逻辑样本索引,不重复保存 tensor。contract 锁定 source、Wan、preprocess、
+language encoder 和三份 RQ artifact hashes。每条 window 必须满足:
+
+1. split/episode/keep-range 不跨界。
+2. state latent 最大 source index 不晚于决策 observation。
+3. past action 最大 index 严格早于待预测 action chunk。
+4. future code 来自 action chunk 执行后的真实 endpoint observation。
+5. 每族显式记录 current/future 三个 descriptor tick 及交集大小。
+6. source-rate action 不经 latent-tick 插值。
+7. current/future IDs 可由 frozen artifact 逐位复算。
+8. unavailable family 保存 `-1` 和 availability mask,不 padding。
+9. resume 校验每个 shard SHA,峰值内存不随总 episode 数增长。
+
+在实现 index 公式前,先对官方 DROID RLDS 做 transition endpoint audit。文档和数组都不能替代
+这个审计:必须核对 step `i` 的 observation、`action[i]` 与后继 observation 的定义,再固定
+`source_start/source_stop/future_observation`。
+
+现有 DROID scoped RQ artifact 来自 success-only manifest,继续作为 immutable baseline。
+为了让失败状态进入 world vocabulary,另建一个默认仍排除 quality flags、但带
+`--include-failures` 的 versioned candidate;比较 held-out coverage、distortion、usage 和
+retrieval 后再决定是否替换,不能覆盖旧 artifact。
+
+Gate 2 固定四个主条件:
+
+```text
+PERSIST  current IDs 直接作为 future IDs
+NOACT    训练/评估 p(C_future | B),不提供 action
+TRUE     训练/评估 p(C_future | B,A)
+SHUFFLE  以固定 seed 在同 split/有效 horizon 内置换 action 后训练
+```
+
+`TRUE` 必须在 val/test 和多个 seed 上同时优于 `NOACT/SHUFFLE`,且改善不能只来自一个 family;
+同时报告 normalized NLL、raw family-prefix NLL、完整 prefix accuracy 和 chart-local center
+MSE。`PERSIST` 用 accuracy/center MSE 作确定性基线。independent 与 prefix heads 使用相同
+belief、数据和优化预算,但必须单列更大的 prefix output-head 参数量;per-head ECE/accuracy
+的单位不同,不横比。
+
+所有 learned 条件都要同时报告 `all available families` 和 `changed families only`。后者由
+完整三级 tuple 是否改变定义,并按 family 过滤,不能用 sample-level 粗筛。另按 descriptor
+source-index overlap 分层;如果 TRUE 的收益只存在于高度重叠或 unchanged target,不能解释成
+学到了 action-conditioned world rule。endpoint gap 至少覆盖一种低重叠设置,但具体 gap 必须
+在 DROID action/latent cadence 审计后预注册。
+
+只有 Gate 2 通过后才执行 Stage-0 init 对照和正式 C0/C1/C2。失败则先检查时间端点、artifact
+coverage 和 action relevance,不靠增加辅助 loss 把结果“调通过”。

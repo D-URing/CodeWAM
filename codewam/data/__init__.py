@@ -31,3 +31,22 @@ __all__ = [
     "plan_droid_rank_assignments",
     "shard_aware_balanced_sample",
 ]
+from .roles import (
+    ROLE_SUPERVISION,
+    RoleSupervision,
+    TrajectoryRole,
+    build_supervision_masks,
+    codebook_fit_records,
+    role_supervision,
+    trajectory_role,
+)
+
+__all__ += [
+    "ROLE_SUPERVISION",
+    "RoleSupervision",
+    "TrajectoryRole",
+    "build_supervision_masks",
+    "codebook_fit_records",
+    "role_supervision",
+    "trajectory_role",
+]

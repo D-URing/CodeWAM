@@ -1,11 +1,12 @@
 """Public package exports.
 
 `StateCodebook` and `CodeWAM` are legacy regression exports. `CodeWAM` pulls in
-the external `fastwam` package, so it remains lazy until the independent model
-package replaces this compatibility alias.
+the external `fastwam` package, so it remains lazy. The independent v1 exports
+do not import FastWAM.
 """
 
 from codewam.codebook import StateCodebook
+from codewam.models import CodeWAMConfig, CodeWAMV1, build_codewam_v1
 
 
 def __getattr__(name):
@@ -15,4 +16,10 @@ def __getattr__(name):
         return CodeWAM
     raise AttributeError(name)
 
-__all__ = ["CodeWAM", "StateCodebook"]
+__all__ = [
+    "CodeWAM",
+    "CodeWAMConfig",
+    "CodeWAMV1",
+    "StateCodebook",
+    "build_codewam_v1",
+]

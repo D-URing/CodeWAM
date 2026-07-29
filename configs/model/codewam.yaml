@@ -1,5 +1,5 @@
-# Legacy FastWAM-compatible prototype only. The canonical five-module model
-# will use a separate config after `codewam/models/` is implemented.
+# Legacy FastWAM-compatible prototype only. The independent five-module model
+# uses `configs/model/codewam_v1.yaml`.
 _target_: codewam.runtime.create_codewam
 
 model_id: Wan-AI/Wan2.2-TI2V-5B

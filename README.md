@@ -10,7 +10,7 @@ action-conditioned code transition。FastWAM 只作为外部对照与历史兼�
 ```text
 Wan latent -> ContinuousStateEncoder -> H --------------------+
                                                              |
-Q2/Q3/Q5 -> FrozenCodebookAdapter -> 9 code tokens E --------+-> WorldBeliefCore -> B
+causal Q2/Q3/Q5 IDs -> FrozenCodebookAdapter -> 9 tokens E --+-> WorldBeliefCore -> B
 proprio + past actions ---------------------------------------+
                                                                   |          |
                                                         language  |          | GT action (train only)
@@ -47,7 +47,8 @@ future-code classification 两个 loss,基本推理不运行 future-code decoder
 codewam/
 ├── codebook.py    # legacy online-EMA prototype; disabled by default
 ├── codebook_eval/ # canonical manifest, pooled shards, streaming RQ and pipeline
-├── data/          # DROID official manifest/RLDS and local regression adapters
+├── data/          # DROID adapters, trajectory roles and supervision masks
+├── models/        # independent five-module CodeWAM v1
 ├── model.py       # legacy FastWAM-compatible prototype
 ├── runtime.py     # legacy Hydra factory
 └── probe.py       # legacy compatibility probe
@@ -57,8 +58,8 @@ tests/             # canonical codebook contracts and numerical equivalence
 ```
 
 `codewam/codebook.py` 和当前 `codewam/model.py` 中的单 token online-EMA 路径不是 canonical
-CodeWAM,配置必须保持默认关闭。计划中的独立模型位于 `codewam/models/`,五模块接口和实现
-顺序以 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) 为准。
+CodeWAM,配置必须保持默认关闭。独立模型位于 `codewam/models/`;legacy `CodeWAM` 仍是惰性
+兼容导出,`CodeWAMV1`、`CodeWAMConfig` 和 `build_codewam_v1` 不依赖 FastWAM。
 
 ## 开始开发
 
@@ -68,7 +69,13 @@ CodeWAM,配置必须保持默认关闭。计划中的独立模型位于 `codewam
 source .venv/bin/activate
 python -m pip install -e .
 python -m unittest discover -s tests -v
+python scripts/smoke_codewam_v1.py \
+  --device cpu \
+  --output runs/model_smoke/codewam_v1.json
 ```
+
+集群工程 smoke 把 `--device cpu` 改为 `--device cuda`;该命令使用合成 tensor 和合成 frozen
+centers,只验证接口、梯度、冻结和推理,不产生任何研究结论。
 
 只有复现外部 `F0`、运行当前 legacy Wan exporter 或重建 legacy-inclusive 环境时才准备
 FastWAM:
@@ -152,6 +159,15 @@ BridgeData V2 frozen-transfer and independent-refit replication
 
 - 已锁定:五个 CodeWAM-owned 模块、三套独立 causal RQ、九个只读 code measurements、
   任务无关 world belief、连续 action flow、action-conditioned code dynamics 和双 loss。
+- 已实现:`codewam/models/` 的 typed contracts、causal spatiotemporal state encoder、
+  chart-local frozen-center adapter、task-free belief、continuous action flow、independent/prefix
+  future-code decoder、可丢弃 Stage-0 temporal head,以及 `C0/C1/C2` 单一构建接口。
+- 已实现的数据边界:expert/failure/recovery/unlabeled interaction/action-free video 五种角色分别
+  控制 temporal、action imitation 和 dynamics supervision;失败动作不会进入 imitation loss,
+  但失败状态仍可服务 world learning。
+- 已验证:future latent/label/action 防泄漏、严格梯度路由、missing family、跨域 chart-local
+  centers、全 padding action、frozen-center optimizer 完整性、两种 future-code factorization
+  的归一化 NLL 口径、state-dict round trip 和 basic inference 不调用 dynamics。
 - 已实现:episode manifest、scene-level split、pooled-feature shard、Q2/Q3/Q5 causal iterator、
   train-only normalization、共享初始化的多卡 streaming RQ、可恢复 patience、frozen artifact、
   只读 held-out evaluator、单族关联、跨 parent context concentration、对齐的多族增量探针,
@@ -159,7 +175,8 @@ BridgeData V2 frozen-transfer and independent-refit replication
   DROID/LIBERO RGB perturbation、independent-seed stability 和 provenance-checked usability
   report、跨 seed `P0/P1/P2/P3` functional readout,以及 DROID 1.0.1 精确
   metadata/RLDS join、稀疏 RGB reader、keep-range audit 和 canonical pooled exporter。
-- 已验证:106 项单元测试、单卡/双 rank centers 等价、synthetic Q2/Q3/Q5 端到端 smoke、
+- 已验证:139 项单元测试(本机仅 1 项 CUDA 专项跳过)、单卡/双 rank centers 等价、
+  synthetic Q2/Q3/Q5 端到端 smoke、
   58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
   causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较、val/test 一致的时间反事实
   敏感性,以及 seed 7/19/31 的九套独立 RQ artifacts。
@@ -171,11 +188,12 @@ BridgeData V2 frozen-transfer and independent-refit replication
   minimal additive `P0/P1/P2/P3` 只证明 hard categorical feature 没有在线性动作读出中超过
   `H`,不再作为是否实现 world model 的结构门。
 - 默认关闭:legacy online-EMA single-token codebook。
-- 尚未实现:新的 `ContinuousStateEncoder`、`FrozenCodebookAdapter`、`WorldBeliefCore`、
-  `ActionFlowDecoder` 和 `CodeDynamicsDecoder`。
-- 下一步:定义 typed batch contracts 和九 token adapter,实现可独立训练的 C0/C1/C2,
-  以 persistence、no-action、true-action 和 shuffled-action 验证 code transition。LIBERO
-  仍需同规格独立 refit/calibration,不能把 DROID code ID 当成跨域通用语义。
+- 尚未实现:真实 Wan latent + 原始频率 action/proprio 的联合窗口 exporter、正式 dataloader、
+  distributed trainer、部署侧 frozen causal assigner 和闭环 benchmark。现有 `pooled_g4`
+  中的 action 只在 latent tick 采样,不能替代策略 action chunk。
+- 下一步:实现 `JointWindowCache v1`,审计 observation/action 端点语义,再按
+  persistence、no-action、true-action、shuffled-action 完成 Gate 2。只有 Gate 2 通过后才启动
+  `C0/C1/C2` 大规模训练。LIBERO 使用独立 chart/refit,不能把 DROID code ID 当成共享语义。
 
 外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
 checkpoints 和运行结果始终放在 git 之外。

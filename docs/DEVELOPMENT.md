@@ -30,7 +30,16 @@ CodeWAM/
 │   ├── data/
 │   │   ├── droid_manifest.py  # exact official join and balanced sample
 │   │   ├── droid_rlds.py      # exact-position, rank-aware and sparse RGB reader
+│   │   ├── roles.py            # trajectory role and objective masks
 │   │   └── package_scan_v6.py # local regression adapter
+│   ├── models/
+│   │   ├── contracts.py        # typed state/code/policy/action batches
+│   │   ├── continuous_state.py # causal state encoder and Stage-0 head
+│   │   ├── frozen_codebook.py  # chart-local frozen-center adapter
+│   │   ├── belief_core.py      # task-free world belief
+│   │   ├── action_flow.py      # continuous action chunk flow
+│   │   ├── code_dynamics.py    # independent/prefix future-code heads
+│   │   └── codewam_v1.py       # C0/C1/C2 assembly
 │   ├── model.py               # legacy FastWAM-compatible prototype
 │   ├── probe.py               # legacy compatibility probe
 │   └── runtime.py             # legacy Hydra factory
@@ -45,9 +54,9 @@ CodeWAM/
 └── upstreams.yaml             # pinned repositories and revisions
 ```
 
-大型公开数据集放在独立共享数据根目录,不复制到仓库。下载、校验和训练 artifact 也不进入 git。
-canonical model 的目标目录是 `codewam/models/`,当前尚未创建;五模块文件清单见
-`ARCHITECTURE.md`。
+大型公开数据集放在独立共享数据根目录,不复制到仓库。下载、校验和训练 artifact 也不进入
+git。canonical model 已位于 `codewam/models/`;当前缺口是 real-data `JointWindowCache`、
+dataloader、distributed trainer 和部署侧 frozen causal assigner,不是模型文件。
 
 ## 2. 本机开发
 
@@ -57,6 +66,9 @@ macOS 已有项目内轻量环境时:
 source .venv/bin/activate
 python -m pip install -e .
 python -m unittest discover -s tests -v
+python scripts/smoke_codewam_v1.py \
+  --device cpu \
+  --output runs/model_smoke/codewam_v1.json
 ```
 
 该环境用于代码、配置、单元测试和小规模 MPS/CPU smoke,不承担大模型训练。当前
@@ -346,18 +358,39 @@ profile、target 和 P1-only alpha selection;输出目录不能在不同 train f
 
 ## 7. Canonical 模型状态
 
-独立 CodeWAM v1 尚未实现,因此当前没有合法的 canonical training command。实现完成的最低
-验收是:
+独立 CodeWAM v1 五模块和最低验收已经实现:
 
 ```text
-codewam/models/ 五模块不 import FastWAM
-C0/C1/C2 使用同一 typed batch contract
+codewam/models/ 不 import FastWAM
+C0/C1/C2 使用同一 typed batch contract 和 builder
+Stage-0 encoder 输入从结构上裁掉未来 target
 action/future-code label 无泄漏
-两个 loss 的梯度路由符合 ARCHITECTURE.md
-basic inference 不构造 future-code queries
+L_action/L_code 梯度路由符合 ARCHITECTURE.md
+frozen centers 在 optimizer step 前后逐位不变
+basic inference 不调用 CodeDynamics
+independent/prefix NLL 使用统一的 per-RQ-level 口径
 ```
 
-在这些条件满足前,旧训练脚本的成功不能记为 CodeWAM v1 训练成功。
+本机或开发机工程验收:
+
+```bash
+python scripts/smoke_codewam_v1.py \
+  --device cuda \
+  --output runs/model_smoke/codewam_v1_cuda.json
+```
+
+输出 schema 为 `codewam.model-smoke.v1`,会跑 Stage-0、C0、C1、C2-independent 和 C2-prefix
+各一个 optimizer step,再检查 mixed chart、availability、gradient routes、frozen centers 和
+basic action inference。它只使用合成 tensor/centers,字段
+`scientific_evidence=false`;不能写进实验结果。
+
+`configs/model/codewam_v1.yaml` 可实例化 `CodeWAMConfig`,但当前仍没有合法的 real-data
+canonical training command。原因是 joint window exporter 尚未完成,而不是继续缺模型模块。
+旧 `scripts/train.py`、`train_zero*.sh` 的成功只能记为 legacy/F0,不能记为 CodeWAM v1。
+
+模型 forward 接收 `CodeMeasurements`,不会在内部从 latent 重新计算 RQ IDs。训练 cache 和
+部署 runtime 都必须用同一 artifact 的 descriptor、normalization、centers 与 chart identity;
+后续 online assigner 只能做冻结赋码,不能流式更新聚类中心。
 
 ## 8. Legacy/F0 模型训练
 

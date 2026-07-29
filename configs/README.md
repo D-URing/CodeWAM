@@ -1,6 +1,7 @@
 # Configs
 
-当前目录保存 FastWAM-compatible legacy 配置和 codebook evaluation 配置:
+当前目录同时保存 canonical CodeWAM v1 架构参数、FastWAM-compatible legacy 配置和
+codebook evaluation 配置:
 
 ```text
 configs/
@@ -10,6 +11,7 @@ configs/
 │   ├── robotwin.yaml
 │   └── package_scan_v6.yaml
 ├── model/
+│   ├── codewam_v1.yaml
 │   └── codewam.yaml
 └── task/
     ├── libero_codewam_2cam224.yaml
@@ -17,7 +19,11 @@ configs/
     └── package_scan_v6_demo.yaml
 ```
 
-`configs/model/codewam.yaml` 当前保留早期兼容原型的参数,但默认关闭:
+`configs/model/codewam_v1.yaml` 的 `_target_` 是 `CodeWAMConfig`;它只实例化独立架构参数。
+真实 trainer 还必须显式加载 chart-local frozen artifacts,并按数据 adapter 核对
+`proprio_dim/action_dim/language_dim`。它不是 legacy Hydra 训练入口。
+
+`configs/model/codewam.yaml` 保留早期兼容原型的参数,但默认关闭:
 
 ```yaml
 _target_: codewam.runtime.create_codewam
@@ -34,8 +40,7 @@ state_codebook:
 
 canonical v1 不在 policy 训练中拟合该模块。正式结构使用三套离线训练、冻结且彼此独立的
 `Q2/Q3/Q5` RQ artifacts;五模块接口和可见性 contract 见 `docs/ARCHITECTURE.md`,数据与训练
-contract 见 `docs/CODEBOOK.md`。独立 `codewam/models/` 与对应 config 尚未实现,所以下列
-命令只验证 FastWAM-compatible legacy/F0 链路。
+contract 见 `docs/CODEBOOK.md`。下列命令仍只运行 FastWAM-compatible legacy/F0 链路:
 
 训练示例:
 
