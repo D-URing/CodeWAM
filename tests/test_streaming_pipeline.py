@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,10 +34,25 @@ class StreamingPipelineTests(unittest.TestCase):
             OmegaConf.save(config, config_path)
 
             first = train_streaming_codebooks(config_path)
+            artifact_hashes = {
+                row["family"]: hashlib.sha256(
+                    Path(row["artifact"]).read_bytes()
+                ).hexdigest()
+                for row in first
+            }
             resumed = train_streaming_codebooks(config_path)
 
             self.assertEqual([row["family"] for row in first], ["Q2", "Q3", "Q5"])
             self.assertEqual(first, resumed)
+            self.assertEqual(
+                artifact_hashes,
+                {
+                    row["family"]: hashlib.sha256(
+                        Path(row["artifact"]).read_bytes()
+                    ).hexdigest()
+                    for row in resumed
+                },
+            )
             for row in first:
                 artifact = FrozenRQArtifact.load(row["artifact"])
                 self.assertEqual(artifact.family, row["family"])

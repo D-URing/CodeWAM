@@ -225,6 +225,54 @@ def _write_contract(path: Path, contract: dict[str, Any], resume: bool) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _artifacts_equal(
+    existing: FrozenRQArtifact,
+    expected: FrozenRQArtifact,
+) -> bool:
+    return (
+        existing.family == expected.family
+        and existing.descriptor == expected.descriptor
+        and existing.metadata == expected.metadata
+        and existing.normalization.count == expected.normalization.count
+        and torch.equal(
+            existing.normalization.mean,
+            expected.normalization.mean,
+        )
+        and torch.equal(
+            existing.normalization.std,
+            expected.normalization.std,
+        )
+        and len(existing.centers) == len(expected.centers)
+        and all(
+            torch.equal(existing_center, expected_center)
+            for existing_center, expected_center in zip(
+                existing.centers,
+                expected.centers,
+            )
+        )
+    )
+
+
+def _write_frozen_artifact(
+    path: Path,
+    artifact: FrozenRQArtifact,
+    resume: bool,
+) -> None:
+    if path.exists():
+        if not resume:
+            raise FileExistsError(
+                f"Frozen RQ artifact already exists at {path}; "
+                "enable resume or use a new output."
+            )
+        existing = FrozenRQArtifact.load(path)
+        if not _artifacts_equal(existing, artifact):
+            raise RuntimeError(
+                f"Existing frozen RQ artifact differs from resumed state: {path}."
+            )
+        return
+    artifact.save(path)
+
+
 def _normalization_path(family_dir: Path) -> Path:
     return family_dir / "normalization.pt"
 
@@ -527,7 +575,11 @@ def train_streaming_codebooks(config_path: str | Path) -> list[dict[str, Any]]:
         )
         artifact_path = family_dir / "codebook.pt"
         if _is_primary_rank():
-            artifact.save(artifact_path)
+            _write_frozen_artifact(
+                artifact_path,
+                artifact,
+                resume=resume,
+            )
 
         reductions = [
             1.0 - after / max(before, 1e-12)
