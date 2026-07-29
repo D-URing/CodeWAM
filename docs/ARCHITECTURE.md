@@ -609,6 +609,18 @@ P3: H + C + language + proprio
 使用 episode-held-out split、`5%/20%/100%` 数据和至少 3 seeds。只有 `P3` 相对 `P1` 在低数据、
 held-out scene/task 或扰动鲁棒性中出现稳定增益,才进入完整模型。P2 不要求胜过 P3。
 
+DROID-10k 的第一轮 minimal additive screen 已完成。它没有语言或 DiT,`H` 是 Q2/Q3/Q5
+实际读取的七个未量化 wrist `g=4` 状态,`C` 是
+`Q2-L3+Q3-L3+Q5-L2`,target 为当前 7D action。三个 frozen artifact seeds 使用相同的
+train/val/test、P1-selected ridge alpha 和闭式读出。test `P3-P1` 在 5%/20%/100% train
+分别为 `[-2.131,-1.880]`、`[-0.163,-0.134]`、`[-0.023,-0.019] pp`;val 同向全负。
+
+所以当前 Gate 2 状态为 **additive screen not passed**。跨 seed downstream 结果在 full data
+上高度等价,说明低 suffix NMI 没有导致不同的线性功能结果;但 hard code 没有提供 H 之外的
+正增量。下一步只允许测试预注册、参数受控的 center+margin confidence 与
+code-conditioned low-rank interaction,并将 current-action 和 future-state targets 分开。
+在任一接口稳定胜过对应 H-only 之前,不实现完整 router 或 WorldExpert。
+
 ### Gate 3: 结构和 mask 正确性
 
 - 所有防泄漏单测通过,包括 future-label permutation invariance。
@@ -650,12 +662,13 @@ GPU pilot。train-fit/held-out action association、cross-parent context concent
 multi-family contribution probe、scene-diverse RGB retrieval 和 frozen temporal
 counterfactual、RGB geometry/photometric perturbation、action-event probe、LIBERO frozen
 stress、independent-seed comparator 和 provenance-checked usability report 也已实现。
-当前 usability verdict 为 `not_ready`,硬阻塞项是 seed stability。cross-seed downstream
-equivalence、deterministic/consensus initialization、LIBERO independent refit/simulator
-intervention、quantization-margin probe、`FrozenRQAdapter`、mask invariance、`H-only/H+C`
-probe 以及 distributed held-out aggregation 仍待完成。训练侧的 rank-aware shard partition、
-rank-0 shared initialization 和 distributed RQ all-reduce 已实现。实现边界见
-`CODEBOOK.md`。
+跨 seed `P0/P1/P2/P3` minimal functional readout 与 5%/20%/100% scale curve 也已实现并完成;
+它裁决了 downstream equivalence,但 additive `H+C` 未胜过 `H`。当前 Gate 1 usability
+verdict 仍为 `not_ready`,Gate 2 additive screen 同样未通过。deterministic/consensus
+initialization、LIBERO independent refit/simulator intervention、quantization-margin、
+mode-conditioned interaction、`FrozenRQAdapter`、mask invariance 和 distributed held-out
+aggregation 仍待完成。训练侧的 rank-aware shard partition、rank-0 shared initialization 和
+distributed RQ all-reduce 已实现。实现边界见 `CODEBOOK.md`。
 
 | 早期实现 | canonical v1 |
 |---|---|

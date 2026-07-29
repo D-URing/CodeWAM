@@ -23,6 +23,7 @@ CodeWAM/
 │   │   ├── action_events.py    # held-out Cartesian/gripper event semantics
 │   │   ├── visual_perturbations.py # RGB-to-Wan nuisance/geometry stress
 │   │   ├── seed_stability.py   # independent-seed partition comparison
+│   │   ├── functional_readout.py # frozen-seed proprio/H/C/H+C screen
 │   │   ├── usability.py        # provenance-checked ten-gate report
 │   │   ├── workflow.py        # resumable candidate end-to-end workflow
 │   │   └── droid_pooled_export.py # rank-aware Wan pooled exporter
@@ -330,11 +331,14 @@ probes。
 probe_codebook_action_events.py       absolute-code -> held-out event labels
 probe_rgb_visual_perturbations.py     RGB -> Wan -> frozen RQ perturbation
 probe_rq_seed_stability.py            three seeds -> NMI/ARI/distortion CV
+probe_codebook_functional_readout.py  three seeds -> P0/P1/P2/P3 scale curve
 build_rq_usability_report.py          provenance audit + ten gated decisions
 ```
 
 正式命令和结果解释见 `CODEBOOK.md`。每个 probe 都先写 immutable contract,再原子写报告;
 同目录续跑只接受完全相同的 contract。统一报告不会复制数据或模型,只验证并引用输入 SHA。
+functional readout 额外锁定 nested scene subset、连续状态的七个因果 offsets、code depth
+profile、target 和 P1-only alpha selection;输出目录不能在不同 train fraction 间复用。
 
 官方 DROID manifest 的构建命令、数据 contract、搜索顺序、评估指标和 8xA100 布局都在
 `CODEBOOK.md`。一次性下载器和官方数据索引放在共享数据根目录,不放进本仓库。旧

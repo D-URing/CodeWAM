@@ -529,6 +529,71 @@ limiters,不会被健康 distortion 平均掉。当前只允许围绕固定 arti
 functional-equivalence 实验;仍禁止 code-only precision control、在线更新 centers、对象
 运动原语和通用跨域 tokenizer 主张。
 
+#### P1 frozen-code functional-equivalence screen: 2026-07-29
+
+为裁决“不同 seed 的 suffix partition 虽不一致,是否仍提供相同的下游功能”,固定
+seed 7/19/31 的九份 artifact,对同一批 scene-isolated 样本运行四个闭式岭回归读出:
+
+```text
+P0 = current proprio
+P1 = current proprio + continuous H
+P2 = current proprio + frozen C
+P3 = current proprio + continuous H + frozen C
+```
+
+这里没有语言、DiT 或策略训练。`H` 精确使用 Q2/Q3/Q5 所见七个不重复的 wrist
+`pooled_g4` 状态:
+
+```text
+{u(t-10), u(t-6), u(t-5), u(t-4), u(t-3), u(t-2), u(t)}
+```
+
+每个状态为 `48x4x4=768` 维,加 14 维 current proprio 后共 5,390 维。`C` 固定为 Policy
+hybrid profile `Q2-L3 + Q3-L3 + Q5-L2`,分别形成容量为 512/512/64 的 categorical
+prefix;它们由各自 seed 的 frozen centers 计算。监督目标只是当前 tick 的 7 维 DROID
+action。任何 future observation、future action、held-out statistics 或其他 seed 的 code
+都不会进入输入。
+
+训练场景按固定 hash 构造嵌套的 `5%/20%/100%` 子集;val/test 始终为相同的
+55,814/69,819 个向量。连续特征归一化、code active columns 和全部回归系数只由对应 train
+子集拟合。正则强度只根据 `P1` 的 val normalized-MSE reduction 从
+`{1e-4,1e-3,1e-2,1e-1,1}` 选择,随后不变地复用于 P0/P2/P3 和三个 seed。闭式求解没有
+readout optimization seed,因此跨 seed 差异只来自码本。
+
+下表报告 test normalized-MSE reduction;数值越高越好,区间为三个 codebook seeds:
+
+| train fraction | scenes / pooled records / vectors | alpha | P0 | P1 | P1-P0 | P2-P0 | P3-P1 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5% | 70 / 395 / 16,129 | 0.01 | 92.406% | 90.742% | -1.664 pp | [-1.928,-1.471] pp | [-2.131,-1.880] pp |
+| 20% | 280 / 2,301 / 102,978 | 0.001 | 93.052% | 94.008% | +0.957 pp | [-0.077,-0.047] pp | [-0.163,-0.134] pp |
+| 100% | 1,397 / 12,241 / 487,354 | 0.001 | 92.905% | 94.244% | +1.339 pp | [+0.103,+0.116] pp | [-0.023,-0.019] pp |
+
+val 的 `P3-P1` 同样全部为负:5% 为 `[-2.126,-1.719] pp`,20% 为
+`[-0.151,-0.130] pp`,100% 为 `[-0.020,-0.018] pp`。三份 report 的 SHA-256 为:
+
+```text
+5%    59c6836f816c2efe154420fd4464056b5542f09877c1c4e41cfdbb5c0592dd86
+20%   2f53f8f24094bf5370f99da2af664216c6d3d57fcccdb4ae4edcf0bff7e279e7
+100%  22c410d36ddaf02a56b66414fdbf3f26f6875460e3c478759d15186bba2955a2
+```
+
+90% 以上的绝对读出分数不是策略成功率。当前 proprio 与绝对 Cartesian/gripper action
+高度耦合,所以 P0 本来就很强。5% 时 5,390 维 P1 甚至比 P0 差,是明确的小样本高维过拟合;
+到 100% 时连续视觉产生稳定的 `+1.339 pp`,证明 `H` 有动作相关增量。code-only 的增量只有
+约 `+0.11 pp`,且一旦精确的 `H` 已经存在,hard categorical code 没有留下额外线性信息。
+
+因此两件事必须分开:
+
+1. **functional seed equivalence 成立**:随着数据增加,三个 seed 的 `P3-P1` range 从
+   0.251 pp 收缩到 0.004 pp。不同 residual partitions 没有产生不同的 full-data 功能结果。
+2. **Gate 2 additive screen 未通过**:`P3-P1` 在所有 fraction/split/seed 都不为正。它不证明
+   RQ 在非线性 router 或 future-state objective 中无效,但禁止仅凭现有码本继续扩建完整模型。
+
+下一项实验应先区分“码本没有额外价值”和“additive one-hot 接口没有利用 mode structure”:
+在预注册的同一 split 上比较 hard prefix、center+margin confidence 和受控的
+code-conditioned low-rank interaction,并把 current-action 与 future-state target 分开。
+只有某个接口在 held-out 数据上稳定胜过对应 H-only,才进入 `FrozenRQAdapter` 和正式 router。
+
 ### P2: DROID-Core
 
 优先使用官方具有 improved camera calibration 的约 36k episodes,完成正式的 held-out
@@ -876,6 +941,8 @@ latent spatial-moment change。报告 standardized MSE 相对 train global-mean 
   photometric nuisance、translation/scale、direction、dose response 和 frozen transfer。
 - `seed_stability.py`:在共享 held-out descriptors 上比较独立 seed 的 distortion CV、逐层
   NMI/ARI、联合 prefix partition 和 label-mapped agreement。
+- `functional_readout.py`:用嵌套 scene-train fractions 和固定 val/test,比较
+  proprio/H/C/H+C 的闭式动作读出,并隔离三个 frozen codebook seeds 的功能差异。
 - `usability.py`:验证所有报告的 contract/artifact/manifest provenance,按十道最差组 gate
   生成 JSON 与 Markdown;不使用可掩盖失败的单一总分。
 - `workflow.py`:可恢复地串联 train、held-out、association、concentration,并锁定各报告 SHA。
@@ -898,14 +965,15 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 101 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
+当前 105 项单元测试覆盖 manifest round-trip、scene isolation、DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
 patience resume、RQ residual 下降、artifact round-trip、双 rank resume 与单卡 centers 等价、
 DROID pooled export evidence、Wan causal-prefix 正反例、candidate workflow、跨 parent
 folds、对齐 multi-family contribution、scene-diverse retrieval provenance 和冻结 temporal
 counterfactual,以及 RGB-to-cache reproduction、视觉扰动、动作事件、独立 seed
-label-permutation 与十门可用性决策。
+label-permutation、十门可用性决策,以及 functional readout 的精确因果状态 union、nested
+scene subsets、非线性 code partition、三 seed end-to-end/resume。
 
 ## 12. 命令与产物
 
@@ -1026,6 +1094,33 @@ python scripts/probe_rq_seed_stability.py \
   --output-dir "$RQ_ROOT/seed_stability" --device cuda:0
 ```
 
+跨 seed 功能等价与 `H+C` 增量使用同一组九份 artifact:
+
+```bash
+python scripts/probe_codebook_functional_readout.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact seed7:Q2="$SEED7_Q2" \
+  --artifact seed7:Q3="$SEED7_Q3" \
+  --artifact seed7:Q5="$SEED7_Q5" \
+  --artifact seed19:Q2="$SEED19_Q2" \
+  --artifact seed19:Q3="$SEED19_Q3" \
+  --artifact seed19:Q5="$SEED19_Q5" \
+  --artifact seed31:Q2="$SEED31_Q2" \
+  --artifact seed31:Q3="$SEED31_Q3" \
+  --artifact seed31:Q5="$SEED31_Q5" \
+  --code-depth Q2=3 --code-depth Q3=3 --code-depth Q5=2 \
+  --train-fraction 1.0 \
+  --output-dir "$RQ_ROOT/functional_readout_full" \
+  --device cuda:0
+```
+
+规模曲线把 `--train-fraction/--output-dir` 分别改为
+`0.05/functional_readout_05`、`0.20/functional_readout_20` 和
+`1.0/functional_readout_full`;三个目录不能混用。输出 contract 锁定 manifest、全部 pooled
+shard SHA、九份 artifact、训练 scene subset、特征/target 定义和实现 SHA。report 自动包含
+alpha sweep、P0/P1/P2/P3 的 val/test 原始行与 `P3-P1` 跨 seed summary。
+
 最后用 `scripts/build_rq_usability_report.py` 汇总 comparison、family association、retrieval、
 val/test temporal、causal audit、DROID/LIBERO visual、action events、seed stability 和
 capacity reports。聚合器重算每个 contract hash,并要求所有 canonical 输入共享相同的
@@ -1076,22 +1171,22 @@ BridgeData V2。
 
 ## 14. 下一张工程单
 
-下一阶段先裁决 seed failure,再实现被 P1 证据支持的最小接口,不提前扩建完整 world model:
+下一阶段先解释 additive Gate 2 的负结果,不提前扩建完整 world model:
 
 ```text
-1. 在同一 shared descriptors 上比较 deterministic initialization、multi-start medoid/
-   consensus 和当前 K-Means++,不能只用最低 train distortion 选 artifact
-2. 让 seed 7/19/31 各自冻结、各自训练同规格 minimal readout;比较 H-only 与 H+C 的
-   downstream gain 分布,不要求不同 seed 的 numeric code id 对齐
-3. 在现有 RGB probe 中增加每层 nearest/runner-up margin,验证光照和跨 seed suffix flip
+1. 保留已完成的 5%/20%/100% x seed 7/19/31 P0/P1/P2/P3 报告作为 additive baseline
+2. 在现有 RGB probe 中增加每层 nearest/runner-up margin,验证光照和跨 seed suffix flip
    是否能被 confidence 检出
-4. 比较 center-only、center+margin gate、prefix dropout 和 paired-photometric consistency
-5. 若跨 seed functional value 不稳定,回到 descriptor/clustering objective,加入时间邻域与
-   paired-view consistency;若稳定,冻结 artifact hash 并定义 FrozenRQAdapter/ModeCodeMask
-6. 在 LIBERO 分开做同规格独立 refit、normalization/calibration 和 simulator object-pose
+3. 在完全相同的 split/容量下比较 hard prefix、center+margin 和 code-conditioned low-rank
+   interaction;current action 与 future proprio/latent target 分开报告
+4. 比较 prefix dropout 和 paired-photometric consistency,不得用 val/test 更新 centers
+5. 只有 H+C 在至少一个预注册目标上跨 seed 稳定胜过 H-only,才定义
+   FrozenRQAdapter/ModeCodeMask;否则回到 descriptor/clustering objective
+6. deterministic/consensus initialization 只解决 artifact reproducibility,不能代替增量价值
+7. 在 LIBERO 分开做同规格独立 refit、normalization/calibration 和 simulator object-pose
    intervention,不得把 frozen-transfer failure 混成一个数字
-7. 实现 continuous base belief、Policy/World measurement routers 与 mask invariance tests
-8. 只有 H+C 在多 seed、低数据和扰动下稳定胜出后才实现 WorldExpert
+8. 通过 Gate 2 后再实现 continuous base belief、Policy/World routers 与 mask invariance
+9. 只有 H+C 在多 seed、低数据和扰动下稳定胜出后才实现 WorldExpert
 ```
 
 验收不以“程序跑完”为准:

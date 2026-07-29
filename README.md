@@ -148,9 +148,9 @@ BridgeData V2 frozen-transfer and independent-refit replication
   只读 held-out evaluator、单族关联、跨 parent context concentration、对齐的多族增量探针,
   scene-diverse RGB retrieval、冻结 temporal counterfactual、held-out action events、
   DROID/LIBERO RGB perturbation、independent-seed stability 和 provenance-checked usability
-  report,以及 DROID 1.0.1 精确 metadata/RLDS join、稀疏 RGB reader、keep-range audit 和
-  canonical pooled exporter。
-- 已验证:101 项单元测试、单卡/双 rank centers 等价、synthetic Q2/Q3/Q5 端到端 smoke、
+  report、跨 seed `P0/P1/P2/P3` functional readout,以及 DROID 1.0.1 精确
+  metadata/RLDS join、稀疏 RGB reader、keep-range audit 和 canonical pooled exporter。
+- 已验证:105 项单元测试、单卡/双 rank centers 等价、synthetic Q2/Q3/Q5 端到端 smoke、
   58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
   causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较、val/test 一致的时间反事实
   敏感性,以及 seed 7/19/31 的九套独立 RQ artifacts。
@@ -159,12 +159,14 @@ BridgeData V2 frozen-transfer and independent-refit replication
   robustness 失败。冻结 DROID artifacts 在 LIBERO 发生中心使用与几何响应 collapse,不能
   作为通用 tokenizer。三 seed distortion CV 最高仅 0.55%,但 L2/L3 最低 NMI 只有
   0.143/0.065,完整前缀映射一致率中位数为 7.31%,因此严格结论为 `not_ready`。连续 latent
-  路径必须保留 exterior+wrist。
+  路径必须保留 exterior+wrist。minimal additive Gate 2 在 5%/20%/100% train 和三个 seed
+  上的 `P3-P1` 全为负;full-data test 仅为 `-0.023` 至 `-0.019 pp`,说明跨 seed 功能近似
+  等价,但 hard code 尚未提供 H 之外的动作增量。
 - 默认关闭:legacy online-EMA single-token codebook。
-- 下一步:先用 downstream-equivalence、deterministic/consensus initialization 和
-  quantization-margin probe 裁决 suffix partition instability;只有跨 seed 的 `H+C`
-  增量价值稳定后才冻结 canonical artifact 并实现完整 role router。LIBERO 另做同规格独立
-  refit/calibration 和 simulator object-pose intervention。
+- 下一步:先比较 quantization margin、center confidence 与参数受控的
+  code-conditioned interaction,并分开 current-action/future-state targets。只有跨 seed 的
+  `H+C` 增量价值稳定后才实现完整 role router。deterministic/consensus initialization 仅解决
+  artifact 可重复性;LIBERO 另做同规格独立 refit/calibration 和 simulator intervention。
 
 外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
 checkpoints 和运行结果始终放在 git 之外。
