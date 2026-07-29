@@ -581,7 +581,8 @@ network:        resumable access to the official Google Cloud bucket
 - `wan_causality.py`:用真实视频完整编码与逐级前缀编码的 latent 一致性审计,显式检测
   Wan-VAE temporal look-ahead。
 - `droid_pooled_export.py`:rank-aware exact reader 到双相机 Wan `pooled_g4` 的原子 shard export、
-  contract/SHA 校验、首次性能证据保留、resume 和 segment manifest finalize。
+  完整实现 SHA contract、逐 shard progress、首次性能证据保留、allocator trim、resume 和
+  segment manifest finalize。
 - `codewam/data/droid_manifest.py`:官方 raw metadata、RLDS position、keep ranges、language 和
   shard checksum 的精确 join,scene-isolated split,以及 institution/scene/collector-aware sample。
 - `codewam/data/droid_rlds.py`:按 manifest `(shard,record)` 精确读取,未选相机跳过 JPEG decode,

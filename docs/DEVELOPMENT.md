@@ -203,7 +203,10 @@ PYTHONPATH=. python scripts/export_droid_pooled.py finalize \
 ```
 
 每个 rank 只拥有完整 source shards;不使用 DDP。相同命令续跑会校验 contract、输出 SHA 和
-segment ids,跳过已完成 shard,同时保留首次导出的耗时与显存证据。
+segment ids,跳过已完成 shard。每完成一个 shard 都会原子更新
+`rank-XXX-of-YYY-progress.json`,因此进程在最终 report 前被终止时，续跑仍能保留已完成
+shard 的首次耗时与显存证据。contract 同时锁定 VAE、FastWAM loader/转换器以及 CodeWAM
+reader/preprocess/writer 的实现 SHA。
 
 pooled shards 就绪后训练与 held-out 评估:
 

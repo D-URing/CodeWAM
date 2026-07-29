@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import gc
 import hashlib
 import json
@@ -96,6 +97,10 @@ def _contract_parameters(
 ) -> dict[str, Any]:
     fastwam_src = Path(config.fastwam_src)
     implementation_paths = {
+        "state_dict_io": (
+            fastwam_src
+            / "fastwam/models/wan22/helpers/io.py"
+        ),
         "wan_vae": fastwam_src / "fastwam/models/wan22/wan_video_vae.py",
         "state_dict_converter": (
             fastwam_src
@@ -109,6 +114,15 @@ def _contract_parameters(
         raise FileNotFoundError(
             f"Missing FastWAM Wan implementation files: {missing_implementations}."
         )
+    codewam_paths = {
+        "manifest": Path(__file__).with_name("manifest.py"),
+        "shards": Path(__file__).with_name("shards.py"),
+        "wan_probe_export": Path(__file__).with_name("wan_probe_export.py"),
+        "droid_manifest": (
+            Path(__file__).parents[1] / "data/droid_manifest.py"
+        ),
+        "droid_rlds": Path(__file__).parents[1] / "data/droid_rlds.py",
+    }
     return {
         "schema": DROID_POOLED_EXPORT_SCHEMA,
         "source_manifest_fingerprint": manifest.fingerprint(),
@@ -122,6 +136,10 @@ def _contract_parameters(
             for name, path in sorted(implementation_paths.items())
         },
         "codewam_exporter_sha256": file_sha256(Path(__file__)),
+        "codewam_dependency_sha256": {
+            name: file_sha256(path)
+            for name, path in sorted(codewam_paths.items())
+        },
         "cameras": list(config.cameras),
         "nominal_fps": config.nominal_fps,
         "image_height": config.image_height,
@@ -446,6 +464,58 @@ def _cuda_device_index(device: torch.device) -> int:
     )
 
 
+def _release_process_memory(device: torch.device) -> None:
+    gc.collect()
+    try:
+        malloc_trim = ctypes.CDLL(None).malloc_trim
+        malloc_trim.argtypes = [ctypes.c_size_t]
+        malloc_trim.restype = ctypes.c_int
+        malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
+def _rank_report_payload(
+    *,
+    contract_hash: str,
+    rank: int,
+    world_size: int,
+    assignment: dict[str, int],
+    rows: list[dict[str, Any]],
+    elapsed_seconds: float,
+    prior_cumulative_seconds: float,
+    first_export_elapsed_seconds: float | None,
+    complete: bool,
+) -> dict[str, Any]:
+    cumulative_elapsed_seconds = (
+        prior_cumulative_seconds + elapsed_seconds
+    )
+    if (
+        complete
+        and first_export_elapsed_seconds is None
+        and any(
+            row.get("first_export_status", row.get("status"))
+            == "exported"
+            for row in rows
+        )
+    ):
+        first_export_elapsed_seconds = cumulative_elapsed_seconds
+    return {
+        "schema": DROID_POOLED_EXPORT_SCHEMA,
+        "contract_hash": contract_hash,
+        "rank": rank,
+        "world_size": world_size,
+        "assignment": assignment,
+        "outputs": sorted(rows, key=lambda row: row["source_shard"]),
+        "elapsed_seconds": elapsed_seconds,
+        "cumulative_elapsed_seconds": cumulative_elapsed_seconds,
+        "first_export_elapsed_seconds": first_export_elapsed_seconds,
+        "complete": complete,
+    }
+
+
 def export_droid_pooled_features(
     config: DroidPooledExportConfig,
 ) -> dict[str, Any]:
@@ -461,12 +531,23 @@ def export_droid_pooled_features(
         output_dir
         / f"rank-{config.rank:03d}-of-{config.world_size:03d}-report.json"
     )
-    previous_report = _load_previous_rank_report(
+    progress_path = (
+        output_dir
+        / f"rank-{config.rank:03d}-of-{config.world_size:03d}-progress.json"
+    )
+    completed_report = _load_previous_rank_report(
         report_path,
         contract_hash=contract["contract_hash"],
         rank=config.rank,
         world_size=config.world_size,
     )
+    progress_report = _load_previous_rank_report(
+        progress_path,
+        contract_hash=contract["contract_hash"],
+        rank=config.rank,
+        world_size=config.world_size,
+    )
+    previous_report = completed_report or progress_report
     previous_rows = {
         str(row["source_shard"]): row
         for row in (previous_report or {}).get("outputs", ())
@@ -480,7 +561,19 @@ def export_droid_pooled_features(
         # TensorFlow can disable its own GPUs without invalidating Torch's context.
         torch.cuda.init()
 
+    started = time.monotonic()
+    prior_cumulative_seconds = float(
+        (previous_report or {}).get(
+            "cumulative_elapsed_seconds",
+            (previous_report or {}).get("elapsed_seconds", 0.0),
+        )
+    )
     rows = []
+    assignment_summary = {
+        "source_shards": len(assignment.shards),
+        "source_episodes": assignment.episodes,
+        "source_bytes": assignment.source_bytes,
+    }
     pending_work: dict[str, DroidShardWork] = {}
     completed_episode_keys: set[str] = set()
     for work in assignment.shards:
@@ -505,6 +598,30 @@ def export_droid_pooled_features(
         else:
             pending_work[work.shard_name] = work
 
+    def report_payload(*, complete: bool) -> dict[str, Any]:
+        return _rank_report_payload(
+            contract_hash=contract["contract_hash"],
+            rank=config.rank,
+            world_size=config.world_size,
+            assignment=assignment_summary,
+            rows=rows,
+            elapsed_seconds=time.monotonic() - started,
+            prior_cumulative_seconds=prior_cumulative_seconds,
+            first_export_elapsed_seconds=(
+                completed_report.get("first_export_elapsed_seconds")
+                if completed_report is not None
+                else None
+            ),
+            complete=complete,
+        )
+
+    def persist_progress() -> None:
+        write_json_report(
+            progress_path,
+            report_payload(complete=False),
+        )
+
+    persist_progress()
     episode_iterator = iter_manifest_droid_rlds_episodes(
         config.data_dir,
         source_manifest,
@@ -545,6 +662,7 @@ def export_droid_pooled_features(
                 "status": "exported",
             }
         )
+        persist_progress()
         print(
             f"Exported {current_shard}: episodes={work.episodes} "
             f"segments={info.episodes} ticks={info.ticks} "
@@ -554,11 +672,8 @@ def export_droid_pooled_features(
         current_shard = None
         current_pooled = []
         shard_peak_gib = 0.0
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        _release_process_memory(device)
 
-    started = time.monotonic()
     for episode in episode_iterator:
         if episode.source_shard != current_shard:
             flush()
@@ -568,6 +683,7 @@ def export_droid_pooled_features(
                 torch.cuda.reset_peak_memory_stats(_cuda_device_index(device))
         if vae is None:
             vae = _load_wan_vae(config)
+            _release_process_memory(device)
         for segment in episode.iter_eligible_segments():
             current_pooled.append(encode_droid_segment(segment, vae, config))
             if device.type == "cuda":
@@ -582,31 +698,9 @@ def export_droid_pooled_features(
                 )
     flush()
 
-    elapsed_seconds = time.monotonic() - started
-    first_export_elapsed_seconds = (
-        previous_report.get("first_export_elapsed_seconds")
-        if previous_report is not None
-        else None
-    )
-    if first_export_elapsed_seconds is None and any(
-        row["status"] == "exported" for row in rows
-    ):
-        first_export_elapsed_seconds = elapsed_seconds
-    report = {
-        "schema": DROID_POOLED_EXPORT_SCHEMA,
-        "contract_hash": contract["contract_hash"],
-        "rank": config.rank,
-        "world_size": config.world_size,
-        "assignment": {
-            "source_shards": len(assignment.shards),
-            "source_episodes": assignment.episodes,
-            "source_bytes": assignment.source_bytes,
-        },
-        "outputs": sorted(rows, key=lambda row: row["source_shard"]),
-        "elapsed_seconds": elapsed_seconds,
-        "first_export_elapsed_seconds": first_export_elapsed_seconds,
-    }
+    report = report_payload(complete=True)
     write_json_report(report_path, report)
+    write_json_report(progress_path, report)
     return report
 
 

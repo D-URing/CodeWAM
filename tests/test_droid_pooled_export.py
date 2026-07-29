@@ -10,8 +10,10 @@ import torch
 
 from codewam.codebook_eval.droid_pooled_export import (
     DroidPooledExportConfig,
+    _contract_parameters,
     _cuda_device_index,
     _preserve_first_export_evidence,
+    _rank_report_payload,
     encode_droid_segment,
     finalize_droid_pooled_export,
 )
@@ -106,6 +108,102 @@ class DroidPooledExportTests(unittest.TestCase):
         self.assertEqual(merged["first_export_status"], "exported")
         self.assertEqual(merged["elapsed_seconds"], 4.5)
         self.assertEqual(merged["peak_cuda_memory_gib"], 2.0)
+
+    def test_rank_progress_preserves_partial_runtime_and_first_export(self) -> None:
+        rows = [
+            {
+                "source_shard": "shard",
+                "first_export_status": "exported",
+            }
+        ]
+        progress = _rank_report_payload(
+            contract_hash="contract",
+            rank=1,
+            world_size=4,
+            assignment={
+                "source_shards": 2,
+                "source_episodes": 3,
+                "source_bytes": 4,
+            },
+            rows=rows,
+            elapsed_seconds=5.0,
+            prior_cumulative_seconds=7.0,
+            first_export_elapsed_seconds=None,
+            complete=False,
+        )
+        completed = _rank_report_payload(
+            contract_hash="contract",
+            rank=1,
+            world_size=4,
+            assignment=progress["assignment"],
+            rows=rows,
+            elapsed_seconds=5.0,
+            prior_cumulative_seconds=7.0,
+            first_export_elapsed_seconds=None,
+            complete=True,
+        )
+
+        self.assertFalse(progress["complete"])
+        self.assertEqual(progress["cumulative_elapsed_seconds"], 12.0)
+        self.assertIsNone(progress["first_export_elapsed_seconds"])
+        self.assertTrue(completed["complete"])
+        self.assertEqual(completed["first_export_elapsed_seconds"], 12.0)
+
+    def test_contract_hashes_all_export_implementations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fastwam = root / "fastwam-src"
+            for relative in (
+                "fastwam/models/wan22/helpers/io.py",
+                "fastwam/models/wan22/helpers/state_dict_converters.py",
+                "fastwam/models/wan22/wan_video_vae.py",
+            ):
+                path = fastwam / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(relative, encoding="utf-8")
+            vae_path = root / "vae.pt"
+            vae_path.write_bytes(b"vae")
+            manifest = EpisodeManifest.from_records(
+                (
+                    EpisodeRecord(
+                        dataset="droid-1.0.1",
+                        episode_id="episode",
+                        num_steps=9,
+                        source_uri="gs://droid/trajectory.h5",
+                        institution_id="institution",
+                        building_id="building",
+                        scene_id="scene",
+                        split="train",
+                    ),
+                )
+            )
+            config = replace(
+                make_config(),
+                fastwam_src=str(fastwam),
+                vae_path=str(vae_path),
+            )
+
+            contract = _contract_parameters(
+                config,
+                manifest,
+                manifest_sha256="manifest",
+                vae_path=vae_path,
+            )
+
+        self.assertEqual(
+            sorted(contract["implementation_sha256"]),
+            ["state_dict_converter", "state_dict_io", "wan_vae"],
+        )
+        self.assertEqual(
+            sorted(contract["codewam_dependency_sha256"]),
+            [
+                "droid_manifest",
+                "droid_rlds",
+                "manifest",
+                "shards",
+                "wan_probe_export",
+            ],
+        )
 
     def test_segment_encoding_preserves_absolute_time_and_action_components(self) -> None:
         pooled = encode_droid_segment(make_segment(), FakeWanVAE(), make_config())
