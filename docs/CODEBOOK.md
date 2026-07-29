@@ -534,6 +534,12 @@ network:        resumable access to the official Google Cloud bucket
 3. **控制增量**:固定 probe 容量比较 `proprio-only`、`H-only`、`C-only` 和 `H+C`,并做
    family shuffle、RQ suffix dropout、nearest/far-center replacement。
 
+第一版冻结关联探针不把 delta 当作码本输入。它用 `t` 的 causal RQ prefix 在 train 上拟合
+最小容量的条件均值，再在 val/test 预测当前 action、`t+s` proprio change 和 `t+s` Wan
+latent spatial-moment change。报告 standardized MSE 相对 train global-mean baseline 的
+改善、exact prefix coverage 和逐级 backoff;这只能证明关联与预测价值，不能单独证明物体级
+语义或因果控制。
+
 三套联合 probe 必须优于最佳单 family;无独立贡献的 family 删除。RQ 某层若不能在 held-out
 数据上稳定降低 residual 或改善 probe,就缩短合法 prefix,不因预设为 RQ-3 强行保留。
 

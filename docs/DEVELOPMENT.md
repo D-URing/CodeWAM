@@ -225,6 +225,22 @@ python scripts/evaluate_streaming_codebooks.py \
   --config "$RQ_ROOT/configs/evaluate_g4_k16_l3.yaml"
 ```
 
+冻结评估完成后，可在不更新 center 的前提下运行 train-fit/val-test-only 关联探针:
+
+```bash
+python scripts/probe_frozen_codebook_associations.py \
+  --manifest "$POOLED_ROOT/pooled_manifest.jsonl" \
+  --pooled-shards "$POOLED_ROOT/pooled/*.pt" \
+  --artifact q3-dual-g4="$RQ_ROOT/Q3/codebook.pt" \
+  --output-dir "$RQ_ROOT/association" \
+  --device cuda:0
+```
+
+该探针的 code 输入仍然只有 `t-2s,t-s,t` 三个视觉状态。`current_action`、
+`future_proprio_change` 和 `future_latent_moment_change` 只是监督评估目标;后两项取
+`t+s`，绝不加入 descriptor。条件均值和 target normalization 只由 train 统计，
+val/test 遇到样本不足的 tuple 会依次回退到更短 RQ prefix 或 train global mean。
+
 选定最终规格后可让每个 rank 读取独立 pooled shards,共享 rank-0 全局 reservoir 初始化并只
 all-reduce `K x D` 统计量:
 

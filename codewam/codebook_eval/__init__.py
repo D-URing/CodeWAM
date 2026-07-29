@@ -1,5 +1,7 @@
 """Offline codebook evaluation utilities for CodeWAM."""
 
+from .association import probe_frozen_codebook_associations
+from .comparison import compare_streaming_runs
 from .evaluation import evaluate_frozen_codebooks
 from .manifest import EpisodeManifest, EpisodeRecord, SplitConfig
 from .pipeline import train_streaming_codebooks
@@ -27,9 +29,11 @@ __all__ = [
     "StreamingKMeans",
     "StreamingKMeansConfig",
     "StreamingRQTrainer",
+    "compare_streaming_runs",
     "evaluate_frozen_codebooks",
     "fit_normalization",
     "iter_pooled_feature_episodes",
+    "probe_frozen_codebook_associations",
     "train_streaming_codebooks",
     "write_pooled_feature_shard",
 ]
