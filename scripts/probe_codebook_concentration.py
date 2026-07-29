@@ -72,11 +72,21 @@ def main() -> None:
         resume=not args.no_resume,
     )
     for row in report["rows"]:
+        gain = row["cross_parent_normalized_accuracy_gain"]
+        coverage = row["cross_parent_exact_code_coverage"]
+        cross_parent = (
+            "cross_parent=n/a"
+            if gain is None or coverage is None
+            else (
+                f"cross_parent_gain={gain:.3f} "
+                f"coverage={coverage:.3f}"
+            )
+        )
         print(
             f"{row['label']} {row['split']} {row['grouping']} "
             f"L{row['prefix_depth']}: "
-            f"information_gain={row['group_information_gain']:.3f} "
-            f"purity_gain={row['normalized_purity_gain']:.3f}"
+            f"{cross_parent} "
+            f"descriptive_information={row['group_information_gain']:.3f}"
         )
 
 

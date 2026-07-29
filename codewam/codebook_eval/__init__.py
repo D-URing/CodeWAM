@@ -17,6 +17,7 @@ from .streaming import (
     StreamingRQTrainer,
     fit_normalization,
 )
+from .workflow import run_streaming_codebook_candidate
 
 __all__ = [
     "CausalDescriptorSource",
@@ -36,6 +37,7 @@ __all__ = [
     "iter_pooled_feature_episodes",
     "probe_frozen_codebook_associations",
     "probe_frozen_codebook_concentration",
+    "run_streaming_codebook_candidate",
     "train_streaming_codebooks",
     "write_pooled_feature_shard",
 ]
