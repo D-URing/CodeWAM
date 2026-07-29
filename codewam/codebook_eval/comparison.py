@@ -234,6 +234,8 @@ def _markdown(report: dict[str, Any]) -> str:
 def compare_streaming_runs(
     runs: Iterable[tuple[str, str | Path]],
     output_dir: str | Path,
+    *,
+    families: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     normalized = [(str(label), Path(path)) for label, path in runs]
     labels = [label for label, _ in normalized]
@@ -241,6 +243,16 @@ def compare_streaming_runs(
         raise ValueError("At least one streaming RQ run is required.")
     if any(not label for label in labels) or len(labels) != len(set(labels)):
         raise ValueError("Comparison labels must be nonempty and unique.")
+    selected_families = (
+        None
+        if families is None
+        else tuple(str(family) for family in families)
+    )
+    if selected_families is not None and (
+        not selected_families
+        or len(selected_families) != len(set(selected_families))
+    ):
+        raise ValueError("Comparison families must be nonempty and unique.")
 
     rows: list[dict[str, Any]] = []
     association_rows: list[dict[str, Any]] = []
@@ -257,9 +269,18 @@ def compare_streaming_runs(
         }
         if len(train_by_family) != len(train_rows):
             raise ValueError(f"Duplicate train families in `{train_path}`.")
-        heldout_rows = heldout_report.get("rows", ())
+        heldout_rows = [
+            row
+            for row in heldout_report.get("rows", ())
+            if (
+                selected_families is None
+                or row["family"] in selected_families
+            )
+        ]
         if not heldout_rows:
-            raise ValueError(f"Held-out report has no rows: `{heldout_path}`.")
+            raise ValueError(
+                f"Held-out report has no selected rows: `{heldout_path}`."
+            )
         heldout_identities = {
             (
                 row["family"],
@@ -305,6 +326,11 @@ def compare_streaming_runs(
                 "contract_hash"
             )
             for row in association.get("rows", ()):
+                if (
+                    selected_families is not None
+                    and row["family"] not in selected_families
+                ):
+                    continue
                 if int(row["prefix_depth"]) != int(row["levels"]):
                     continue
                 identity = (
@@ -343,6 +369,11 @@ def compare_streaming_runs(
 
     report = {
         "schema": COMPARISON_SCHEMA,
+        "families": (
+            None
+            if selected_families is None
+            else list(selected_families)
+        ),
         "inputs": inputs,
         "rows": sorted(
             rows,

@@ -119,12 +119,14 @@ class StreamingComparisonTests(unittest.TestCase):
             report = compare_streaming_runs(
                 [("exterior-g4", run)],
                 output,
+                families=("Q3",),
             )
             markdown = (output / "comparison_report.md").read_text(
                 encoding="utf-8"
             )
 
         self.assertEqual(len(report["rows"]), 1)
+        self.assertEqual(report["families"], ["Q3"])
         row = report["rows"][0]
         self.assertAlmostEqual(row["generalization_gap"], 0.05)
         self.assertEqual(row["active_codes_by_level"], [2, 2])

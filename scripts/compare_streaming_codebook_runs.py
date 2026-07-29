@@ -27,9 +27,18 @@ def main() -> None:
         help="Candidate as LABEL=RUN_DIR; repeat for each run.",
     )
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--families",
+        nargs="+",
+        help="Optional family filter, for example Q3.",
+    )
     args = parser.parse_args()
 
-    report = compare_streaming_runs(args.run, args.output_dir)
+    report = compare_streaming_runs(
+        args.run,
+        args.output_dir,
+        families=args.families,
+    )
     print(
         f"Wrote {len(report['rows'])} comparison rows to "
         f"{args.output_dir}."
