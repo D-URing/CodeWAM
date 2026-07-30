@@ -165,6 +165,9 @@ python scripts/export_joint_window_cache.py \
   --output-dir "$JOINT_CACHE_ROOT" --finalize-only
 ```
 
+finalize 会拒绝缺 rank、缺 source shard 或限量导出的半成品;只有工程 smoke 可以显式使用
+`--allow-partial-finalize`。
+
 Gate 2 的 PERSIST/NOACT/TRUE/SHUFFLE 命令和有效性规则见
 [`docs/CODEBOOK.md`](./docs/CODEBOOK.md#144-正式-gate-2)。
 

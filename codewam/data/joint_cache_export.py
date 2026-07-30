@@ -7,7 +7,7 @@ import os
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 
@@ -46,6 +46,10 @@ from .joint_cache import (
     write_joint_episode_shard,
 )
 from .roles import trajectory_role
+
+
+JOINT_CACHE_EXPORT_REPORT_SCHEMA = "codewam.joint-cache-export-report.v2"
+JOINT_CACHE_EXPORT_AUDIT_SCHEMA = "codewam.joint-cache-export-audit.v1"
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,51 @@ def _hash_strings(values: list[str]) -> str:
     import hashlib
 
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _write_export_report(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(dict(payload), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _build_export_report(
+    config: JointCacheExportConfig,
+    *,
+    contract_hash: str,
+    planned_shards: int,
+    selected_shards: int,
+    rows: list[dict[str, Any]],
+    started: float,
+) -> dict[str, Any]:
+    if len(rows) != selected_shards:
+        raise RuntimeError(
+            f"Rank {config.rank} completed {len(rows)} of "
+            f"{selected_shards} selected source shards."
+        )
+    return {
+        "schema": JOINT_CACHE_EXPORT_REPORT_SCHEMA,
+        "contract_hash": contract_hash,
+        "rank": config.rank,
+        "world_size": config.world_size,
+        "source_shards_planned": planned_shards,
+        "source_shards_selected": selected_shards,
+        "source_shards_exported_or_reused": len(rows),
+        "selection_complete": selected_shards == planned_shards,
+        "max_source_shards": config.max_source_shards,
+        "episodes": sum(int(row["episodes"]) for row in rows),
+        "windows": sum(int(row["windows"]) for row in rows),
+        "elapsed_seconds": time.monotonic() - started,
+        "completed_unix_seconds": time.time(),
+        "outputs": sorted(rows, key=lambda row: row["source_shard"]),
+    }
 
 
 def _load_endpoint_audit(path: Path) -> dict[str, Any]:
@@ -385,7 +434,8 @@ def export_joint_window_cache(
         manifest,
         config.world_size,
     )[config.rank]
-    works = assignment.shards
+    planned_works = assignment.shards
+    works = planned_works
     if config.max_source_shards is not None:
         works = works[: config.max_source_shards]
     pending: dict[str, DroidShardWork] = {}
@@ -415,26 +465,19 @@ def export_joint_window_cache(
         torch.cuda.init()
     started = time.monotonic()
     if not pending:
-        report = {
-            "schema": "codewam.joint-cache-export-report.v1",
-            "contract_hash": contract["contract_hash"],
-            "rank": config.rank,
-            "world_size": config.world_size,
-            "source_shards_assigned": len(works),
-            "source_shards_exported_or_reused": len(rows),
-            "episodes": sum(int(row["episodes"]) for row in rows),
-            "windows": sum(int(row["windows"]) for row in rows),
-            "elapsed_seconds": time.monotonic() - started,
-            "outputs": sorted(rows, key=lambda row: row["source_shard"]),
-        }
+        report = _build_export_report(
+            config,
+            contract_hash=contract["contract_hash"],
+            planned_shards=len(planned_works),
+            selected_shards=len(works),
+            rows=rows,
+            started=started,
+        )
         report_path = (
             Path(config.output_dir)
             / f"rank-{config.rank:03d}-of-{config.world_size:03d}-report.json"
         )
-        report_path.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _write_export_report(report_path, report)
         return report
     vae = None
     vae_config = replace(
@@ -515,31 +558,206 @@ def export_joint_window_cache(
             current_episodes.append(joint_episode)
             current_windows.extend(windows)
     flush()
-    report = {
-        "schema": "codewam.joint-cache-export-report.v1",
-        "contract_hash": contract["contract_hash"],
-        "rank": config.rank,
-        "world_size": config.world_size,
-        "source_shards_assigned": len(works),
-        "source_shards_exported_or_reused": len(rows),
-        "episodes": sum(int(row["episodes"]) for row in rows),
-        "windows": sum(int(row["windows"]) for row in rows),
-        "elapsed_seconds": time.monotonic() - started,
-        "outputs": sorted(rows, key=lambda row: row["source_shard"]),
-    }
+    report = _build_export_report(
+        config,
+        contract_hash=contract["contract_hash"],
+        planned_shards=len(planned_works),
+        selected_shards=len(works),
+        rows=rows,
+        started=started,
+    )
     report_path = (
         Path(config.output_dir)
         / f"rank-{config.rank:03d}-of-{config.world_size:03d}-report.json"
     )
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _write_export_report(report_path, report)
     return report
+
+
+def _audit_export_reports(
+    output_dir: str | Path,
+    *,
+    allow_partial: bool,
+) -> dict[str, Any]:
+    output_dir = Path(output_dir)
+    contract_path = output_dir / "contract.json"
+    if not contract_path.is_file():
+        raise FileNotFoundError(
+            f"Missing joint cache contract `{contract_path}`."
+        )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract_hash = str(contract.get("contract_hash", ""))
+
+    source_shards = {}
+    for path in sorted((output_dir / "episode_shards").glob("*.index.json")):
+        sidecar = json.loads(path.read_text(encoding="utf-8"))
+        source_shard = str(
+            sidecar.get("metadata", {}).get("source_shard_name", "")
+        )
+        if not source_shard:
+            raise RuntimeError(
+                f"Joint cache sidecar lacks source shard provenance: {path}."
+            )
+        if source_shard in source_shards:
+            raise RuntimeError(
+                f"Joint cache repeats source shard `{source_shard}`."
+            )
+        source_shards[source_shard] = path
+    if not source_shards:
+        raise FileNotFoundError("Joint cache has no shard sidecars.")
+
+    groups: dict[int, dict[int, tuple[Path, dict[str, Any]]]] = {}
+    for path in sorted(output_dir.glob("rank-*-of-*-report.json")):
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("contract_hash") != contract_hash:
+            continue
+        if report.get("schema") != JOINT_CACHE_EXPORT_REPORT_SCHEMA:
+            raise RuntimeError(
+                f"Export report `{path}` predates the completeness contract; "
+                "rerun the exporter to refresh rank reports."
+            )
+        rank = int(report.get("rank", -1))
+        world_size = int(report.get("world_size", 0))
+        if world_size <= 0 or rank < 0 or rank >= world_size:
+            raise RuntimeError(f"Export report `{path}` has invalid rank metadata.")
+        ranks = groups.setdefault(world_size, {})
+        if rank in ranks:
+            raise RuntimeError(
+                f"Duplicate export report for rank {rank}/{world_size}."
+            )
+        ranks[rank] = (path, report)
+    if not groups:
+        raise FileNotFoundError(
+            "Joint cache has no compatible rank export reports."
+        )
+
+    candidates = []
+    failures = []
+    for world_size, ranks in sorted(groups.items()):
+        expected_ranks = set(range(world_size))
+        if set(ranks) != expected_ranks:
+            failures.append(
+                f"world_size={world_size} missing ranks "
+                f"{sorted(expected_ranks - set(ranks))}"
+            )
+            continue
+        reported_sources: dict[str, tuple[int, dict[str, Any]]] = {}
+        planned_total = 0
+        selected_total = 0
+        episode_total = 0
+        window_total = 0
+        reports = []
+        group_complete = True
+        invalid = None
+        for rank in range(world_size):
+            path, report = ranks[rank]
+            planned = int(report.get("source_shards_planned", -1))
+            selected = int(report.get("source_shards_selected", -1))
+            completed = int(
+                report.get("source_shards_exported_or_reused", -1)
+            )
+            outputs = report.get("outputs")
+            if (
+                planned < 0
+                or selected < 0
+                or selected > planned
+                or completed != selected
+                or not isinstance(outputs, list)
+                or len(outputs) != selected
+                or bool(report.get("selection_complete"))
+                != (selected == planned)
+            ):
+                invalid = f"rank {rank}/{world_size} has inconsistent counts"
+                break
+            if (
+                sum(int(row["episodes"]) for row in outputs)
+                != int(report.get("episodes", -1))
+                or sum(int(row["windows"]) for row in outputs)
+                != int(report.get("windows", -1))
+            ):
+                invalid = f"rank {rank}/{world_size} has inconsistent totals"
+                break
+            for row in outputs:
+                source_shard = str(row.get("source_shard", ""))
+                if not source_shard or source_shard in reported_sources:
+                    invalid = (
+                        f"rank group {world_size} repeats or omits "
+                        "a source shard"
+                    )
+                    break
+                reported_sources[source_shard] = (rank, row)
+            if invalid is not None:
+                break
+            planned_total += planned
+            selected_total += selected
+            episode_total += int(report["episodes"])
+            window_total += int(report["windows"])
+            group_complete &= bool(report["selection_complete"])
+            reports.append(
+                {
+                    "path": path.name,
+                    "sha256": file_sha256(path),
+                    "rank": rank,
+                }
+            )
+        if invalid is not None:
+            failures.append(invalid)
+            continue
+        if set(reported_sources) != set(source_shards):
+            failures.append(
+                f"world_size={world_size} report/sidecar source sets differ"
+            )
+            continue
+        if not group_complete and not allow_partial:
+            failures.append(
+                f"world_size={world_size} selected {selected_total} of "
+                f"{planned_total} planned shards"
+            )
+            continue
+        completed_at = max(
+            float(report.get("completed_unix_seconds", 0.0))
+            for _, report in ranks.values()
+        )
+        candidates.append(
+            (
+                completed_at,
+                world_size,
+                {
+                    "schema": JOINT_CACHE_EXPORT_AUDIT_SCHEMA,
+                    "contract_hash": contract_hash,
+                    "status": "complete" if group_complete else "partial",
+                    "world_size": world_size,
+                    "source_shards_planned": planned_total,
+                    "source_shards_selected": selected_total,
+                    "episodes": episode_total,
+                    "windows": window_total,
+                    "reports": reports,
+                },
+            )
+        )
+    if not candidates:
+        detail = "; ".join(failures) or "no coherent report group"
+        raise RuntimeError(f"Joint cache export is incomplete: {detail}.")
+    return max(candidates, key=lambda value: (value[0], value[1]))[2]
 
 
 def finalize_exported_joint_cache(
     output_dir: str | Path,
+    *,
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
-    return finalize_joint_cache(output_dir)
+    audit = _audit_export_reports(
+        output_dir,
+        allow_partial=allow_partial,
+    )
+    summary = finalize_joint_cache(output_dir, export_audit=audit)
+    if (
+        int(summary["episodes"]) != int(audit["episodes"])
+        or int(summary["windows"]) != int(audit["windows"])
+        or int(summary["episode_shards"])
+        != int(audit["source_shards_selected"])
+    ):
+        raise RuntimeError(
+            "Finalized joint cache totals differ from its rank reports."
+        )
+    return summary

@@ -1241,6 +1241,11 @@ latent shard。每个 episode shard 的 SHA 在每个 reader 进程首次加载�
 RQ component/prefix 的变化数。同一原始 RLDS episode 的多个 keep-range segments 只计一个
 独立 parent episode。
 
+生产 finalize 还会核验同一 `world_size` 的全体 rank report、每个 rank 的计划/完成 shard
+数,以及 report 与磁盘 sidecar 的 source-shard 集合。缺任一 rank、少任一 shard 或混入旧
+report 都直接失败。仅 `--max-source-shards` 工程 smoke 可显式增加
+`--allow-partial-finalize`;该状态会写入 `summary.json`,不能冒充全量 cache。
+
 官方 RLDS 端点固定为:
 
 ```text
@@ -1303,7 +1308,9 @@ python scripts/export_joint_window_cache.py \
 ```
 
 `FASTWAM_ROOT` 可指仓库根目录或直接指包含 `fastwam/` 的 `src/`。中断后原命令续跑;contract
-不一致必须换 output directory,不能覆盖旧 shard。
+不一致必须换 output directory,不能覆盖旧 shard。正式 finalize 默认要求 8 份 rank report
+完整覆盖所有计划 shard;小规模 `--max-source-shards` smoke 才可显式使用
+`--allow-partial-finalize`。
 
 ### 14.4 正式 Gate 2
 

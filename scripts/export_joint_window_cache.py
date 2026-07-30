@@ -74,14 +74,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-source-shards", type=int)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--finalize-only", action="store_true")
+    parser.add_argument("--allow-partial-finalize", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     if args.finalize_only:
-        report = finalize_exported_joint_cache(args.output_dir)
+        report = finalize_exported_joint_cache(
+            args.output_dir,
+            allow_partial=args.allow_partial_finalize,
+        )
     else:
+        if args.allow_partial_finalize:
+            raise SystemExit(
+                "--allow-partial-finalize requires --finalize-only."
+            )
         required = {
             "--source-manifest": args.source_manifest,
             "--data-dir": args.data_dir,

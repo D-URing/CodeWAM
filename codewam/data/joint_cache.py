@@ -1069,7 +1069,11 @@ def write_joint_episode_shard(
     return sidecar
 
 
-def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
+def finalize_joint_cache(
+    cache_dir: str | Path,
+    *,
+    export_audit: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     cache_dir = Path(cache_dir)
     contract_path = cache_dir / "contract.json"
     if not contract_path.is_file():
@@ -1230,6 +1234,9 @@ def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
     summary = {
         "schema": JOINT_CACHE_SUMMARY_SCHEMA,
         "contract_hash": contract_hash,
+        "export_audit": (
+            None if export_audit is None else dict(export_audit)
+        ),
         "episodes": len(episode_rows),
         "windows": len(parsed_windows),
         "episode_shards": len(shard_rows),

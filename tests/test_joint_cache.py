@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -23,6 +24,10 @@ from codewam.data.joint_cache import (
     finalize_joint_cache,
     write_joint_cache_contract,
     write_joint_episode_shard,
+)
+from codewam.data.joint_cache_export import (
+    JOINT_CACHE_EXPORT_REPORT_SCHEMA,
+    finalize_exported_joint_cache,
 )
 from tests.model_fixtures import synthetic_artifacts
 
@@ -124,9 +129,48 @@ class JointCacheTests(unittest.TestCase):
             (episode,),
             windows,
             contract_hash=contract["contract_hash"],
+            metadata={"source_shard_name": "synthetic.tfrecord"},
         )
         summary = finalize_joint_cache(root)
         return episode, windows, summary
+
+    def _write_export_report(
+        self,
+        root: Path,
+        *,
+        contract_hash: str,
+        planned: int,
+        world_size: int = 1,
+        rank: int = 0,
+    ) -> None:
+        selected = 1
+        payload = {
+            "schema": JOINT_CACHE_EXPORT_REPORT_SCHEMA,
+            "contract_hash": contract_hash,
+            "rank": rank,
+            "world_size": world_size,
+            "source_shards_planned": planned,
+            "source_shards_selected": selected,
+            "source_shards_exported_or_reused": selected,
+            "selection_complete": selected == planned,
+            "max_source_shards": None if selected == planned else selected,
+            "episodes": 1,
+            "windows": 6,
+            "elapsed_seconds": 1.0,
+            "completed_unix_seconds": 10.0,
+            "outputs": [
+                {
+                    "source_shard": "synthetic.tfrecord",
+                    "episodes": 1,
+                    "windows": 6,
+                }
+            ],
+        }
+        path = root / f"rank-{rank:03d}-of-{world_size:03d}-report.json"
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     def test_round_trip_deduplicates_episode_and_materializes_model_batch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -163,6 +207,62 @@ class JointCacheTests(unittest.TestCase):
         self.assertFalse(batch.model.supervision.action.item())
         self.assertTrue(batch.model.supervision.dynamics.item())
         self.assertFalse(batch.model.policy.language_valid.any())
+
+    def test_export_finalize_records_a_complete_rank_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, initial = self._write_cache(root)
+            self._write_export_report(
+                root,
+                contract_hash=initial["contract_hash"],
+                planned=1,
+            )
+            summary = finalize_exported_joint_cache(root)
+
+        self.assertEqual(summary["export_audit"]["status"], "complete")
+        self.assertEqual(summary["export_audit"]["world_size"], 1)
+        self.assertEqual(
+            summary["export_audit"]["source_shards_selected"],
+            1,
+        )
+
+    def test_export_finalize_rejects_partial_selection_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, initial = self._write_cache(root)
+            self._write_export_report(
+                root,
+                contract_hash=initial["contract_hash"],
+                planned=2,
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "selected 1 of 2 planned shards",
+            ):
+                finalize_exported_joint_cache(root)
+            summary = finalize_exported_joint_cache(
+                root,
+                allow_partial=True,
+            )
+
+        self.assertEqual(summary["export_audit"]["status"], "partial")
+
+    def test_export_finalize_rejects_a_missing_rank_even_when_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, initial = self._write_cache(root)
+            self._write_export_report(
+                root,
+                contract_hash=initial["contract_hash"],
+                planned=1,
+                world_size=2,
+                rank=0,
+            )
+            with self.assertRaisesRegex(RuntimeError, "missing ranks.*1"):
+                finalize_exported_joint_cache(
+                    root,
+                    allow_partial=True,
+                )
 
     def test_writer_rejects_a_window_whose_code_label_changed(self) -> None:
         chart = make_chart()
