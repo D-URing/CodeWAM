@@ -208,7 +208,7 @@ BridgeData V2 frozen-transfer and independent-refit replication
 - 已实现:RLDS endpoint audit、冻结 Q2/Q3/Q5 causal assigner、未池化多相机
   `JointWindowCache v1`、source-rate action/proprio、rank-aware Wan exporter、verified
   dataloader/collator,以及等预算 Gate 2 runner 与 episode-block bootstrap。
-- 已验证:159 项单元测试(本机仅 1 项 CUDA 专项跳过)、单卡/双 rank centers 等价、
+- 已验证:167 项单元测试(本机仅 1 项 CUDA 专项跳过)、单卡/双 rank centers 等价、
   synthetic Q2/Q3/Q5 端到端 smoke、
   58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
   causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较、val/test 一致的时间反事实

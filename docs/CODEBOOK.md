@@ -982,7 +982,7 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 159 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
+当前 167 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
 DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、

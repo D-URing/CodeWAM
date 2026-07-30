@@ -4,8 +4,9 @@ import hashlib
 import json
 import os
 from collections import Counter, OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -67,29 +68,38 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
-    lines = [
-        json.dumps(dict(row), sort_keys=True, separators=(",", ":"))
-        for row in rows
-    ]
-    _atomic_write_text(path, "\n".join(lines) + ("\n" if lines else ""))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            for row in rows:
+                handle.write(
+                    json.dumps(
+                        dict(row),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+                handle.write("\n")
+        mode = (path.stat().st_mode & 0o777) if path.exists() else 0o644
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(),
-        start=1,
-    ):
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Invalid JSON at {path}:{line_number}.") from exc
-        if not isinstance(payload, dict):
-            raise ValueError(f"Expected an object at {path}:{line_number}.")
-        rows.append(payload)
-    return rows
+def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON at {path}:{line_number}.") from exc
+            if not isinstance(payload, dict):
+                raise ValueError(f"Expected an object at {path}:{line_number}.")
+            yield payload
 
 
 @dataclass(frozen=True)
@@ -869,6 +879,21 @@ def _sidecar_path(shard_path: Path) -> Path:
     return shard_path.with_suffix(".index.json")
 
 
+def _load_joint_shard_sidecar(
+    path: Path,
+    *,
+    contract_hash: str,
+) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != JOINT_SHARD_INDEX_SCHEMA
+        or payload.get("contract_hash") != contract_hash
+    ):
+        raise RuntimeError(f"Invalid joint shard sidecar `{path}`.")
+    return payload
+
+
 def _transition_coverage(
     windows: Sequence[JointWindowRecord],
 ) -> dict[str, Any]:
@@ -1086,26 +1111,22 @@ def finalize_joint_cache(
     )
     if not sidecar_paths:
         raise FileNotFoundError("Joint cache has no shard sidecars.")
-    sidecars: list[dict[str, Any]] = []
-    window_rows: list[dict[str, Any]] = []
+    parsed_windows: list[JointWindowRecord] = []
     for sidecar_path in sidecar_paths:
-        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        if (
-            sidecar.get("schema") != JOINT_SHARD_INDEX_SCHEMA
-            or sidecar.get("contract_hash") != contract_hash
-        ):
-            raise RuntimeError(f"Invalid joint shard sidecar `{sidecar_path}`.")
-        sidecars.append(sidecar)
-        window_rows.extend(sidecar.get("windows", ()))
-    parsed_windows = [
-        JointWindowRecord.from_dict(row) for row in window_rows
-    ]
-    window_ids = [window.window_id for window in parsed_windows]
-    if len(window_ids) != len(set(window_ids)):
-        raise RuntimeError("Joint cache contains duplicate window IDs.")
+        sidecar = _load_joint_shard_sidecar(
+            sidecar_path,
+            contract_hash=contract_hash,
+        )
+        for payload in sidecar.get("windows", ()):
+            parsed_windows.append(JointWindowRecord.from_dict(payload))
     if not parsed_windows:
         raise RuntimeError("Joint cache contains no valid windows.")
     parsed_windows.sort(key=lambda row: row.window_id)
+    if any(
+        left.window_id == right.window_id
+        for left, right in pairwise(parsed_windows)
+    ):
+        raise RuntimeError("Joint cache contains duplicate window IDs.")
     window_positions = {
         window.window_id: index
         for index, window in enumerate(parsed_windows)
@@ -1123,8 +1144,13 @@ def finalize_joint_cache(
     filled_actions = torch.zeros(len(parsed_windows), dtype=torch.bool)
 
     episode_rows: list[dict[str, Any]] = []
+    episode_ids: set[str] = set()
     shard_rows = []
-    for sidecar in sidecars:
+    for sidecar_path in sidecar_paths:
+        sidecar = _load_joint_shard_sidecar(
+            sidecar_path,
+            contract_hash=contract_hash,
+        )
         shard_path = cache_dir / str(sidecar["episode_shard"])
         episodes = validate_joint_episode_shard(
             shard_path,
@@ -1147,6 +1173,9 @@ def finalize_joint_cache(
                 raise RuntimeError(
                     f"Joint sidecar episode locator differs: {shard_path}."
                 )
+            if episode.episode_id in episode_ids:
+                raise RuntimeError("Joint cache contains duplicate episode IDs.")
+            episode_ids.add(episode.episode_id)
             episode_rows.append(
                 {
                     **locator,
@@ -1192,16 +1221,14 @@ def finalize_joint_cache(
                 "windows": len(sidecar.get("windows", ())),
             }
         )
-    episode_ids = [row["episode_id"] for row in episode_rows]
-    if len(episode_ids) != len(set(episode_ids)):
-        raise RuntimeError("Joint cache contains duplicate episode IDs.")
     unknown = sorted(
-        {window.episode_id for window in parsed_windows} - set(episode_ids)
+        {window.episode_id for window in parsed_windows} - episode_ids
     )
     if unknown:
         raise RuntimeError(f"Joint cache windows reference unknown episodes: {unknown}.")
     if not filled_actions.all():
         raise RuntimeError("Joint cache action index is incomplete.")
+    del filled_actions, window_positions
     episode_rows.sort(key=lambda row: row["episode_id"])
     episodes_path = cache_dir / "episodes.jsonl"
     windows_path = cache_dir / "windows.jsonl"
@@ -1316,21 +1343,30 @@ class JointWindowCache:
             path = self.cache_dir / row["path"]
             if file_sha256(path) != row["sha256"]:
                 raise RuntimeError(f"Joint cache index hash changed: {path}.")
-        locators = _read_jsonl(self.cache_dir / "episodes.jsonl")
-        self._locators = {row["episode_id"]: row for row in locators}
-        if len(self._locators) != len(locators):
-            raise RuntimeError("Joint cache episode index contains duplicates.")
-        all_windows = [
-            JointWindowRecord.from_dict(row)
-            for row in _read_jsonl(self.cache_dir / "windows.jsonl")
-        ]
-        selected = tuple(
-            (index, window)
-            for index, window in enumerate(all_windows)
-            if split is None or window.split == split
-        )
-        self._window_positions = tuple(index for index, _ in selected)
-        self.windows = tuple(window for _, window in selected)
+        self._locators: dict[str, dict[str, Any]] = {}
+        for row in _iter_jsonl(self.cache_dir / "episodes.jsonl"):
+            episode_id = str(row["episode_id"])
+            if episode_id in self._locators:
+                raise RuntimeError("Joint cache episode index contains duplicates.")
+            self._locators[episode_id] = row
+        window_positions = []
+        selected_windows = []
+        window_count = 0
+        for index, row in enumerate(
+            _iter_jsonl(self.cache_dir / "windows.jsonl")
+        ):
+            window = JointWindowRecord.from_dict(row)
+            window_count += 1
+            if split is None or window.split == split:
+                window_positions.append(index)
+                selected_windows.append(window)
+        self._window_positions = tuple(window_positions)
+        self.windows = tuple(selected_windows)
+        del selected_windows, window_positions
+        if window_count != int(self.summary["windows"]):
+            raise RuntimeError("Joint cache window count differs from its summary.")
+        if len(self._locators) != int(self.summary["episodes"]):
+            raise RuntimeError("Joint cache episode count differs from its summary.")
         try:
             self.window_shards = tuple(
                 str(self._locators[window.episode_id]["episode_shard"])
@@ -1367,7 +1403,7 @@ class JointWindowCache:
             or self._action_valid.dtype != torch.bool
             or tuple(self._action_valid.shape)
             != tuple(self._action_chunks.shape[:2])
-            or int(self._action_chunks.shape[0]) != len(all_windows)
+            or int(self._action_chunks.shape[0]) != window_count
         ):
             raise RuntimeError("Joint cache action index has invalid tensors.")
 

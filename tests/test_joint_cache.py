@@ -305,6 +305,30 @@ class JointCacheTests(unittest.TestCase):
                     ):
                         JointWindowCache(root)
 
+    def test_loader_streams_jsonl_indices_without_read_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_cache(root)
+            original_read_text = Path.read_text
+
+            def reject_jsonl_read_text(
+                path: Path,
+                *args: object,
+                **kwargs: object,
+            ) -> str:
+                if path.suffix == ".jsonl":
+                    raise AssertionError("JSONL indices must be streamed.")
+                return original_read_text(path, *args, **kwargs)
+
+            with mock.patch.object(
+                Path,
+                "read_text",
+                new=reject_jsonl_read_text,
+            ):
+                cache = JointWindowCache(root, split="train")
+
+        self.assertEqual(len(cache), 6)
+
     def test_shard_hash_is_checked_once_across_lru_reloads(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

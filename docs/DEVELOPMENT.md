@@ -414,7 +414,8 @@ allocator 高水位并 OOM,两 rank 稳定;四/八 rank 建议至少约 32/64 GB
 会选择完整覆盖全部 shard 的一致 report group。
 finalize 默认核验所有 rank report 与 source-shard sidecar 完整对应。使用
 `--max-source-shards` 的工程 smoke 需要额外传 `--allow-partial-finalize`;缺失 rank 即使在
-partial 模式下也会失败。
+partial 模式下也会失败。完整 finalize 逐个扫描 sidecar 并原子流式写出 JSONL,不会同时保留
+原始 sidecar、字典窗口和解析窗口三份元数据。
 
 cache finalize 后运行 Gate 2:
 
@@ -448,7 +449,9 @@ finalize 生成紧凑的 `window_actions.pt`,并在 summary 中预报各 split/f
 parent-episode coverage;同一原始轨迹的多个 keep-range 不会被重复计数。Gate 2 以
 shard-local 随机顺序读取 latent,错误动作直接查询该 mmap index;同一 condition 的
 DataLoader workers 跨 epoch 保留,评估条件也按 split 复用 workers,避免重复启动和散列
-shard。三个 seed 不会重复构建动作表,汇总器也会拒绝除 seed/permutation 外任何协议差异。
+shard。每个 loader 按行读取索引,只构造目标 split 的窗口对象,不会先物化完整 JSON 文本或
+全 split 字典列表。三个 seed 不会重复构建动作表,汇总器也会拒绝除 seed/permutation 外任何
+协议差异。
 
 独立 CodeWAM v1 与数据链的本机最低验收:
 
@@ -459,7 +462,7 @@ python scripts/smoke_codewam_v1.py \
   --output runs/model_smoke/codewam_v1.json
 ```
 
-当前 159 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
+当前 167 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
 JointWindowCache、Gate 2 controls 和 resume;本机只跳过一项 CUDA 专项。合成 model smoke
 仍标记 `scientific_evidence=false`;真实 2-step Gate 2 smoke 同样只能证明工程链路。
 
