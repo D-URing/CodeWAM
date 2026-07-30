@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 import tempfile
 import unittest
 from dataclasses import replace
@@ -188,6 +189,7 @@ class JointCacheTests(unittest.TestCase):
         self.assertEqual(len(windows), 6)
         self.assertEqual(summary["episodes"], 1)
         self.assertEqual(summary["windows"], 6)
+        self.assertEqual(pickle.loads(pickle.dumps(windows[0])), windows[0])
         self.assertEqual(tuple(batch.model.state.latents.shape), (2, 8, 1, 4, 4, 4))
         self.assertEqual(tuple(batch.model.actions.values.shape), (2, 16, 7))
         self.assertEqual(tuple(batch.model.codes.code_ids.shape), (2, 3, 3))

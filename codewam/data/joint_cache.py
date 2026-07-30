@@ -484,7 +484,7 @@ class JointEpisode:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class JointWindowRecord:
     window_id: str
     episode_id: str
