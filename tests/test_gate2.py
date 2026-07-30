@@ -207,6 +207,7 @@ class Gate2Tests(unittest.TestCase):
                     amp_dtype="float32",
                     calibration_bins=5,
                     bootstrap_samples=20,
+                    minimum_gate_episodes=3,
                     model=model,
                 )
             )
@@ -231,7 +232,8 @@ class Gate2Tests(unittest.TestCase):
             {1},
         )
         self.assertEqual(report["conditions"]["TRUE"]["test"]["windows"], 12)
-        self.assertIn(report["gate"]["verdict"], {"pass", "fail", "inconclusive"})
+        self.assertEqual(report["gate"]["verdict"], "invalid")
+        self.assertEqual(report["gate"]["minimum_gate_episodes"], 3)
         self.assertEqual(
             report["conditions"]["TRUE"]["test"]["strata"]["all"][
                 "classification_unit"

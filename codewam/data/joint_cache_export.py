@@ -5,7 +5,7 @@ import gc
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +103,18 @@ def _release_process_memory(device: torch.device) -> None:
         torch.cuda.empty_cache()
 
 
+def _resolve_fastwam_src(path: str | Path) -> Path:
+    root = Path(path).resolve()
+    candidates = (root, root / "src")
+    for candidate in candidates:
+        if (candidate / "fastwam").is_dir():
+            return candidate
+    raise FileNotFoundError(
+        f"`{root}` is neither a FastWAM package root nor a repository "
+        "containing src/fastwam."
+    )
+
+
 def _work_stem(work: DroidShardWork) -> str:
     indices = {
         int(record.metadata["rlds_shard_index"]) for record in work.records
@@ -159,6 +171,7 @@ def _create_contract(
     for path in (source_manifest, endpoint_audit, vae_path):
         if not path.is_file():
             raise FileNotFoundError(f"Missing joint export input `{path}`.")
+    fastwam_src = _resolve_fastwam_src(config.fastwam_src)
     _load_endpoint_audit(endpoint_audit)
     preprocess_revision = (
         f"rgb-direct-bilinear-{config.image_height}x{config.image_width}"
@@ -180,6 +193,29 @@ def _create_contract(
             Path(__file__).parents[1]
             / "codebook_eval"
             / "wan_probe_export.py"
+        ),
+        "fastwam_wan_video_vae": (
+            fastwam_src
+            / "fastwam"
+            / "models"
+            / "wan22"
+            / "wan_video_vae.py"
+        ),
+        "fastwam_wan_io": (
+            fastwam_src
+            / "fastwam"
+            / "models"
+            / "wan22"
+            / "helpers"
+            / "io.py"
+        ),
+        "fastwam_wan_state_dict_converter": (
+            fastwam_src
+            / "fastwam"
+            / "models"
+            / "wan22"
+            / "helpers"
+            / "state_dict_converters.py"
         ),
     }
     return create_joint_cache_contract(
@@ -401,6 +437,10 @@ def export_joint_window_cache(
         )
         return report
     vae = None
+    vae_config = replace(
+        config,
+        fastwam_src=str(_resolve_fastwam_src(config.fastwam_src)),
+    )
     assigner = FrozenCausalCodeAssigner(chart)
     current_shard: str | None = None
     current_episodes: list[JointEpisode] = []
@@ -453,7 +493,7 @@ def export_joint_window_cache(
             flush()
             current_shard = episode.source_shard
         if vae is None:
-            vae = _load_wan_vae(config)
+            vae = _load_wan_vae(vae_config)
             _release_process_memory(device)
         if episode.manifest_key is None:
             raise RuntimeError("Manifest-backed DROID episode lost its key.")

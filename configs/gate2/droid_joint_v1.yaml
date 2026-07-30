@@ -15,6 +15,7 @@ device: cuda
 amp_dtype: bfloat16
 calibration_bins: 15
 bootstrap_samples: 2000
+minimum_gate_episodes: 30
 
 model:
   variant: C2

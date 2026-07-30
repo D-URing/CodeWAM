@@ -97,6 +97,7 @@ class Gate2RunConfig:
     amp_dtype: str = "bfloat16"
     calibration_bins: int = 15
     bootstrap_samples: int = 2000
+    minimum_gate_episodes: int = 30
     model: CodeWAMConfig = field(default_factory=CodeWAMConfig)
 
     def __post_init__(self) -> None:
@@ -110,6 +111,7 @@ class Gate2RunConfig:
             self.epochs,
             self.calibration_bins,
             self.bootstrap_samples,
+            self.minimum_gate_episodes,
         )
         if any(value <= 0 for value in positive):
             raise ValueError("Gate2 batch, epoch and metric counts must be positive.")
@@ -1265,6 +1267,8 @@ def _train_condition(
     mode = _condition_mode(condition)
     stopped = False
     for epoch in range(start_epoch, config.epochs):
+        if config.max_steps is not None and global_step >= config.max_steps:
+            break
         epoch_indices = _rank_indices(
             train_indices,
             rank=context.rank,
@@ -1561,6 +1565,8 @@ def _paired_episode_bootstrap(
 def _gate_verdict(
     comparisons: Mapping[str, Mapping[str, Any]],
     permutation: FixedActionPermutation,
+    *,
+    minimum_episodes: int,
 ) -> dict[str, Any]:
     required = (
         "TRUE-vs-NOACT",
@@ -1576,13 +1582,17 @@ def _gate_verdict(
     missing = [
         name
         for name in required
-        if int(comparisons[name]["episodes"]) < 2
+        if int(comparisons[name]["episodes"]) < minimum_episodes
     ]
     if missing:
         return {
             "verdict": "invalid",
-            "reason": f"Too few changed-code episodes for {missing}.",
+            "reason": (
+                f"Fewer than {minimum_episodes} changed-code episodes for "
+                f"{missing}."
+            ),
             "required_comparisons": list(required),
+            "minimum_gate_episodes": minimum_episodes,
         }
     upper = [float(comparisons[name]["ci95"][1]) for name in required]
     lower = [float(comparisons[name]["ci95"][0]) for name in required]
@@ -1608,6 +1618,7 @@ def _gate_verdict(
         "verdict": verdict,
         "reason": reason,
         "required_comparisons": list(required),
+        "minimum_gate_episodes": minimum_episodes,
         "decision_rule": "all paired 95% CI upper bounds must be below zero",
     }
 
@@ -1772,7 +1783,11 @@ def run_gate2(config: Gate2RunConfig) -> dict[str, Any]:
                 comparison_sources.items()
             )
         }
-        gate = _gate_verdict(comparisons, permutation)
+        gate = _gate_verdict(
+            comparisons,
+            permutation,
+            minimum_episodes=config.minimum_gate_episodes,
+        )
         clean_conditions = {
             condition: {
                 split: _strip_episode_rows(split_report)

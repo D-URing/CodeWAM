@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 
@@ -13,6 +15,7 @@ from codewam.data.frozen_assignment import (
 from codewam.data.joint_cache import JointWindowConfig, build_joint_windows
 from codewam.data.joint_cache_export import (
     JointCacheExportConfig,
+    _resolve_fastwam_src,
     encode_joint_segment,
 )
 from tests.model_fixtures import synthetic_artifacts
@@ -38,6 +41,15 @@ class FakeWanVAE:
 
 
 class JointCacheExportTests(unittest.TestCase):
+    def test_fastwam_repository_root_resolves_to_src_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "src" / "fastwam"
+            package.mkdir(parents=True)
+            expected = (root / "src").resolve()
+            self.assertEqual(_resolve_fastwam_src(root), expected)
+            self.assertEqual(_resolve_fastwam_src(root / "src"), expected)
+
     def test_encode_segment_preserves_wan_and_rlds_endpoint_alignment(self) -> None:
         torch.manual_seed(43)
         steps = 65
