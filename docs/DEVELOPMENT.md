@@ -433,7 +433,8 @@ torchrun --standalone --nproc-per-node=8 \
 
 输出包括 immutable `protocol.json`、共享 `initialization.pt`、NOACT/TRUE/SHUFFLE 的
 latest/final checkpoints 和 `report.json`。同目录续跑只接受相同 protocol。正式 gate 默认
-至少 30 个独立 changed-code test episodes;不足返回 `invalid`。
+至少 30 个独立 changed-code test episodes;不足返回 `invalid`。protocol 同时固定 DDP
+world size、单 rank batch 和有效全局 batch,不能跨卡数续跑同一实验目录。
 
 三个 seed 完成后统一核验:
 

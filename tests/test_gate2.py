@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -269,6 +270,9 @@ class Gate2Tests(unittest.TestCase):
                 map_location="cpu",
                 weights_only=False,
             )["model"]
+            protocol = json.loads(
+                (root / "gate2" / "protocol.json").read_text(encoding="utf-8")
+            )
             cache = JointWindowCache(cache_dir)
             for index in (0, len(cache) - 1):
                 actions, valid = cache.action_chunk(index)
@@ -281,6 +285,16 @@ class Gate2Tests(unittest.TestCase):
         action_key = "codewam.code_dynamics.action_projection.weight"
         torch.testing.assert_close(noact[action_key], initialization[action_key])
         self.assertEqual(loader_calls, 5)
+        self.assertEqual(
+            protocol["distributed"],
+            {
+                "world_size": 1,
+                "per_rank_batch_size": 2,
+                "effective_batch_size": 2,
+                "per_rank_eval_batch_size": 4,
+                "effective_eval_batch_size": 4,
+            },
+        )
         self.assertEqual(
             {
                 result["optimizer_steps"]

@@ -1139,7 +1139,11 @@ def _protocol(
     cache: JointWindowCache,
     chart: FrozenArtifactChart,
     permutation: FixedActionPermutation,
+    *,
+    world_size: int,
 ) -> dict[str, Any]:
+    if world_size <= 0:
+        raise ValueError("Gate2 protocol world size must be positive.")
     run_values = asdict(config)
     for key in ("cache_dir", "output_dir", "artifact_paths"):
         run_values.pop(key)
@@ -1165,6 +1169,13 @@ def _protocol(
         "primary_stratum": "changed",
         "primary_metric": "normalized_nll",
         "loss": "future_code_cross_entropy_only",
+        "distributed": {
+            "world_size": world_size,
+            "per_rank_batch_size": config.batch_size,
+            "effective_batch_size": world_size * config.batch_size,
+            "per_rank_eval_batch_size": config.eval_batch_size,
+            "effective_eval_batch_size": world_size * config.eval_batch_size,
+        },
         "run_config": run_values,
         "implementation_sha256": {
             "gate2": file_sha256(Path(__file__)),
@@ -1661,7 +1672,13 @@ def run_gate2(config: Gate2RunConfig) -> dict[str, Any]:
                 f"Gate2 needs at least {minimum_train} train windows for "
                 f"{context.world_size} ranks."
             )
-        protocol = _protocol(config, cache, chart, permutation)
+        protocol = _protocol(
+            config,
+            cache,
+            chart,
+            permutation,
+            world_size=context.world_size,
+        )
         protocol_path = Path(config.output_dir) / "protocol.json"
         if context.is_primary:
             if protocol_path.is_file():
