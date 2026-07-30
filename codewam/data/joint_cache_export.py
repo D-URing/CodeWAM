@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import fcntl
 import gc
 import json
 import os
@@ -105,6 +106,39 @@ def _release_process_memory(device: torch.device) -> None:
         pass
     if device.type == "cuda":
         torch.cuda.empty_cache()
+
+
+def _load_rank_vae(
+    config: JointCacheExportConfig,
+    *,
+    contract_hash: str,
+) -> Any:
+    device = torch.device(config.device)
+    local_world_size = int(
+        os.getenv("LOCAL_WORLD_SIZE", str(config.world_size))
+    )
+    if local_world_size <= 1:
+        vae = _load_wan_vae(config)
+        _release_process_memory(device)
+        return vae
+
+    lock_root = Path(
+        os.getenv("CODEWAM_VAE_LOAD_LOCK_DIR", "/tmp")
+    ).resolve()
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_root / f"codewam-vae-load-{contract_hash}.lock"
+    print(
+        f"Rank {config.rank} waiting for node-local VAE load lock "
+        f"{lock_path}.",
+        flush=True,
+    )
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        print(f"Rank {config.rank} loading Wan-VAE.", flush=True)
+        vae = _load_wan_vae(config)
+        _release_process_memory(device)
+        print(f"Rank {config.rank} finished Wan-VAE load.", flush=True)
+    return vae
 
 
 def _resolve_fastwam_src(path: str | Path) -> Path:
@@ -536,8 +570,10 @@ def export_joint_window_cache(
             flush()
             current_shard = episode.source_shard
         if vae is None:
-            vae = _load_wan_vae(vae_config)
-            _release_process_memory(device)
+            vae = _load_rank_vae(
+                vae_config,
+                contract_hash=contract["contract_hash"],
+            )
         if episode.manifest_key is None:
             raise RuntimeError("Manifest-backed DROID episode lost its key.")
         record = records_by_key[episode.manifest_key]

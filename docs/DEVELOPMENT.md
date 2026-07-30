@@ -403,6 +403,8 @@ PYTHONPATH=. python scripts/export_joint_window_cache.py \
 
 8 卡时用 `torchrun --nproc-per-node=8` 包住第一条命令并省略 `--device`;入口自动把每个进程
 映射到 `cuda:$LOCAL_RANK`。每个 rank 读取不同完整 TFRecord shards,不做 DDP 梯度同步。
+同一节点的 rank 会用本地文件锁依次加载 VAE checkpoint 并回收 CPU 临时内存;模型进入各自
+GPU 后数据处理仍完全并行,避免 pod 主存峰值随 GPU 数线性叠加。
 finalize 默认核验所有 rank report 与 source-shard sidecar 完整对应。使用
 `--max-source-shards` 的工程 smoke 需要额外传 `--allow-partial-finalize`;缺失 rank 即使在
 partial 模式下也会失败。

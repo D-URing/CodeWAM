@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import torch
 
@@ -15,6 +17,7 @@ from codewam.data.frozen_assignment import (
 from codewam.data.joint_cache import JointWindowConfig, build_joint_windows
 from codewam.data.joint_cache_export import (
     JointCacheExportConfig,
+    _load_rank_vae,
     _resolve_fastwam_src,
     encode_joint_segment,
 )
@@ -41,6 +44,54 @@ class FakeWanVAE:
 
 
 class JointCacheExportTests(unittest.TestCase):
+    def test_multi_rank_vae_load_uses_a_node_local_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = JointCacheExportConfig(
+                source_manifest="manifest.jsonl",
+                data_dir="data",
+                output_dir="output",
+                endpoint_audit="endpoint.json",
+                artifact_paths={},
+                chart_name="droid",
+                vae_path="vae.pt",
+                fastwam_src="FastWAM",
+                rank=2,
+                world_size=4,
+                device="cpu",
+                dtype="float32",
+            )
+            contract_hash = "a" * 64
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "LOCAL_WORLD_SIZE": "4",
+                        "CODEWAM_VAE_LOAD_LOCK_DIR": temporary,
+                    },
+                ),
+                mock.patch(
+                    "codewam.data.joint_cache_export._load_wan_vae",
+                    return_value=mock.sentinel.vae,
+                ) as load,
+                mock.patch(
+                    "codewam.data.joint_cache_export._release_process_memory",
+                ) as release,
+            ):
+                result = _load_rank_vae(
+                    config,
+                    contract_hash=contract_hash,
+                )
+
+            self.assertIs(result, mock.sentinel.vae)
+            load.assert_called_once_with(config)
+            release.assert_called_once_with(torch.device("cpu"))
+            self.assertTrue(
+                (
+                    Path(temporary)
+                    / f"codewam-vae-load-{contract_hash}.lock"
+                ).is_file()
+            )
+
     def test_fastwam_repository_root_resolves_to_src_package(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

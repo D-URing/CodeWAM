@@ -1288,6 +1288,11 @@ TRUE@NOACT 和 TRUE@SHUFFLE 均完成 GPU 前向、流式指标、checkpoint 与
 exporter 不使用 DDP 梯度同步;`torchrun` 只提供 rank/world/local-rank。每个 rank 拥有完整
 TFRecord source shards,`LOCAL_RANK` 自动选择对应 GPU:
 
+多 rank 不同时反序列化 Wan-VAE checkpoint。每个节点使用 `/tmp` 下按 cache contract
+命名的文件锁,依次完成 checkpoint load、模型迁移到各自 GPU 和 CPU allocator 回收;锁释放
+后各 rank 的 JPEG decode、VAE encode、冻结赋码和 shard 写入完全并行。这样避免受限 pod
+主存被多个约 2.8GB checkpoint load 峰值击穿,不串行化正式导出。
+
 ```bash
 torchrun --standalone --nproc-per-node=8 \
   scripts/export_joint_window_cache.py \
