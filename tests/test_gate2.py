@@ -25,6 +25,7 @@ from codewam.data.joint_cache import (
 )
 from codewam.experiments.gate2 import (
     Gate2RunConfig,
+    _IndexSampler,
     _rank_indices,
     build_fixed_action_permutation,
     run_gate2,
@@ -144,6 +145,13 @@ def _write_fixture(root: Path) -> tuple[Path, dict[str, str]]:
 
 
 class Gate2Tests(unittest.TestCase):
+    def test_index_sampler_can_change_epochs_without_rebuilding_loader(self) -> None:
+        sampler = _IndexSampler((1, 2, 3))
+        self.assertEqual(list(sampler), [1, 2, 3])
+        sampler.set_indices((4, 5))
+        self.assertEqual(list(sampler), [4, 5])
+        self.assertEqual(len(sampler), 2)
+
     def test_action_permutation_is_fixed_group_local_and_deranged(self) -> None:
         def row(index: int, split: str, episode: str) -> JointWindowRecord:
             return JointWindowRecord(

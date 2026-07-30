@@ -1236,7 +1236,9 @@ imitation supervision,不关闭 Gate 2 dynamics。
 finalize 额外生成 `window_actions.pt`:它只复制体积很小的 source-rate action chunks,不复制
 视觉 latent。Gate 2 每个 epoch 先随机 shard 顺序、再随机 shard 内窗口;错误动作从该 mmap
 action index 读取。这样仍保持固定随机对照,但不会因 donor 位于另一 episode 而反复加载大
-latent shard。每个 episode shard 的 SHA 在每个 reader 进程首次加载时验证一次。
+latent shard。每个 learned condition 复用同一组 DataLoader workers,epoch 只更新 sampler;
+每个 episode shard 的 SHA 因而在每个 condition/reader 进程首次加载时验证一次,不会每轮
+重启 worker 后重新散列。
 `summary.json` 同时按 split/Q2/Q3/Q5 报告 changed windows、changed parent episodes 和每层
 RQ component/prefix 的变化数。同一原始 RLDS episode 的多个 keep-range segments 只计一个
 独立 parent episode。

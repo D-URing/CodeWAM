@@ -297,6 +297,9 @@ class _IndexSampler(Sampler[int]):
     def __init__(self, indices: Sequence[int]):
         self.indices = tuple(int(value) for value in indices)
 
+    def set_indices(self, indices: Sequence[int]) -> None:
+        self.indices = tuple(int(value) for value in indices)
+
     def __iter__(self):
         return iter(self.indices)
 
@@ -357,7 +360,7 @@ def _rank_indices(
 
 def _make_loader(
     dataset: _Gate2Dataset,
-    indices: Sequence[int],
+    sampler: Sampler[int],
     *,
     config: Gate2RunConfig,
     batch_size: int,
@@ -365,7 +368,7 @@ def _make_loader(
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        sampler=_IndexSampler(indices),
+        sampler=sampler,
         num_workers=config.num_workers,
         pin_memory=config.device.startswith("cuda"),
         persistent_workers=config.num_workers > 0,
@@ -1295,23 +1298,26 @@ def _train_condition(
         scaler.load_state_dict(dict(scaler_state))
     mode = _condition_mode(condition)
     stopped = False
+    sampler = _IndexSampler(())
+    loader = _make_loader(
+        dataset,
+        sampler,
+        config=config,
+        batch_size=config.batch_size,
+    )
     for epoch in range(start_epoch, config.epochs):
         if config.max_steps is not None and global_step >= config.max_steps:
             break
-        epoch_indices = _rank_indices(
-            train_indices,
-            rank=context.rank,
-            world_size=context.world_size,
-            seed=config.seed,
-            epoch=epoch,
-            training=True,
-            group_keys=dataset.cache.window_shards,
-        )
-        loader = _make_loader(
-            dataset,
-            epoch_indices,
-            config=config,
-            batch_size=config.batch_size,
+        sampler.set_indices(
+            _rank_indices(
+                train_indices,
+                rank=context.rank,
+                world_size=context.world_size,
+                seed=config.seed,
+                epoch=epoch,
+                training=True,
+                group_keys=dataset.cache.window_shards,
+            )
         )
         wrapped.train()
         loss_sum = 0.0
@@ -1455,7 +1461,7 @@ def _evaluate_model(
     )
     loader = _make_loader(
         dataset,
-        rank_indices,
+        _IndexSampler(rank_indices),
         config=config,
         batch_size=config.eval_batch_size,
     )
@@ -1513,7 +1519,7 @@ def _evaluate_persistence(
     )
     loader = _make_loader(
         dataset,
-        rank_indices,
+        _IndexSampler(rank_indices),
         config=config,
         batch_size=config.eval_batch_size,
     )
