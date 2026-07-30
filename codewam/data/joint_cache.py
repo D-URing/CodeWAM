@@ -35,6 +35,7 @@ JOINT_CACHE_SCHEMA = "codewam.joint-window-cache.v1"
 JOINT_EPISODE_SHARD_SCHEMA = "codewam.joint-episode-shard.v1"
 JOINT_SHARD_INDEX_SCHEMA = "codewam.joint-shard-index.v1"
 JOINT_CACHE_SUMMARY_SCHEMA = "codewam.joint-cache-summary.v1"
+JOINT_ACTION_INDEX_SCHEMA = "codewam.joint-action-index.v1"
 
 
 def _canonical_hash(payload: Any) -> str:
@@ -971,9 +972,8 @@ def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
     )
     if not sidecar_paths:
         raise FileNotFoundError("Joint cache has no shard sidecars.")
-    episode_rows: list[dict[str, Any]] = []
+    sidecars: list[dict[str, Any]] = []
     window_rows: list[dict[str, Any]] = []
-    shard_rows = []
     for sidecar_path in sidecar_paths:
         sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
         if (
@@ -981,6 +981,36 @@ def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
             or sidecar.get("contract_hash") != contract_hash
         ):
             raise RuntimeError(f"Invalid joint shard sidecar `{sidecar_path}`.")
+        sidecars.append(sidecar)
+        window_rows.extend(sidecar.get("windows", ()))
+    parsed_windows = [
+        JointWindowRecord.from_dict(row) for row in window_rows
+    ]
+    window_ids = [window.window_id for window in parsed_windows]
+    if len(window_ids) != len(set(window_ids)):
+        raise RuntimeError("Joint cache contains duplicate window IDs.")
+    if not parsed_windows:
+        raise RuntimeError("Joint cache contains no valid windows.")
+    parsed_windows.sort(key=lambda row: row.window_id)
+    window_positions = {
+        window.window_id: index
+        for index, window in enumerate(parsed_windows)
+    }
+    action_horizon = int(contract["window"]["action_horizon"])
+    action_dim = int(contract["action_dim"])
+    action_chunks = torch.empty(
+        (len(parsed_windows), action_horizon, action_dim),
+        dtype=torch.float32,
+    )
+    action_valid = torch.empty(
+        (len(parsed_windows), action_horizon),
+        dtype=torch.bool,
+    )
+    filled_actions = torch.zeros(len(parsed_windows), dtype=torch.bool)
+
+    episode_rows: list[dict[str, Any]] = []
+    shard_rows = []
+    for sidecar in sidecars:
         shard_path = cache_dir / str(sidecar["episode_shard"])
         episodes = validate_joint_episode_shard(
             shard_path,
@@ -989,14 +1019,19 @@ def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
         )
         sidecar_episodes = sidecar.get("episodes", ())
         if len(sidecar_episodes) != len(episodes):
-            raise RuntimeError(f"Joint sidecar episode count differs: {sidecar_path}.")
-        for locator, episode in zip(sidecar_episodes, episodes):
+            raise RuntimeError(
+                f"Joint sidecar episode count differs: {shard_path}."
+            )
+        episodes_by_id = {episode.episode_id: episode for episode in episodes}
+        for offset, (locator, episode) in enumerate(
+            zip(sidecar_episodes, episodes)
+        ):
             if (
                 locator.get("episode_id") != episode.episode_id
-                or int(locator.get("offset", -1)) < 0
+                or int(locator.get("offset", -1)) != offset
             ):
                 raise RuntimeError(
-                    f"Joint sidecar episode locator differs: {sidecar_path}."
+                    f"Joint sidecar episode locator differs: {shard_path}."
                 )
             episode_rows.append(
                 {
@@ -1007,7 +1042,33 @@ def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
                     ),
                 }
             )
-        window_rows.extend(sidecar.get("windows", ()))
+        for window_payload in sidecar.get("windows", ()):
+            window = JointWindowRecord.from_dict(window_payload)
+            try:
+                episode = episodes_by_id[window.episode_id]
+            except KeyError as exc:
+                raise RuntimeError(
+                    f"Joint shard window references unknown episode "
+                    f"`{window.episode_id}`."
+                ) from exc
+            _validate_window_against_episode(window, episode)
+            position = window_positions[window.window_id]
+            actions = episode.source_actions[
+                window.action_start : window.action_stop
+            ]
+            valid = episode.source_action_valid[
+                window.action_start : window.action_stop
+            ]
+            if (
+                tuple(actions.shape) != (action_horizon, action_dim)
+                or tuple(valid.shape) != (action_horizon,)
+            ):
+                raise RuntimeError(
+                    f"Joint window `{window.window_id}` action shape changed."
+                )
+            action_chunks[position].copy_(actions)
+            action_valid[position].copy_(valid)
+            filled_actions[position] = True
         shard_rows.append(
             {
                 "path": str(sidecar["episode_shard"]),
@@ -1020,25 +1081,32 @@ def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
     episode_ids = [row["episode_id"] for row in episode_rows]
     if len(episode_ids) != len(set(episode_ids)):
         raise RuntimeError("Joint cache contains duplicate episode IDs.")
-    parsed_windows = [
-        JointWindowRecord.from_dict(row) for row in window_rows
-    ]
-    window_ids = [window.window_id for window in parsed_windows]
-    if len(window_ids) != len(set(window_ids)):
-        raise RuntimeError("Joint cache contains duplicate window IDs.")
     unknown = sorted(
         {window.episode_id for window in parsed_windows} - set(episode_ids)
     )
     if unknown:
         raise RuntimeError(f"Joint cache windows reference unknown episodes: {unknown}.")
+    if not filled_actions.all():
+        raise RuntimeError("Joint cache action index is incomplete.")
     episode_rows.sort(key=lambda row: row["episode_id"])
-    parsed_windows.sort(key=lambda row: row.window_id)
     episodes_path = cache_dir / "episodes.jsonl"
     windows_path = cache_dir / "windows.jsonl"
     _write_jsonl(episodes_path, episode_rows)
     _write_jsonl(
         windows_path,
         (window.to_dict() for window in parsed_windows),
+    )
+    windows_sha256 = file_sha256(windows_path)
+    actions_path = cache_dir / "window_actions.pt"
+    atomic_torch_save(
+        {
+            "schema": JOINT_ACTION_INDEX_SCHEMA,
+            "contract_hash": contract_hash,
+            "windows_sha256": windows_sha256,
+            "actions": action_chunks,
+            "valid": action_valid,
+        },
+        actions_path,
     )
     overlap_counts: Counter[str] = Counter()
     for window in parsed_windows:
@@ -1069,7 +1137,11 @@ def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
             },
             "windows": {
                 "path": windows_path.name,
-                "sha256": file_sha256(windows_path),
+                "sha256": windows_sha256,
+            },
+            "actions": {
+                "path": actions_path.name,
+                "sha256": file_sha256(actions_path),
             },
         },
         "shards": shard_rows,
@@ -1130,17 +1202,56 @@ class JointWindowCache:
         self._locators = {row["episode_id"]: row for row in locators}
         if len(self._locators) != len(locators):
             raise RuntimeError("Joint cache episode index contains duplicates.")
-        windows = [
+        all_windows = [
             JointWindowRecord.from_dict(row)
             for row in _read_jsonl(self.cache_dir / "windows.jsonl")
         ]
-        self.windows = tuple(
-            window
-            for window in windows
+        selected = tuple(
+            (index, window)
+            for index, window in enumerate(all_windows)
             if split is None or window.split == split
         )
+        self._window_positions = tuple(index for index, _ in selected)
+        self.windows = tuple(window for _, window in selected)
+        try:
+            self.window_shards = tuple(
+                str(self._locators[window.episode_id]["episode_shard"])
+                for window in self.windows
+            )
+        except KeyError as exc:
+            raise RuntimeError(
+                f"Joint window references an unknown episode `{exc.args[0]}`."
+            ) from exc
         self.max_cached_shards = int(max_cached_shards)
         self._shards: OrderedDict[str, tuple[JointEpisode, ...]] = OrderedDict()
+        self._verified_shards: set[str] = set()
+        action_row = self.summary["indices"]["actions"]
+        action_payload = torch.load(
+            self.cache_dir / action_row["path"],
+            map_location="cpu",
+            weights_only=False,
+            mmap=True,
+        )
+        if (
+            action_payload.get("schema") != JOINT_ACTION_INDEX_SCHEMA
+            or action_payload.get("contract_hash")
+            != self.contract["contract_hash"]
+            or action_payload.get("windows_sha256")
+            != self.summary["indices"]["windows"]["sha256"]
+        ):
+            raise RuntimeError("Joint cache action index does not match its windows.")
+        self._action_chunks = action_payload.get("actions")
+        self._action_valid = action_payload.get("valid")
+        if (
+            not isinstance(self._action_chunks, torch.Tensor)
+            or not isinstance(self._action_valid, torch.Tensor)
+            or self._action_chunks.ndim != 3
+            or self._action_valid.dtype != torch.bool
+            or tuple(self._action_valid.shape)
+            != tuple(self._action_chunks.shape[:2])
+            or int(self._action_chunks.shape[0]) != len(all_windows)
+        ):
+            raise RuntimeError("Joint cache action index has invalid tensors.")
 
     def __len__(self) -> int:
         return len(self.windows)
@@ -1156,8 +1267,13 @@ class JointWindowCache:
             episodes = validate_joint_episode_shard(
                 self.cache_dir / relative,
                 contract_hash=str(self.contract["contract_hash"]),
-                expected_sha256=str(locator["episode_shard_sha256"]),
+                expected_sha256=(
+                    None
+                    if relative in self._verified_shards
+                    else str(locator["episode_shard_sha256"])
+                ),
             )
+            self._verified_shards.add(relative)
         self._shards[relative] = episodes
         while len(self._shards) > self.max_cached_shards:
             self._shards.popitem(last=False)
@@ -1204,6 +1320,22 @@ class JointWindowCache:
             language_tokens=episode.language_tokens,
             language_valid=episode.language_valid,
         )
+
+    def action_chunk(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        position = self._window_positions[index]
+        actions = self._action_chunks[position]
+        valid = self._action_valid[position]
+        record = self.windows[index]
+        expected_horizon = record.action_stop - record.action_start
+        if (
+            tuple(actions.shape)
+            != (expected_horizon, int(self.contract["action_dim"]))
+            or tuple(valid.shape) != (expected_horizon,)
+        ):
+            raise RuntimeError(
+                f"Joint window `{record.window_id}` compact action changed."
+            )
+        return actions, valid
 
 
 @dataclass(frozen=True)

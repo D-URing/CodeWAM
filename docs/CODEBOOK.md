@@ -982,7 +982,7 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 155 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
+当前 159 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
 DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
@@ -1233,6 +1233,11 @@ source-rate action、future latent tick、availability、code label 和 overlap;
 index SHA 改变都会在 tensor 进入模型前失败。language tokens 当前可选:缺失时只关闭 action
 imitation supervision,不关闭 Gate 2 dynamics。
 
+finalize 额外生成 `window_actions.pt`:它只复制体积很小的 source-rate action chunks,不复制
+视觉 latent。Gate 2 每个 epoch 先随机 shard 顺序、再随机 shard 内窗口;错误动作从该 mmap
+action index 读取。这样仍保持固定随机对照,但不会因 donor 位于另一 episode 而反复加载大
+latent shard。每个 episode shard 的 SHA 在每个 reader 进程首次加载时验证一次。
+
 官方 RLDS 端点固定为:
 
 ```text
@@ -1327,9 +1332,17 @@ for SEED in 7 19 31; do
     --artifact Q5="$Q5_ARTIFACT" \
     --seed "$SEED"
 done
+
+python scripts/summarize_gate2_seeds.py \
+  --report "$GATE2_ROOT/seed-7/report.json" \
+  --report "$GATE2_ROOT/seed-19/report.json" \
+  --report "$GATE2_ROOT/seed-31/report.json" \
+  --output "$GATE2_ROOT/multi_seed_summary.json"
 ```
 
 每个 seed 的 test episode-block paired bootstrap 至少需要 30 个共同 changed-code episodes,
 正式目标不少于 100 个。`TRUE` 相对 NOACT、SHUFFLE 与 TRUE@SHUFFLE 的 95% CI 上界必须
-全部小于零才通过。先完成 independent head;通过后才比较 prefix、Stage-0 和 C0/C1/C2。
-失败时先检查 endpoint、coverage、overlap 和 action relevance,不增加辅助 loss 强行调门。
+全部小于零才通过;总判定要求三个预注册 seed 各自通过。跨 seed 均值只作稳定性描述,不把
+三个 seed 当额外 episode 伪造 pooled CI。先完成 independent head;通过后才比较 prefix、
+Stage-0 和 C0/C1/C2。失败时先检查 endpoint、coverage、overlap 和 action relevance,
+不增加辅助 loss 强行调门。

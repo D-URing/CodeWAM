@@ -4,9 +4,11 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 import torch
 
+from codewam.codebook_eval.shards import file_sha256
 from codewam.data.frozen_assignment import (
     FrozenArtifactChart,
     FrozenCausalCodeAssigner,
@@ -135,6 +137,9 @@ class JointCacheTests(unittest.TestCase):
                 (cache[0], cache[1]),
                 language_dim=8,
             )
+            compact_actions, compact_valid = cache.action_chunk(0)
+            torch.testing.assert_close(compact_actions, cache[0].actions)
+            torch.testing.assert_close(compact_valid, cache[0].action_valid)
 
         self.assertEqual(len(windows), 6)
         self.assertEqual(summary["episodes"], 1)
@@ -185,16 +190,71 @@ class JointCacheTests(unittest.TestCase):
                 )
 
     def test_index_hash_change_is_detected_before_loading_tensors(self) -> None:
+        for relative in ("windows.jsonl", "window_actions.pt"):
+            with self.subTest(relative=relative):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    self._write_cache(root)
+                    path = root / relative
+                    with path.open("ab") as handle:
+                        handle.write(b"\n")
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "index hash changed",
+                    ):
+                        JointWindowCache(root)
+
+    def test_shard_hash_is_checked_once_across_lru_reloads(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self._write_cache(root)
-            windows_path = root / "windows.jsonl"
-            windows_path.write_text(
-                windows_path.read_text(encoding="utf-8") + "\n",
-                encoding="utf-8",
+            chart = make_chart()
+            contract = make_contract(chart)
+            first = make_episode()
+            second = replace(
+                make_episode(),
+                episode_id="episode-2@0:80",
+                parent_episode_id="episode-2",
+                manifest_key="droid:episode-2",
             )
-            with self.assertRaisesRegex(RuntimeError, "index hash changed"):
-                JointWindowCache(root)
+            write_joint_cache_contract(root, contract)
+            for shard_name, episode in (
+                ("shard-a", first),
+                ("shard-b", second),
+            ):
+                windows = build_joint_windows(
+                    episode,
+                    config=JointWindowConfig(),
+                    artifact_sha256=chart.artifact_sha256,
+                )
+                write_joint_episode_shard(
+                    root,
+                    shard_name,
+                    (episode,),
+                    windows,
+                    contract_hash=contract["contract_hash"],
+                )
+            finalize_joint_cache(root)
+            with mock.patch(
+                "codewam.data.joint_cache.file_sha256",
+                wraps=file_sha256,
+            ) as digest:
+                cache = JointWindowCache(root, max_cached_shards=1)
+                digest.reset_mock()
+                first_by_shard = {}
+                for index, shard in enumerate(cache.window_shards):
+                    first_by_shard.setdefault(shard, index)
+                shard_indices = list(first_by_shard.values())
+                self.assertEqual(len(shard_indices), 2)
+                _ = cache[shard_indices[0]]
+                _ = cache[shard_indices[1]]
+                _ = cache[shard_indices[0]]
+
+        shard_hashes = [
+            call
+            for call in digest.call_args_list
+            if Path(call.args[0]).suffix == ".pt"
+        ]
+        self.assertEqual(len(shard_hashes), 2)
 
 
 if __name__ == "__main__":

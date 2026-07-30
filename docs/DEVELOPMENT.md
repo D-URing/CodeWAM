@@ -422,6 +422,20 @@ torchrun --standalone --nproc-per-node=8 \
 latest/final checkpoints 和 `report.json`。同目录续跑只接受相同 protocol。正式 gate 默认
 至少 30 个独立 changed-code test episodes;不足返回 `invalid`。
 
+三个 seed 完成后统一核验:
+
+```bash
+python scripts/summarize_gate2_seeds.py \
+  --report "$GATE2_ROOT/seed-7/report.json" \
+  --report "$GATE2_ROOT/seed-19/report.json" \
+  --report "$GATE2_ROOT/seed-31/report.json" \
+  --output "$GATE2_ROOT/multi_seed_summary.json"
+```
+
+finalize 生成紧凑的 `window_actions.pt`;Gate 2 以 shard-local 随机顺序读取 latent,错误动作
+直接查询该 mmap index。三个 seed 不会重复构建动作表,汇总器也会拒绝除 seed/permutation
+外任何协议差异。
+
 独立 CodeWAM v1 与数据链的本机最低验收:
 
 ```bash
@@ -431,7 +445,7 @@ python scripts/smoke_codewam_v1.py \
   --output runs/model_smoke/codewam_v1.json
 ```
 
-当前 155 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
+当前 159 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
 JointWindowCache、Gate 2 controls 和 resume;本机只跳过一项 CUDA 专项。合成 model smoke
 仍标记 `scientific_evidence=false`;真实 2-step Gate 2 smoke 同样只能证明工程链路。
 

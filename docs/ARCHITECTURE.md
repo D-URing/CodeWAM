@@ -704,6 +704,7 @@ codewam/data/frozen_assignment.py    frozen causal Q2/Q3/Q5 assignment
 codewam/data/joint_cache.py          deduplicated episode shards + verified windows
 codewam/data/joint_cache_export.py   rank-aware DROID -> Wan -> code/cache export
 codewam/experiments/gate2.py         fixed-budget four-condition Gate 2
+codewam/experiments/gate2_summary.py conservative three-seed decision
 ```
 
 `JointWindowCache v1` 物理上按 episode/keep-range 去重保存未池化多相机 latent、source-rate
@@ -711,7 +712,9 @@ action/proprio、逐步 action validity、冻结 codes 和三个 descriptor sour
 `windows.jsonl` 只保存状态/history/action/future 的半开区间与 artifact hashes。contract
 锁定 source manifest、endpoint audit、Wan checkpoint、FastWAM VAE 实现、预处理、三份
 codebook 和 CodeWAM writer 实现。reader 在取样时重新验证 shard SHA、端点、切片、
-code label 与 overlap,再构造 typed `CodeWAMBatch`。
+code label 与 overlap,再构造 typed `CodeWAMBatch`。finalize 同时生成按 window 对齐的紧凑
+action index;Gate 2 以 shard-local 随机顺序读取大 latent 文件,错误动作只查询该 action
+index,不再随机加载 donor 的视觉 shard。
 
 2026-07-30 的真实工程验收使用官方 DROID-100 32 条轨迹和 DROID 1.0.1 单个 TFRecord
 source shard。端点审计覆盖 8,892 steps;`action[t]` 相对错位 `action[t+1]` 的关节/笛卡尔
@@ -729,7 +732,8 @@ engineering smoke,不是 Gate 2 结果。
 2. finalize 后复核所有 shard/index SHA、split episode 数、changed-family coverage 与 overlap。
 3. independent dynamics 固定三个 seed,每个 seed 等预算训练 NOACT/TRUE/SHUFFLE。
 4. 以 >=30 个共同 changed-code test episodes 为硬有效性下限,目标使用 >=100 个。
-5. 三个 seed 均报告 all/changed/family/overlap、paired episode CI 和 TRUE 模型动作干预。
+5. 三个 seed 均报告 all/changed/family/overlap、paired episode CI 和 TRUE 模型动作干预,
+   再由固定汇总器核对协议并要求三个 seed 独立通过。
 6. 只有 independent Gate 2 通过,才比较 prefix head 和 scratch/Stage-0 initialization。
 7. 之后实现冻结 language cache 与参数预算一致的 DROID C0/C1/C2 trainer。
 8. LIBERO 使用独立 chart/refit 重复;FastWAM 仍只作 F0。

@@ -14,6 +14,7 @@ from codewam.data.frozen_assignment import (
 )
 from codewam.data.joint_cache import (
     JointEpisode,
+    JointWindowCache,
     JointWindowConfig,
     JointWindowRecord,
     build_joint_windows,
@@ -24,6 +25,7 @@ from codewam.data.joint_cache import (
 )
 from codewam.experiments.gate2 import (
     Gate2RunConfig,
+    _rank_indices,
     build_fixed_action_permutation,
     run_gate2,
 )
@@ -185,6 +187,32 @@ class Gate2Tests(unittest.TestCase):
                 windows[donor].action_stop - windows[donor].action_start,
             )
 
+    def test_rank_indices_keep_each_shard_contiguous(self) -> None:
+        groups = ("a",) * 4 + ("b",) * 3 + ("c",) * 5 + ("d",) * 4
+        ranks = [
+            _rank_indices(
+                tuple(range(len(groups))),
+                rank=rank,
+                world_size=2,
+                seed=7,
+                epoch=3,
+                training=True,
+                group_keys=groups,
+            )
+            for rank in range(2)
+        ]
+        self.assertEqual(set(ranks[0]) | set(ranks[1]), set(range(len(groups))))
+        self.assertFalse(set(ranks[0]) & set(ranks[1]))
+        self.assertEqual(len(ranks[0]), len(ranks[1]))
+        for values in ranks:
+            ordered_groups = [groups[index] for index in values]
+            runs = [
+                name
+                for index, name in enumerate(ordered_groups)
+                if index == 0 or name != ordered_groups[index - 1]
+            ]
+            self.assertEqual(len(runs), len(set(runs)))
+
     def test_one_command_run_keeps_noact_action_encoder_frozen(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -221,6 +249,14 @@ class Gate2Tests(unittest.TestCase):
                 map_location="cpu",
                 weights_only=False,
             )["model"]
+            cache = JointWindowCache(cache_dir)
+            for index in (0, len(cache) - 1):
+                actions, valid = cache.action_chunk(index)
+                torch.testing.assert_close(
+                    actions,
+                    cache[index].actions,
+                )
+                torch.testing.assert_close(valid, cache[index].action_valid)
 
         action_key = "codewam.code_dynamics.action_projection.weight"
         torch.testing.assert_close(noact[action_key], initialization[action_key])
@@ -232,6 +268,7 @@ class Gate2Tests(unittest.TestCase):
             {1},
         )
         self.assertEqual(report["conditions"]["TRUE"]["test"]["windows"], 12)
+        self.assertEqual(report["action_index"]["rows"], 36)
         self.assertEqual(report["gate"]["verdict"], "invalid")
         self.assertEqual(report["gate"]["minimum_gate_episodes"], 3)
         self.assertEqual(

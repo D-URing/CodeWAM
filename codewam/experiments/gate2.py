@@ -243,14 +243,16 @@ class _Gate2Dataset(Dataset[_Gate2Sample]):
 
     def __getitem__(self, index: int) -> _Gate2Sample:
         primary = self.cache[index]
-        donor = self.cache[self.permutation.donor_indices[index]]
-        if tuple(primary.actions.shape) != tuple(donor.actions.shape):
+        shuffled_actions, shuffled_action_valid = self.cache.action_chunk(
+            self.permutation.donor_indices[index]
+        )
+        if tuple(primary.actions.shape) != tuple(shuffled_actions.shape):
             raise RuntimeError("Permuted actions changed target shape.")
         return _Gate2Sample(
             index=index,
             primary=primary,
-            shuffled_actions=donor.actions,
-            shuffled_action_valid=donor.action_valid,
+            shuffled_actions=shuffled_actions,
+            shuffled_action_valid=shuffled_action_valid,
         )
 
 
@@ -316,14 +318,38 @@ def _rank_indices(
     seed: int,
     epoch: int,
     training: bool,
+    group_keys: Sequence[str] | None = None,
 ) -> tuple[int, ...]:
-    values = list(indices)
+    if rank < 0 or rank >= world_size or world_size <= 0:
+        raise ValueError("Gate2 rank/world size is invalid.")
+    if group_keys is not None:
+        grouped: dict[str, list[int]] = defaultdict(list)
+        for index in indices:
+            grouped[str(group_keys[index])].append(int(index))
+        names = sorted(grouped)
+        if training:
+            generator = random.Random(seed + 1_000_003 * epoch)
+            generator.shuffle(names)
+            for name in names:
+                generator.shuffle(grouped[name])
+        values = [
+            index
+            for name in names
+            for index in grouped[name]
+        ]
+    else:
+        values = list(indices)
     if training:
-        generator = random.Random(seed + 1_000_003 * epoch)
-        generator.shuffle(values)
+        if group_keys is None:
+            generator = random.Random(seed + 1_000_003 * epoch)
+            generator.shuffle(values)
         usable = len(values) - len(values) % world_size
         values = values[:usable]
-    return tuple(values[rank::world_size])
+        per_rank = usable // world_size
+        return tuple(values[rank * per_rank : (rank + 1) * per_rank])
+    start = rank * len(values) // world_size
+    stop = (rank + 1) * len(values) // world_size
+    return tuple(values[start:stop])
 
 
 def _make_loader(
@@ -1276,6 +1302,7 @@ def _train_condition(
             seed=config.seed,
             epoch=epoch,
             training=True,
+            group_keys=dataset.cache.window_shards,
         )
         loader = _make_loader(
             dataset,
@@ -1421,6 +1448,7 @@ def _evaluate_model(
         seed=config.seed,
         epoch=0,
         training=False,
+        group_keys=dataset.cache.window_shards,
     )
     loader = _make_loader(
         dataset,
@@ -1478,6 +1506,7 @@ def _evaluate_persistence(
         seed=config.seed,
         epoch=0,
         training=False,
+        group_keys=dataset.cache.window_shards,
     )
     loader = _make_loader(
         dataset,
@@ -1644,7 +1673,6 @@ def run_gate2(config: Gate2RunConfig) -> dict[str, Any]:
             cache.windows,
             seed=config.seed,
         )
-        dataset = _Gate2Dataset(cache, permutation)
         split_indices = {
             split: _split_indices(cache.windows, split)
             for split in ("train", "val", "test")
@@ -1669,6 +1697,7 @@ def run_gate2(config: Gate2RunConfig) -> dict[str, Any]:
             else:
                 _atomic_json(protocol_path, protocol)
         _barrier(context)
+        dataset = _Gate2Dataset(cache, permutation)
         initialization_path, initialization_sha256 = _prepare_initialization(
             config,
             chart,
@@ -1806,6 +1835,10 @@ def run_gate2(config: Gate2RunConfig) -> dict[str, Any]:
             "schema": GATE2_SCHEMA,
             "protocol_hash": protocol["protocol_hash"],
             "initialization_sha256": initialization_sha256,
+            "action_index": {
+                **cache.summary["indices"]["actions"],
+                "rows": len(cache),
+            },
             "cache_contract_hash": cache.contract["contract_hash"],
             "split_windows": {
                 key: len(value) for key, value in split_indices.items()
