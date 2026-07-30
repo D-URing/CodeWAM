@@ -1283,7 +1283,7 @@ TRUE@NOACT 和 TRUE@SHUFFLE 均完成 GPU 前向、流式指标、checkpoint 与
 独立 episodes,因此协议按 `minimum_gate_episodes=30` 返回 `invalid`。该结果只证明链路可跑,
 不能支持“动作有用或无用”的研究结论。
 
-### 14.3 正式 8 卡导出
+### 14.3 正式多卡导出
 
 exporter 不使用 DDP 梯度同步;`torchrun` 只提供 rank/world/local-rank。每个 rank 拥有完整
 TFRecord source shards,`LOCAL_RANK` 自动选择对应 GPU:
@@ -1299,7 +1299,8 @@ TFRecord source shards,`LOCAL_RANK` 自动选择对应 GPU:
 峰值由“两路完整 float 视频”降为“一路 dtype 视频 + 一个 64 帧 float 工作块”。
 
 ```bash
-torchrun --standalone --nproc-per-node=8 \
+NPROC="${NPROC:-8}"
+torchrun --standalone --nproc-per-node="$NPROC" \
   scripts/export_joint_window_cache.py \
   --source-manifest "$DROID_10K_MANIFEST" \
   --data-dir "$DROID_RLDS_ROOT" \
@@ -1321,9 +1322,16 @@ python scripts/export_joint_window_cache.py \
 ```
 
 `FASTWAM_ROOT` 可指仓库根目录或直接指包含 `fastwam/` 的 `src/`。中断后原命令续跑;contract
-不一致必须换 output directory,不能覆盖旧 shard。正式 finalize 默认要求 8 份 rank report
-完整覆盖所有计划 shard;小规模 `--max-source-shards` smoke 才可显式使用
+不一致必须换 output directory,不能覆盖旧 shard。正式 finalize 默认要求最后一次完整运行的
+`NPROC` 份 rank report 覆盖所有计划 shard;小规模 `--max-source-shards` smoke 才可显式使用
 `--allow-partial-finalize`。
+
+`NPROC` 同时受 GPU 和 cgroup 主存约束,不能直接等于可见 GPU 数。DROID 长轨迹会使每个
+TensorFlow/PyTorch worker 保留自己的 allocator 高水位;当前实测 16 GB pod 中四 rank
+可通过隔离 smoke,但连续导出在第 12 个 source shard 触发 OOM,两 rank 则稳定在约
+5.7-6.3 GB。该规格下使用 `NPROC=2`;四/八 rank 节点分别建议至少提供约 32/64 GB pod
+主存并先运行最坏长轨迹 smoke。rank/world size 不进入 cache contract,所以失败后可用更小
+`NPROC` 原地续跑已完成的原子 shard;finalize 只接受某一组完整且覆盖全部 sidecar 的报告。
 
 ### 14.4 正式 Gate 2
 

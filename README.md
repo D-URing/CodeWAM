@@ -227,7 +227,8 @@ BridgeData V2 frozen-transfer and independent-refit replication
 - 默认关闭:legacy online-EMA single-token codebook。
 - 尚未实现:full-scale Gate 2、frozen language token cache、canonical C0/C1/C2 policy trainer、
   部署侧 online runtime 和闭环 benchmark。
-- 下一步:8 卡导出完整 DROID-10k JointWindowCache,以 7/19/31 三个 seed 正式运行 Gate 2。
+- 下一步:按 GPU 与 pod 主存共同确定并发度,导出完整 DROID-10k JointWindowCache,再以
+  7/19/31 三个 seed 正式运行 Gate 2。
   只有 Gate 2 通过后才启动 `C0/C1/C2`;LIBERO 使用独立 chart/refit,不能把 DROID code ID
   当成共享语义。
 

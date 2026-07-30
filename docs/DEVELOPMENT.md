@@ -401,12 +401,17 @@ PYTHONPATH=. python scripts/export_joint_window_cache.py \
   --finalize-only
 ```
 
-8 卡时用 `torchrun --nproc-per-node=8` 包住第一条命令并省略 `--device`;入口自动把每个进程
-映射到 `cuda:$LOCAL_RANK`。每个 rank 读取不同完整 TFRecord shards,不做 DDP 梯度同步。
+多卡时用 `torchrun --nproc-per-node="$NPROC"` 包住第一条命令并省略 `--device`;入口自动
+把每个进程映射到 `cuda:$LOCAL_RANK`。每个 rank 读取不同完整 TFRecord shards,不做 DDP
+梯度同步。
 同一节点的 rank 会用本地文件锁依次加载 VAE checkpoint 并回收 CPU 临时内存;模型进入各自
 GPU 后数据处理仍完全并行,避免 pod 主存峰值随 GPU 数线性叠加。
 每路视频的 resize 以 64 帧为工作块,并按 camera 逐路搬到 GPU、编码和释放;这对 DROID 中
 上千帧长轨迹尤其重要,不会同时保留两路完整 float32 预处理结果。
+`NPROC` 必须同时服从 cgroup 主存。实测 16 GB pod 的四 rank 连续任务仍会积累四份
+allocator 高水位并 OOM,两 rank 稳定;四/八 rank 建议至少约 32/64 GB 主存。world size
+不进入 cache contract,可在同一 output directory 以更小 `NPROC` 断点续跑;严格 finalize
+会选择完整覆盖全部 shard 的一致 report group。
 finalize 默认核验所有 rank report 与 source-shard sidecar 完整对应。使用
 `--max-source-shards` 的工程 smoke 需要额外传 `--allow-partial-finalize`;缺失 rank 即使在
 partial 模式下也会失败。
