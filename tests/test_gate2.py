@@ -4,9 +4,11 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 import torch
 
+import codewam.experiments.gate2 as gate2_module
 from codewam.data.frozen_assignment import (
     FrozenArtifactChart,
     FrozenCausalCodeAssigner,
@@ -234,23 +236,29 @@ class Gate2Tests(unittest.TestCase):
                 max_time=8,
                 max_action_horizon=16,
             )
-            report = run_gate2(
-                Gate2RunConfig(
-                    cache_dir=str(cache_dir),
-                    output_dir=str(root / "gate2"),
-                    artifact_paths=artifact_paths,
-                    batch_size=2,
-                    eval_batch_size=4,
-                    epochs=1,
-                    max_steps=1,
-                    device="cpu",
-                    amp_dtype="float32",
-                    calibration_bins=5,
-                    bootstrap_samples=20,
-                    minimum_gate_episodes=3,
-                    model=model,
+            with mock.patch.object(
+                gate2_module,
+                "_make_loader",
+                wraps=gate2_module._make_loader,
+            ) as make_loader:
+                report = run_gate2(
+                    Gate2RunConfig(
+                        cache_dir=str(cache_dir),
+                        output_dir=str(root / "gate2"),
+                        artifact_paths=artifact_paths,
+                        batch_size=2,
+                        eval_batch_size=4,
+                        epochs=1,
+                        max_steps=1,
+                        device="cpu",
+                        amp_dtype="float32",
+                        calibration_bins=5,
+                        bootstrap_samples=20,
+                        minimum_gate_episodes=3,
+                        model=model,
+                    )
                 )
-            )
+                loader_calls = make_loader.call_count
             initialization = torch.load(
                 root / "gate2" / "initialization.pt",
                 map_location="cpu",
@@ -272,6 +280,7 @@ class Gate2Tests(unittest.TestCase):
 
         action_key = "codewam.code_dynamics.action_projection.weight"
         torch.testing.assert_close(noact[action_key], initialization[action_key])
+        self.assertEqual(loader_calls, 5)
         self.assertEqual(
             {
                 result["optimizer_steps"]

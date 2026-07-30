@@ -1446,25 +1446,10 @@ def _evaluate_model(
     mode: ActionMode,
     split: str,
     config: Gate2RunConfig,
-    dataset: _Gate2Dataset,
-    split_indices: Sequence[int],
+    loader: DataLoader,
+    split_windows: int,
     context: _DistributedContext,
 ) -> dict[str, Any]:
-    rank_indices = _rank_indices(
-        split_indices,
-        rank=context.rank,
-        world_size=context.world_size,
-        seed=config.seed,
-        epoch=0,
-        training=False,
-        group_keys=dataset.cache.window_shards,
-    )
-    loader = _make_loader(
-        dataset,
-        _IndexSampler(rank_indices),
-        config=config,
-        batch_size=config.eval_batch_size,
-    )
     adapter = model.codewam.frozen_codebook
     accumulator = Gate2MetricAccumulator(
         families=adapter.families,
@@ -1494,7 +1479,7 @@ def _evaluate_model(
         merged.merge(Gate2MetricAccumulator.from_payload(payload))
     report = merged.report()
     report["split"] = split
-    report["windows"] = len(split_indices)
+    report["windows"] = split_windows
     return report
 
 
@@ -1503,26 +1488,10 @@ def _evaluate_persistence(
     adapter: nn.Module,
     *,
     split: str,
-    config: Gate2RunConfig,
-    dataset: _Gate2Dataset,
-    split_indices: Sequence[int],
+    loader: DataLoader,
+    split_windows: int,
     context: _DistributedContext,
 ) -> dict[str, Any]:
-    rank_indices = _rank_indices(
-        split_indices,
-        rank=context.rank,
-        world_size=context.world_size,
-        seed=config.seed,
-        epoch=0,
-        training=False,
-        group_keys=dataset.cache.window_shards,
-    )
-    loader = _make_loader(
-        dataset,
-        _IndexSampler(rank_indices),
-        config=config,
-        batch_size=config.eval_batch_size,
-    )
     accumulator = PersistenceAccumulator(
         families=adapter.families,
         levels=adapter.levels,
@@ -1536,7 +1505,7 @@ def _evaluate_persistence(
         merged.merge(PersistenceAccumulator.from_payload(payload))
     report = merged.report()
     report["split"] = split
-    report["windows"] = len(split_indices)
+    report["windows"] = split_windows
     return report
 
 
@@ -1734,74 +1703,88 @@ def run_gate2(config: Gate2RunConfig) -> dict[str, Any]:
         conditions: dict[str, dict[str, Any]] = {
             name: {} for name in ("PERSIST", *LEARNED_CONDITIONS)
         }
-        true_model = _load_trained_model(
-            "TRUE",
-            config=config,
-            chart=chart,
-            protocol_hash=protocol["protocol_hash"],
-            device=context.device,
-        )
+        diagnostics: dict[str, dict[str, Any]] = {
+            "TRUE@NOACT": {},
+            "TRUE@SHUFFLE": {},
+        }
         for split in ("val", "test"):
-            conditions["PERSIST"][split] = _evaluate_persistence(
-                true_model.codewam.frozen_codebook,
-                split=split,
-                config=config,
-                dataset=dataset,
-                split_indices=split_indices[split],
-                context=context,
+            rank_indices = _rank_indices(
+                split_indices[split],
+                rank=context.rank,
+                world_size=context.world_size,
+                seed=config.seed,
+                epoch=0,
+                training=False,
+                group_keys=dataset.cache.window_shards,
             )
-        del true_model
-        if context.device.type == "cuda":
-            torch.cuda.empty_cache()
-
-        for condition in LEARNED_CONDITIONS:
-            model = _load_trained_model(
-                condition,
+            loader = _make_loader(
+                dataset,
+                _IndexSampler(rank_indices),
+                config=config,
+                batch_size=config.eval_batch_size,
+            )
+            split_windows = len(split_indices[split])
+            true_model = _load_trained_model(
+                "TRUE",
                 config=config,
                 chart=chart,
                 protocol_hash=protocol["protocol_hash"],
                 device=context.device,
             )
-            mode = _condition_mode(condition)
-            for split in ("val", "test"):
-                conditions[condition][split] = _evaluate_model(
-                    model,
-                    mode=mode,
-                    split=split,
-                    config=config,
-                    dataset=dataset,
-                    split_indices=split_indices[split],
-                    context=context,
-                )
-            del model
-            if context.device.type == "cuda":
-                torch.cuda.empty_cache()
-
-        diagnostics: dict[str, dict[str, Any]] = {
-            "TRUE@NOACT": {},
-            "TRUE@SHUFFLE": {},
-        }
-        true_model = _load_trained_model(
-            "TRUE",
-            config=config,
-            chart=chart,
-            protocol_hash=protocol["protocol_hash"],
-            device=context.device,
-        )
-        for name, mode in (
-            ("TRUE@NOACT", "none"),
-            ("TRUE@SHUFFLE", "shuffle"),
-        ):
-            for split in ("val", "test"):
+            conditions["PERSIST"][split] = _evaluate_persistence(
+                true_model.codewam.frozen_codebook,
+                split=split,
+                loader=loader,
+                split_windows=split_windows,
+                context=context,
+            )
+            conditions["TRUE"][split] = _evaluate_model(
+                true_model,
+                mode="true",
+                split=split,
+                config=config,
+                loader=loader,
+                split_windows=split_windows,
+                context=context,
+            )
+            for name, mode in (
+                ("TRUE@NOACT", "none"),
+                ("TRUE@SHUFFLE", "shuffle"),
+            ):
                 diagnostics[name][split] = _evaluate_model(
                     true_model,
                     mode=mode,
                     split=split,
                     config=config,
-                    dataset=dataset,
-                    split_indices=split_indices[split],
+                    loader=loader,
+                    split_windows=split_windows,
                     context=context,
                 )
+            del true_model
+            if context.device.type == "cuda":
+                torch.cuda.empty_cache()
+
+            for condition in ("NOACT", "SHUFFLE"):
+                model = _load_trained_model(
+                    condition,
+                    config=config,
+                    chart=chart,
+                    protocol_hash=protocol["protocol_hash"],
+                    device=context.device,
+                )
+                conditions[condition][split] = _evaluate_model(
+                    model,
+                    mode=_condition_mode(condition),
+                    split=split,
+                    config=config,
+                    loader=loader,
+                    split_windows=split_windows,
+                    context=context,
+                )
+                del model
+                if context.device.type == "cuda":
+                    torch.cuda.empty_cache()
+            del loader
 
         true_rows = conditions["TRUE"]["test"]["episode_changed_nll"]
         comparison_sources = {

@@ -438,8 +438,8 @@ python scripts/summarize_gate2_seeds.py \
 finalize 生成紧凑的 `window_actions.pt`,并在 summary 中预报各 split/family 的 changed
 parent-episode coverage;同一原始轨迹的多个 keep-range 不会被重复计数。Gate 2 以
 shard-local 随机顺序读取 latent,错误动作直接查询该 mmap index;同一 condition 的
-DataLoader workers 跨 epoch 保留,避免重复启动和散列 shard。三个 seed 不会重复构建动作
-表,汇总器也会拒绝除 seed/permutation 外任何协议差异。
+DataLoader workers 跨 epoch 保留,评估条件也按 split 复用 workers,避免重复启动和散列
+shard。三个 seed 不会重复构建动作表,汇总器也会拒绝除 seed/permutation 外任何协议差异。
 
 独立 CodeWAM v1 与数据链的本机最低验收:
 
