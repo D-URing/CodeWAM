@@ -478,6 +478,7 @@ class JointEpisode:
 class JointWindowRecord:
     window_id: str
     episode_id: str
+    parent_episode_id: str
     split: str
     chart_name: str
     role: TrajectoryRole | str
@@ -503,7 +504,12 @@ class JointWindowRecord:
     artifact_sha256: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if not self.window_id or not self.episode_id or not self.chart_name:
+        if (
+            not self.window_id
+            or not self.episode_id
+            or not self.parent_episode_id
+            or not self.chart_name
+        ):
             raise ValueError("Joint window identity fields must not be empty.")
         if self.split not in VALID_SPLITS:
             raise ValueError(f"Unsupported joint window split `{self.split}`.")
@@ -555,6 +561,7 @@ class JointWindowRecord:
         return {
             "window_id": self.window_id,
             "episode_id": self.episode_id,
+            "parent_episode_id": self.parent_episode_id,
             "split": self.split,
             "chart_name": self.chart_name,
             "role": self.role.value,
@@ -591,6 +598,7 @@ class JointWindowRecord:
         return cls(
             window_id=str(payload["window_id"]),
             episode_id=str(payload["episode_id"]),
+            parent_episode_id=str(payload["parent_episode_id"]),
             split=str(payload["split"]),
             chart_name=str(payload["chart_name"]),
             role=str(payload["role"]),
@@ -716,6 +724,7 @@ def build_joint_windows(
             JointWindowRecord(
                 window_id=_canonical_hash(identity)[:24],
                 episode_id=episode.episode_id,
+                parent_episode_id=episode.parent_episode_id,
                 split=episode.split,
                 chart_name=episode.chart_name,
                 role=episode.role,
@@ -762,6 +771,7 @@ def _validate_window_against_episode(
 ) -> None:
     if (
         record.episode_id != episode.episode_id
+        or record.parent_episode_id != episode.parent_episode_id
         or record.split != episode.split
         or record.chart_name != episode.chart_name
         or record.role != episode.role
@@ -857,6 +867,106 @@ def _validate_window_against_episode(
 
 def _sidecar_path(shard_path: Path) -> Path:
     return shard_path.with_suffix(".index.json")
+
+
+def _transition_coverage(
+    windows: Sequence[JointWindowRecord],
+) -> dict[str, Any]:
+    states: dict[str, dict[str, Any]] = {}
+    for window in windows:
+        split = states.setdefault(
+            window.split,
+            {
+                "any_available_windows": 0,
+                "any_changed_windows": 0,
+                "available_parents": set(),
+                "changed_parents": set(),
+                "families": {},
+            },
+        )
+        any_available = False
+        any_changed = False
+        for family, current, future, available in zip(
+            window.families,
+            window.current_code_ids,
+            window.future_code_ids,
+            window.code_available,
+        ):
+            if not available:
+                continue
+            family_state = split["families"].setdefault(
+                family,
+                {
+                    "available_windows": 0,
+                    "changed_windows": 0,
+                    "available_parents": set(),
+                    "changed_parents": set(),
+                    "level_changed_windows": [0] * len(current),
+                    "prefix_changed_windows": [0] * len(current),
+                },
+            )
+            changed = tuple(current) != tuple(future)
+            any_available = True
+            any_changed |= changed
+            family_state["available_windows"] += 1
+            family_state["available_parents"].add(window.parent_episode_id)
+            if changed:
+                family_state["changed_windows"] += 1
+                family_state["changed_parents"].add(window.parent_episode_id)
+            for level, (current_code, future_code) in enumerate(
+                zip(current, future)
+            ):
+                family_state["level_changed_windows"][level] += int(
+                    current_code != future_code
+                )
+                family_state["prefix_changed_windows"][level] += int(
+                    tuple(current[: level + 1]) != tuple(future[: level + 1])
+                )
+        if any_available:
+            split["any_available_windows"] += 1
+            split["available_parents"].add(window.parent_episode_id)
+        if any_changed:
+            split["any_changed_windows"] += 1
+            split["changed_parents"].add(window.parent_episode_id)
+
+    report = {}
+    for split_name, split in sorted(states.items()):
+        available = int(split["any_available_windows"])
+        family_report = {}
+        for family, state in sorted(split["families"].items()):
+            family_available = int(state["available_windows"])
+            family_changed = int(state["changed_windows"])
+            family_report[family] = {
+                "available_windows": family_available,
+                "changed_windows": family_changed,
+                "changed_fraction": (
+                    family_changed / family_available
+                    if family_available
+                    else float("nan")
+                ),
+                "available_parent_episodes": len(state["available_parents"]),
+                "changed_parent_episodes": len(state["changed_parents"]),
+                "level_changed_windows": list(
+                    state["level_changed_windows"]
+                ),
+                "prefix_changed_windows": list(
+                    state["prefix_changed_windows"]
+                ),
+            }
+        changed = int(split["any_changed_windows"])
+        report[split_name] = {
+            "any_family": {
+                "available_windows": available,
+                "changed_windows": changed,
+                "changed_fraction": (
+                    changed / available if available else float("nan")
+                ),
+                "available_parent_episodes": len(split["available_parents"]),
+                "changed_parent_episodes": len(split["changed_parents"]),
+            },
+            "families": family_report,
+        }
+    return report
 
 
 def validate_joint_episode_shard(
@@ -1130,6 +1240,7 @@ def finalize_joint_cache(cache_dir: str | Path) -> dict[str, Any]:
             window.role.value for window in parsed_windows
         ).items())),
         "descriptor_overlap": dict(sorted(overlap_counts.items())),
+        "transition_coverage": _transition_coverage(parsed_windows),
         "indices": {
             "episodes": {
                 "path": episodes_path.name,
@@ -1343,6 +1454,7 @@ class JointModelBatch:
     model: CodeWAMBatch
     window_ids: tuple[str, ...]
     episode_ids: tuple[str, ...]
+    parent_episode_ids: tuple[str, ...]
     splits: tuple[str, ...]
     descriptor_overlap: torch.Tensor
 
@@ -1493,6 +1605,9 @@ def collate_joint_windows(
         model=batch,
         window_ids=tuple(sample.record.window_id for sample in samples),
         episode_ids=tuple(sample.record.episode_id for sample in samples),
+        parent_episode_ids=tuple(
+            sample.record.parent_episode_id for sample in samples
+        ),
         splits=tuple(sample.record.split for sample in samples),
         descriptor_overlap=torch.tensor(
             [sample.record.descriptor_overlap for sample in samples],

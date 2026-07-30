@@ -605,9 +605,10 @@ episode。主分析只看完整 RQ tuple 确实改变的 family,同时报告 all
 descriptor overlap `0/1/2/3` 分层。`TRUE` 还要原模型执行 `TRUE@NOACT` 与
 `TRUE@SHUFFLE` 干预,排除三个独立训练结果的偶然差异。
 
-门判定使用 test episode 为 block 的 paired bootstrap;点估计和 window 数不能代替独立
-episode。默认至少需要 30 个具有 changed-family label 的共同 test episodes,不足时只能是
-`invalid`,不能输出科学性 pass/fail。通过要求 `TRUE-NOACT`、`TRUE-SHUFFLE` 和
+门判定使用原始 RLDS parent episode 为 block 的 paired bootstrap;多个 keep-range segments
+不能冒充独立样本,点估计和 window 数也不能代替独立 episode。默认至少需要 30 个具有
+changed-family label 的共同 test parent episodes,不足时只能是 `invalid`,不能输出科学性
+pass/fail。通过要求 `TRUE-NOACT`、`TRUE-SHUFFLE` 和
 `TRUE-TRUE@SHUFFLE` 的 changed-family normalized-NLL 95% CI 上界都小于零。
 
 已完成的 P0/P1/P2/P3 ridge screen 保留为历史接口诊断。它说明 hard categorical additive
@@ -714,7 +715,8 @@ action/proprio、逐步 action validity、冻结 codes 和三个 descriptor sour
 codebook 和 CodeWAM writer 实现。reader 在取样时重新验证 shard SHA、端点、切片、
 code label 与 overlap,再构造 typed `CodeWAMBatch`。finalize 同时生成按 window 对齐的紧凑
 action index;Gate 2 以 shard-local 随机顺序读取大 latent 文件,错误动作只查询该 action
-index,不再随机加载 donor 的视觉 shard。
+index,不再随机加载 donor 的视觉 shard。cache summary 在训练前报告每个 split/family 的
+changed windows、changed parent episodes 和三级 RQ component/prefix 变化覆盖。
 
 2026-07-30 的真实工程验收使用官方 DROID-100 32 条轨迹和 DROID 1.0.1 单个 TFRecord
 source shard。端点审计覆盖 8,892 steps;`action[t]` 相对错位 `action[t+1]` 的关节/笛卡尔

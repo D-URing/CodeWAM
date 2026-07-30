@@ -184,8 +184,10 @@ def build_fixed_action_permutation(
             candidate_offsets,
             key=lambda value: (
                 sum(
-                    windows[source].episode_id
-                    != windows[ordered[(position + value) % len(ordered)]].episode_id
+                    windows[source].parent_episode_id
+                    != windows[
+                        ordered[(position + value) % len(ordered)]
+                    ].parent_episode_id
                     for position, source in enumerate(ordered)
                 ),
                 -value,
@@ -196,7 +198,8 @@ def build_fixed_action_permutation(
             donors[source] = donor
             paired += 1
             cross_episode += int(
-                windows[source].episode_id != windows[donor].episode_id
+                windows[source].parent_episode_id
+                != windows[donor].parent_episode_id
             )
             if source == donor:
                 raise RuntimeError("Non-singleton action permutation retained itself.")
@@ -684,7 +687,7 @@ class Gate2MetricAccumulator:
         )
         changed_valid = masks["changed"] & sample_valid[:, None]
         normalized_nll = family_nll / float(self.levels)
-        for sample, episode_id in enumerate(batch.episode_ids):
+        for sample, episode_id in enumerate(batch.parent_episode_ids):
             selected = changed_valid[sample]
             if selected.any():
                 values = normalized_nll[sample, selected]

@@ -148,6 +148,7 @@ class JointCacheTests(unittest.TestCase):
         self.assertEqual(tuple(batch.model.actions.values.shape), (2, 16, 7))
         self.assertEqual(tuple(batch.model.codes.code_ids.shape), (2, 3, 3))
         self.assertEqual(batch.episode_ids, ("episode@0:80",) * 2)
+        self.assertEqual(batch.parent_episode_ids, ("episode",) * 2)
         self.assertEqual(batch.descriptor_overlap.tolist(), [[1, 0, 0]] * 2)
         self.assertTrue(batch.model.supervision.action.all())
         self.assertTrue(batch.model.supervision.dynamics.all())
@@ -213,7 +214,7 @@ class JointCacheTests(unittest.TestCase):
             second = replace(
                 make_episode(),
                 episode_id="episode-2@0:80",
-                parent_episode_id="episode-2",
+                parent_episode_id="episode",
                 manifest_key="droid:episode-2",
             )
             write_joint_cache_contract(root, contract)
@@ -233,7 +234,13 @@ class JointCacheTests(unittest.TestCase):
                     windows,
                     contract_hash=contract["contract_hash"],
                 )
-            finalize_joint_cache(root)
+            summary = finalize_joint_cache(root)
+            self.assertEqual(
+                summary["transition_coverage"]["train"]["any_family"][
+                    "available_parent_episodes"
+                ],
+                1,
+            )
             with mock.patch(
                 "codewam.data.joint_cache.file_sha256",
                 wraps=file_sha256,

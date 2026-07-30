@@ -115,7 +115,10 @@ def _write_fixture(root: Path) -> tuple[Path, dict[str, str]]:
         window=window,
     )
     episodes = tuple(
-        _episode(f"{split}-{index}", split, chart)
+        replace(
+            _episode(f"{split}-{index}", split, chart),
+            parent_episode_id=f"{split}-parent",
+        )
         for split in ("train", "val", "test")
         for index in range(2)
     )
@@ -146,6 +149,7 @@ class Gate2Tests(unittest.TestCase):
             return JointWindowRecord(
                 window_id=f"window-{index}",
                 episode_id=episode,
+                parent_episode_id=episode,
                 split=split,
                 chart_name="droid",
                 role="expert",
@@ -271,6 +275,10 @@ class Gate2Tests(unittest.TestCase):
         self.assertEqual(report["action_index"]["rows"], 36)
         self.assertEqual(report["gate"]["verdict"], "invalid")
         self.assertEqual(report["gate"]["minimum_gate_episodes"], 3)
+        self.assertLessEqual(
+            report["paired_episode_comparisons"]["TRUE-vs-NOACT"]["episodes"],
+            1,
+        )
         self.assertEqual(
             report["conditions"]["TRUE"]["test"]["strata"]["all"][
                 "classification_unit"
