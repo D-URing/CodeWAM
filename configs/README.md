@@ -13,6 +13,8 @@ configs/
 ├── model/
 │   ├── codewam_v1.yaml
 │   └── codewam.yaml
+├── gate2/
+│   └── droid_joint_v1.yaml
 └── task/
     ├── libero_codewam_2cam224.yaml
     ├── robotwin_codewam_3cam384.yaml
@@ -40,9 +42,13 @@ state_codebook:
 
 canonical v1 不在 policy 训练中拟合该模块。正式结构使用三套离线训练、冻结且彼此独立的
 `Q2/Q3/Q5` RQ artifacts;五模块接口和可见性 contract 见 `docs/ARCHITECTURE.md`,数据与训练
-contract 见 `docs/CODEBOOK.md`。下列命令仍只运行 FastWAM-compatible legacy/F0 链路:
+contract 见 `docs/CODEBOOK.md`。
 
-训练示例:
+`configs/gate2/droid_joint_v1.yaml` 是真实 joint cache 上的 dynamics gate,只训练 future-code
+CE,固定 PERSIST/NOACT/TRUE/SHUFFLE 和动作干预口径。它不是 policy trainer;artifact/cache
+路径必须由 `scripts/run_gate2.py` 显式提供。
+
+下列训练命令仍只运行 FastWAM-compatible legacy/F0 链路:
 
 ```bash
 bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224

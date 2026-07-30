@@ -962,7 +962,17 @@ latent spatial-moment change。报告 standardized MSE 相对 train global-mean 
   shard checksum 的精确 join,scene-isolated split,以及 institution/scene/collector-aware sample。
 - `codewam/data/droid_rlds.py`:按 manifest `(shard,record)` 精确读取,未选相机跳过 JPEG decode,
   整 shard 的确定性 rank assignment、completed-episode resume、不跨 gap 的 eligible
-  segment interface,以及只解码指定绝对帧的稀疏 RGB reader。
+  segment interface、RLDS first/last/terminal flags,以及只解码指定绝对帧的稀疏 RGB reader。
+- `codewam/data/droid_endpoint.py`:验证官方 observation/action endpoint、末步 action validity、
+  boundary flags 和 current-vs-shifted action alignment。
+- `codewam/data/frozen_assignment.py`:从未池化多相机 Wan latent 确定性生成冻结
+  Q2/Q3/Q5 RQ IDs 与精确 descriptor source indices,不更新 normalization 或 centers。
+- `codewam/data/joint_cache.py`:去重 episode tensors、原子 shard/sidecar、逻辑 window index、
+  完整 provenance/hash 校验、lazy random access 和 typed model collator。
+- `codewam/data/joint_cache_export.py`:按完整 DROID source shard 分 rank,串联 RLDS、Wan、
+  frozen assignment、action endpoint 与 resumable JointWindowCache。
+- `codewam/experiments/gate2.py`:等预算 PERSIST/NOACT/TRUE/SHUFFLE、TRUE 模型动作干预、
+  all/changed/family/overlap 流式指标和 episode-block paired bootstrap。
 
 input/cache 使用 fp16 或 bf16;normalization、distance、centers 和统计累积使用 fp32。descriptor、
 residual 和全量 code assignment 都只在当前 batch 中产生,不作为默认永久 cache。
@@ -972,7 +982,7 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 139 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
+当前 155 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
 DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
@@ -980,8 +990,10 @@ patience resume、RQ residual 下降、artifact round-trip、双 rank resume 与
 DROID pooled export evidence、Wan causal-prefix 正反例、candidate workflow、跨 parent
 folds、对齐 multi-family contribution、scene-diverse retrieval provenance 和冻结 temporal
 counterfactual,以及 RGB-to-cache reproduction、视觉扰动、动作事件、独立 seed
-label-permutation、十门可用性决策,以及 functional readout 的精确因果状态 union、nested
-scene subsets、非线性 code partition、三 seed end-to-end/resume。
+label-permutation、十门可用性决策、functional readout 的精确因果状态 union、nested
+scene subsets、非线性 code partition、三 seed end-to-end/resume,以及 RLDS endpoint、
+冻结因果赋码、JointWindowCache round-trip、防篡改、生产 export 对齐、固定 action permutation
+和完整 Gate 2 CPU 回归。
 
 ## 12. 命令与产物
 
@@ -1200,73 +1212,124 @@ action 序列;`pooled_g4` 也丢掉了 `ContinuousStateEncoder` 所需的 unpool
 不能对两行下采样 action 做插值后伪造 GT action chunk。正式联合样本必须回到原始 RLDS
 step/action 序列,并使用同一 Wan revision 导出未池化 latent。
 
-## 14. 下一张工程单
+## 14. JointWindowCache 与 Gate 2
 
-五模块模型骨架已经实现。下一阶段只做 `JointWindowCache v1 + Gate 2`,不同时扩展 memory、
-规划或新 loss。
+### 14.1 已实现的数据 contract
 
-物理存储按 episode/keep-range 去重,避免把重叠窗口复制多次:
-
-```text
-joint_cache/
-  contract.json
-  episode_shards/
-    unpooled_latent          [T_latent,V,48,H_z,W_z]
-    latent_source_indices    [T_latent]
-    source_action/proprio    [T_source,D]
-    current_code_ids         [T_latent,3,3]
-    current_available        [T_latent,3]
-  windows.jsonl
-    episode/range/chart/role
-    state latent slice and <=t history indices
-    action [source_start,source_stop) and per-step validity
-    future observation/latent tick
-    current/future descriptor source indices and overlap count
-    current/future code IDs and artifact hashes
-```
-
-`windows.jsonl` 是逻辑样本索引,不重复保存 tensor。contract 锁定 source、Wan、preprocess、
-language encoder 和三份 RQ artifact hashes。每条 window 必须满足:
-
-1. split/episode/keep-range 不跨界。
-2. state latent 最大 source index 不晚于决策 observation。
-3. past action 最大 index 严格早于待预测 action chunk。
-4. future code 来自 action chunk 执行后的真实 endpoint observation。
-5. 每族显式记录 current/future 三个 descriptor tick 及交集大小。
-6. source-rate action 不经 latent-tick 插值。
-7. current/future IDs 可由 frozen artifact 逐位复算。
-8. unavailable family 保存 `-1` 和 availability mask,不 padding。
-9. resume 校验每个 shard SHA,峰值内存不随总 episode 数增长。
-
-在实现 index 公式前,先对官方 DROID RLDS 做 transition endpoint audit。文档和数组都不能替代
-这个审计:必须核对 step `i` 的 observation、`action[i]` 与后继 observation 的定义,再固定
-`source_start/source_stop/future_observation`。
-
-现有 DROID scoped RQ artifact 来自 success-only manifest,继续作为 immutable baseline。
-为了让失败状态进入 world vocabulary,另建一个默认仍排除 quality flags、但带
-`--include-failures` 的 versioned candidate;比较 held-out coverage、distortion、usage 和
-retrieval 后再决定是否替换,不能覆盖旧 artifact。
-
-Gate 2 固定四个主条件:
+`JointWindowCache v1` 已按 episode/keep-range 去重保存:
 
 ```text
-PERSIST  current IDs 直接作为 future IDs
-NOACT    训练/评估 p(C_future | B),不提供 action
-TRUE     训练/评估 p(C_future | B,A)
-SHUFFLE  以固定 seed 在同 split/有效 horizon 内置换 action 后训练
+unpooled_latent          [T_latent,V,48,H_z,W_z]
+latent_source_indices    [T_latent]
+source_action/proprio    [T_source,D]
+source_action_valid      [T_source]
+code_ids/available       [T_latent,3,3] / [T_latent,3]
+descriptor_sources       [T_latent,3,3]
 ```
 
-`TRUE` 必须在 val/test 和多个 seed 上同时优于 `NOACT/SHUFFLE`,且改善不能只来自一个 family;
-同时报告 normalized NLL、raw family-prefix NLL、完整 prefix accuracy 和 chart-local center
-MSE。`PERSIST` 用 accuracy/center MSE 作确定性基线。independent 与 prefix heads 使用相同
-belief、数据和优化预算,但必须单列更大的 prefix output-head 参数量;per-head ECE/accuracy
-的单位不同,不横比。
+`windows.jsonl` 只记录 state/history/action/future 的逻辑切片、当前/未来 code、descriptor
+overlap 与 artifact hashes。writer 和 reader 都逐窗口复核 split/range、RLDS endpoint、
+source-rate action、future latent tick、availability、code label 和 overlap;任何 shard 或
+index SHA 改变都会在 tensor 进入模型前失败。language tokens 当前可选:缺失时只关闭 action
+imitation supervision,不关闭 Gate 2 dynamics。
 
-所有 learned 条件都要同时报告 `all available families` 和 `changed families only`。后者由
-完整三级 tuple 是否改变定义,并按 family 过滤,不能用 sample-level 粗筛。另按 descriptor
-source-index overlap 分层;如果 TRUE 的收益只存在于高度重叠或 unchanged target,不能解释成
-学到了 action-conditioned world rule。endpoint gap 至少覆盖一种低重叠设置,但具体 gap 必须
-在 DROID action/latent cadence 审计后预注册。
+官方 RLDS 端点固定为:
 
-只有 Gate 2 通过后才执行 Stage-0 init 对照和正式 C0/C1/C2。失败则先检查时间端点、artifact
-coverage 和 action relevance,不靠增加辅助 loss 把结果“调通过”。
+```text
+observation[t] -- action[t:t+h] --> observation[t+h]
+```
+
+`is_last` step 的 action 无效。2026-07-30 在 DROID-100 32 条轨迹、8,892 steps 上验证:
+全部 boundary flags 合法;current action 相对 `action[t+1]` 的关节/笛卡尔速度 cosine margin
+为 `0.02781/0.03217`,高于预注册 `0.005`。
+
+### 14.2 真实工程 smoke
+
+从 canonical DROID-10k manifest 的同一 source shard 选取 train/val/test 各两个 episodes,
+七个独立 keep-range segments 共约 977 个保留 source frames。单 A800 使用两路相机、
+官方 Wan2.2-VAE 和 wrist `g=4,K=8,L=3` 三份 frozen artifacts:
+
+```text
+首次导出                 32.81 s
+episode/windows          7 / 157
+train/val/test windows   24 / 71 / 62
+Q2/Q3/Q5 overlap        1 / 0 / 0,全部 157 个窗口一致
+cache contract           671e6a9a4080c18a4a4410488ab57b7fcb0e5e4b226a13383b248da5e580d16b
+episode shard SHA        febbba3a9f0938ee3d1b04b35c4182d41c7b78d98534f7977bff5e91de4c379f
+```
+
+相同 export 命令续跑逐项校验后返回 `reused`,不重新加载 VAE。contract 除 checkpoint、
+source、artifact 和 CodeWAM 实现外,还锁定 FastWAM VAE、loader 与 converter 三个文件 SHA。
+
+真实 cache 上的 Gate 2 engineering smoke 为每个 learned condition 两个 optimizer steps,
+三组预算相等且 NOACT action encoder 保持初始化。PERSIST/NOACT/TRUE/SHUFFLE、
+TRUE@NOACT 和 TRUE@SHUFFLE 均完成 GPU 前向、流式指标、checkpoint 与报告。test 只有两个
+独立 episodes,因此协议按 `minimum_gate_episodes=30` 返回 `invalid`。该结果只证明链路可跑,
+不能支持“动作有用或无用”的研究结论。
+
+### 14.3 正式 8 卡导出
+
+exporter 不使用 DDP 梯度同步;`torchrun` 只提供 rank/world/local-rank。每个 rank 拥有完整
+TFRecord source shards,`LOCAL_RANK` 自动选择对应 GPU:
+
+```bash
+torchrun --standalone --nproc-per-node=8 \
+  scripts/export_joint_window_cache.py \
+  --source-manifest "$DROID_10K_MANIFEST" \
+  --data-dir "$DROID_RLDS_ROOT" \
+  --output-dir "$JOINT_CACHE_ROOT" \
+  --endpoint-audit "$ENDPOINT_AUDIT" \
+  --artifact Q2="$Q2_ARTIFACT" \
+  --artifact Q3="$Q3_ARTIFACT" \
+  --artifact Q5="$Q5_ARTIFACT" \
+  --chart-name droid \
+  --vae-path "$WAN_VAE_PATH" \
+  --fastwam-src "$FASTWAM_ROOT" \
+  --camera exterior_image_1_left \
+  --camera wrist_image_left \
+  --dtype bfloat16
+
+python scripts/export_joint_window_cache.py \
+  --output-dir "$JOINT_CACHE_ROOT" \
+  --finalize-only
+```
+
+`FASTWAM_ROOT` 可指仓库根目录或直接指包含 `fastwam/` 的 `src/`。中断后原命令续跑;contract
+不一致必须换 output directory,不能覆盖旧 shard。
+
+### 14.4 正式 Gate 2
+
+四条件和判断口径固定:
+
+```text
+PERSIST       current IDs 作为 future IDs,无概率 NLL
+NOACT         p(C_future | B)
+TRUE          p(C_future | B,A_aligned)
+SHUFFLE       p(C_future | B,A_fixed-wrong)
+TRUE@NOACT    TRUE-trained model 移除 action
+TRUE@SHUFFLE  TRUE-trained model 注入固定 wrong action
+```
+
+`SHUFFLE` 只在同 split/horizon 内置换并锁定 permutation hash。所有学习条件共享初始化、
+数据顺序、optimizer 和 step budget;loss 只有 future-code CE。主指标是 changed-family
+normalized NLL,同时报告 all/stable、family、overlap、prefix accuracy、Brier/ECE/entropy
+和 chart-local center MSE。PERSIST 不伪造 NLL。
+
+```bash
+for SEED in 7 19 31; do
+  torchrun --standalone --nproc-per-node=8 \
+    scripts/run_gate2.py \
+    --config configs/gate2/droid_joint_v1.yaml \
+    --cache-dir "$JOINT_CACHE_ROOT" \
+    --output-dir "$GATE2_ROOT/seed-${SEED}" \
+    --artifact Q2="$Q2_ARTIFACT" \
+    --artifact Q3="$Q3_ARTIFACT" \
+    --artifact Q5="$Q5_ARTIFACT" \
+    --seed "$SEED"
+done
+```
+
+每个 seed 的 test episode-block paired bootstrap 至少需要 30 个共同 changed-code episodes,
+正式目标不少于 100 个。`TRUE` 相对 NOACT、SHUFFLE 与 TRUE@SHUFFLE 的 95% CI 上界必须
+全部小于零才通过。先完成 independent head;通过后才比较 prefix、Stage-0 和 C0/C1/C2。
+失败时先检查 endpoint、coverage、overlap 和 action relevance,不增加辅助 loss 强行调门。

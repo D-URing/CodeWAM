@@ -45,6 +45,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact", action="append", default=[])
     parser.add_argument("--device")
     parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--seed", type=int)
     return parser.parse_args()
 
 
@@ -67,6 +68,7 @@ def _load_config(args: argparse.Namespace) -> Gate2RunConfig:
         ("output_dir", args.output_dir),
         ("device", args.device),
         ("max_steps", args.max_steps),
+        ("seed", args.seed),
     ):
         if value is not None:
             values[name] = value

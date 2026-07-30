@@ -47,7 +47,8 @@ future-code classification 两个 loss,基本推理不运行 future-code decoder
 codewam/
 ├── codebook.py    # legacy online-EMA prototype; disabled by default
 ├── codebook_eval/ # canonical manifest, pooled shards, streaming RQ and pipeline
-├── data/          # DROID adapters, trajectory roles and supervision masks
+├── data/          # DROID endpoint, frozen assignment and verified joint cache
+├── experiments/   # controlled Gate 2 protocols
 ├── models/        # independent five-module CodeWAM v1
 ├── model.py       # legacy FastWAM-compatible prototype
 ├── runtime.py     # legacy Hydra factory
@@ -141,6 +142,32 @@ python scripts/probe_codebook_temporal_sensitivity.py \
 真实数据导出前用 `scripts/audit_wan_causality.py` 做 full-vs-prefix latent 一致性审计,
 把 Wan-VAE 不读取未来帧从结构假设变成可复现证据。
 
+冻结 artifacts 就绪后,canonical world-dynamics 链使用:
+
+```bash
+python scripts/audit_droid_endpoints.py \
+  --data-dir "$DROID_100_ROOT" \
+  --output "$ENDPOINT_AUDIT"
+
+torchrun --standalone --nproc-per-node=8 \
+  scripts/export_joint_window_cache.py \
+  --source-manifest "$DROID_10K_MANIFEST" \
+  --data-dir "$DROID_RLDS_ROOT" \
+  --output-dir "$JOINT_CACHE_ROOT" \
+  --endpoint-audit "$ENDPOINT_AUDIT" \
+  --artifact Q2="$Q2_ARTIFACT" \
+  --artifact Q3="$Q3_ARTIFACT" \
+  --artifact Q5="$Q5_ARTIFACT" \
+  --vae-path "$WAN_VAE_PATH" \
+  --fastwam-src "$FASTWAM_ROOT"
+
+python scripts/export_joint_window_cache.py \
+  --output-dir "$JOINT_CACHE_ROOT" --finalize-only
+```
+
+Gate 2 的 PERSIST/NOACT/TRUE/SHUFFLE 命令和有效性规则见
+[`docs/CODEBOOK.md`](./docs/CODEBOOK.md#144-正式-gate-2)。
+
 Package Scan v6 只用于本机数据链路和回归:
 
 ```bash
@@ -175,7 +202,10 @@ BridgeData V2 frozen-transfer and independent-refit replication
   DROID/LIBERO RGB perturbation、independent-seed stability 和 provenance-checked usability
   report、跨 seed `P0/P1/P2/P3` functional readout,以及 DROID 1.0.1 精确
   metadata/RLDS join、稀疏 RGB reader、keep-range audit 和 canonical pooled exporter。
-- 已验证:139 项单元测试(本机仅 1 项 CUDA 专项跳过)、单卡/双 rank centers 等价、
+- 已实现:RLDS endpoint audit、冻结 Q2/Q3/Q5 causal assigner、未池化多相机
+  `JointWindowCache v1`、source-rate action/proprio、rank-aware Wan exporter、verified
+  dataloader/collator,以及等预算 Gate 2 runner 与 episode-block bootstrap。
+- 已验证:155 项单元测试(本机仅 1 项 CUDA 专项跳过)、单卡/双 rank centers 等价、
   synthetic Q2/Q3/Q5 端到端 smoke、
   58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
   causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较、val/test 一致的时间反事实
@@ -187,13 +217,16 @@ BridgeData V2 frozen-transfer and independent-refit replication
   tokenizer”主张;绑定版本和 seed 的 DROID 域内 artifact 可以进入 C1/C2 原型。
   minimal additive `P0/P1/P2/P3` 只证明 hard categorical feature 没有在线性动作读出中超过
   `H`,不再作为是否实现 world model 的结构门。
+- 已验证真实 joint smoke:32 条 DROID-100/8,892 steps 的 endpoint audit 通过;DROID 1.0.1
+  七个 keep-range segments 生成 157 个窗口,split `24/71/62`,Q2/Q3/Q5 overlap
+  恒为 `1/0/0`;三学习条件各 2 步的 GPU Gate 2 链完整运行。test 仅两个独立 episode,
+  因而报告按 30-episode 下限正确标记 `invalid`,不构成研究结论。
 - 默认关闭:legacy online-EMA single-token codebook。
-- 尚未实现:真实 Wan latent + 原始频率 action/proprio 的联合窗口 exporter、正式 dataloader、
-  distributed trainer、部署侧 frozen causal assigner 和闭环 benchmark。现有 `pooled_g4`
-  中的 action 只在 latent tick 采样,不能替代策略 action chunk。
-- 下一步:实现 `JointWindowCache v1`,审计 observation/action 端点语义,再按
-  persistence、no-action、true-action、shuffled-action 完成 Gate 2。只有 Gate 2 通过后才启动
-  `C0/C1/C2` 大规模训练。LIBERO 使用独立 chart/refit,不能把 DROID code ID 当成共享语义。
+- 尚未实现:full-scale Gate 2、frozen language token cache、canonical C0/C1/C2 policy trainer、
+  部署侧 online runtime 和闭环 benchmark。
+- 下一步:8 卡导出完整 DROID-10k JointWindowCache,以 7/19/31 三个 seed 正式运行 Gate 2。
+  只有 Gate 2 通过后才启动 `C0/C1/C2`;LIBERO 使用独立 chart/refit,不能把 DROID code ID
+  当成共享语义。
 
 外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
 checkpoints 和运行结果始终放在 git 之外。

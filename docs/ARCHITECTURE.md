@@ -1,7 +1,7 @@
 # CodeWAM Architecture
 
-Status: canonical CodeWAM v1 architecture implemented; real-data joint-window
-exporter/trainer and online frozen assigner pending.
+Status: canonical CodeWAM v1, verified JointWindowCache and Gate 2 runner
+implemented; full-scale Gate 2, joint policy trainer and online runtime pending.
 
 本文件是 CodeWAM 的唯一结构规范,约束模型模块、信息身份、训练目标、可见性和实验门。
 码本数据、离线训练与评估见 `CODEBOOK.md`;环境和工程边界见 `DEVELOPMENT.md`。当前
@@ -259,10 +259,10 @@ E_{s,j,t} = FamilyEmbedding_s + LevelEmbedding_j + ChartEmbedding_d
 center 内容作为只读 K/V measurement;可学习的是投影与身份 embedding。v1 不把 margin、
 quantization residual 或 handcrafted action association 加入模型输入。
 
-训练时 current/future IDs 由 `JointWindowCache` 离线保存并逐样本复算验真。部署时还需要
-冻结的 batched causal assigner:从 wrist Wan latent 历史构造 Q2/Q3/Q5 descriptor,使用对应
-chart 的 train-only normalization 和 centers 赋码。它属于确定性 perception preprocessing,
-不是可训练第六模块;当前尚未实现 canonical online runtime。
+训练时 current/future IDs 由 `JointWindowCache` 离线保存并逐样本复算验真。
+`FrozenCausalCodeAssigner` 已实现从未池化 Wan latent 历史构造 Q2/Q3/Q5 descriptor,
+再使用对应 chart 的 train-only normalization 和 centers 冻结赋码。它属于确定性 perception
+preprocessing,不是可训练第六模块;当前缺口是把同一逻辑封装进 canonical online runtime。
 
 ### 5.4 WorldBeliefCore
 
@@ -599,6 +599,17 @@ shuffled-action control
 如果真实 action 不能稳定降低 held-out future-code NLL,code graph 尚未形成可学习的
 action-conditioned dynamics。当前动作线性读出不再是 Gate 2。
 
+正式 Gate 2 固定使用同一 cache、初始化、batch 顺序、优化器和更新步数。`SHUFFLE` 是按
+`split x horizon` 预先生成并哈希的全局置换,非 singleton group 不能映射回自身并尽可能跨
+episode。主分析只看完整 RQ tuple 确实改变的 family,同时报告 all/stable、Q2/Q3/Q5 和
+descriptor overlap `0/1/2/3` 分层。`TRUE` 还要原模型执行 `TRUE@NOACT` 与
+`TRUE@SHUFFLE` 干预,排除三个独立训练结果的偶然差异。
+
+门判定使用 test episode 为 block 的 paired bootstrap;点估计和 window 数不能代替独立
+episode。默认至少需要 30 个具有 changed-family label 的共同 test episodes,不足时只能是
+`invalid`,不能输出科学性 pass/fail。通过要求 `TRUE-NOACT`、`TRUE-SHUFFLE` 和
+`TRUE-TRUE@SHUFFLE` 的 changed-family normalized-NLL 95% CI 上界都小于零。
+
 已完成的 P0/P1/P2/P3 ridge screen 保留为历史接口诊断。它说明 hard categorical additive
 feature 没有超过连续 H,也说明该 proxy 受 absolute action/proprio shortcut 和高维小样本
 过拟合影响;它不裁决 CodeWAM 架构。
@@ -685,51 +696,48 @@ FastWAM checkout、ActionDiT conversion 和旧训练脚本只服务 `F0` 对照�
 
 ## 12. 当前实现与唯一下一张工程单
 
-`codewam/models/` 已实现五模块、typed contracts、C0/C1/C2 factory、Stage-0 head、两种
-future-code factorization 和 held-out metrics。`codewam/data/roles.py` 已实现数据角色到
-supervision masks 的映射。单元测试覆盖因果性、防泄漏、梯度路由、跨域 chart、冻结 centers、
-padding 和 state-dict;`scripts/smoke_codewam_v1.py` 完成四条合成前反向/推理路径。
-
-这表示 **模型工程骨架已成立**,不表示真实训练/部署链路已成立。当前 canonical pooled cache 只保存
-`pooled_g4` 和 latent-tick 下采样后的 action/proprio。它适合 RQ 拟合与静态/粗粒度转移诊断,
-但不包含策略需要的原始频率 action chunk,也不保留 `ContinuousStateEncoder` 需要的 unpooled
-多相机 latent window。canonical batched online assigner 也仍待实现。
-
-下一张工程单固定为 `JointWindowCache v1`。物理 tensor 按 episode/keep-range 去重保存,
-window index 必须能原子还原以下逻辑样本:
+以下真实训练前边界已经实现:
 
 ```text
-identity       dataset/chart, episode, keep-range, split, trajectory role
-time contract  observation index/time, action [start,stop), future observation index/time
-overlap        current/future descriptor source indices and per-family overlap count
-state input    <=t 的 unpooled multi-view Wan latent, validity, proprio history, a_<t
-policy label   原始控制频率的 continuous action chunk 与逐步 validity
-world input    当前 Q2/Q3/Q5 IDs/availability 与 chart artifact hashes
-world label    action chunk 真实终点观测的 Q2/Q3/Q5 IDs/availability
-task           raw instruction 与 frozen language encoder revision/tokens
-provenance     source shard/checksum, Wan/preprocess revision, codebook hashes
+codewam/data/droid_endpoint.py       RLDS endpoint/flag/alignment audit
+codewam/data/frozen_assignment.py    frozen causal Q2/Q3/Q5 assignment
+codewam/data/joint_cache.py          deduplicated episode shards + verified windows
+codewam/data/joint_cache_export.py   rank-aware DROID -> Wan -> code/cache export
+codewam/experiments/gate2.py         fixed-budget four-condition Gate 2
 ```
 
-在写 exporter 前必须先用官方 DROID transition 语义审计“第 `i` 条 observation、action 和
-下一 observation”的关系;不能仅凭数组下标猜 `future_observation=i+h`。exporter 还必须拒绝
-跨 keep-range gap、episode 或不可用 family 的窗口,并验证 Policy 输入最大索引严格早于
-future-code label。
+`JointWindowCache v1` 物理上按 episode/keep-range 去重保存未池化多相机 latent、source-rate
+action/proprio、逐步 action validity、冻结 codes 和三个 descriptor source indices;
+`windows.jsonl` 只保存状态/history/action/future 的半开区间与 artifact hashes。contract
+锁定 source manifest、endpoint audit、Wan checkpoint、FastWAM VAE 实现、预处理、三份
+codebook 和 CodeWAM writer 实现。reader 在取样时重新验证 shard SHA、端点、切片、
+code label 与 overlap,再构造 typed `CodeWAMBatch`。
 
-随后按以下顺序推进:
+2026-07-30 的真实工程验收使用官方 DROID-100 32 条轨迹和 DROID 1.0.1 单个 TFRecord
+source shard。端点审计覆盖 8,892 steps;`action[t]` 相对错位 `action[t+1]` 的关节/笛卡尔
+速度 cosine 优势为 `0.02781/0.03217`,且 32 条轨迹的 first/last/terminal 边界全部合法。
+六个 manifest episodes 的七个 keep-range segments 经 frozen Wan 与三份 DROID RQ artifact
+生成 157 个窗口,split 为 `24/71/62`;Q2/Q3/Q5 overlap 恒为 `1/0/0`。该小 cache 上
+PERSIST/NOACT/TRUE/SHUFFLE 和 TRUE 模型两种干预均完成 GPU 前反向、checkpoint、resume
+与全指标报告。因为 test 只有两个独立 episode,更新后的协议正确返回 `invalid`;这只是
+engineering smoke,不是 Gate 2 结果。
+
+唯一下一张工程单改为 **DROID-10k JointWindowCache 扩展与正式 Gate 2**:
 
 ```text
-1. DROID observation/action endpoint audit + JointWindowCache reference test
-2. 小规模真实 cache,逐样本复算 current/future IDs 和 action endpoint
-3. Gate 2: persistence / no-action / true-action / shuffled-action
-4. 全量与 changed-family 子集分别评估,排除 persistence/窗口重叠假象
-5. independent vs prefix dynamics,以 normalized NLL 与 family-prefix accuracy 决策
-6. scratch vs Stage-0 continuous-state initialization
-7. 只有 Gate 2 通过才启动参数预算一致的 DROID C0/C1/C2
-8. LIBERO 使用独立 chart/refit 后重复,FastWAM 仅作 F0
+1. 用 8 个独立 rank 导出 canonical 10k 的完整未池化 cache,每 rank 拥有完整 source shards。
+2. finalize 后复核所有 shard/index SHA、split episode 数、changed-family coverage 与 overlap。
+3. independent dynamics 固定三个 seed,每个 seed 等预算训练 NOACT/TRUE/SHUFFLE。
+4. 以 >=30 个共同 changed-code test episodes 为硬有效性下限,目标使用 >=100 个。
+5. 三个 seed 均报告 all/changed/family/overlap、paired episode CI 和 TRUE 模型动作干预。
+6. 只有 independent Gate 2 通过,才比较 prefix head 和 scratch/Stage-0 initialization。
+7. 之后实现冻结 language cache 与参数预算一致的 DROID C0/C1/C2 trainer。
+8. LIBERO 使用独立 chart/refit 重复;FastWAM 仍只作 F0。
 ```
 
-当前 `codewam/model.py`、`codewam/codebook.py`、`codewam/runtime.py` 和相应旧训练配置仍是
-legacy,不能接到 canonical v1 上冒充真实 trainer。
+online assigner/runtime、language token export、正式 joint policy trainer 和闭环 benchmark
+仍未完成。当前 `codewam/model.py`、`codewam/codebook.py`、`codewam/runtime.py` 与旧训练配置
+仍是 legacy,不能接到 canonical v1 上冒充真实 trainer。
 
 ## 13. 可证伪主张
 

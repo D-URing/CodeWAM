@@ -51,7 +51,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nominal-fps", type=float, default=15.0)
     parser.add_argument("--image-height", type=int, default=224)
     parser.add_argument("--image-width", type=int, default=224)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device",
+        default=(
+            f"cuda:{os.environ['LOCAL_RANK']}"
+            if "LOCAL_RANK" in os.environ
+            else "cuda"
+        ),
+    )
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--rank", type=int, default=int(os.getenv("RANK", "0")))
     parser.add_argument(

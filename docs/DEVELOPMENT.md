@@ -30,8 +30,14 @@ CodeWAM/
 │   ├── data/
 │   │   ├── droid_manifest.py  # exact official join and balanced sample
 │   │   ├── droid_rlds.py      # exact-position, rank-aware and sparse RGB reader
+│   │   ├── droid_endpoint.py  # RLDS endpoint and boundary audit
+│   │   ├── frozen_assignment.py # frozen causal Q2/Q3/Q5 assignment
+│   │   ├── joint_cache.py     # verified episode shards, windows and collator
+│   │   ├── joint_cache_export.py # DROID/Wan production exporter
 │   │   ├── roles.py            # trajectory role and objective masks
 │   │   └── package_scan_v6.py # local regression adapter
+│   ├── experiments/
+│   │   └── gate2.py           # controlled action-conditioned dynamics gate
 │   ├── models/
 │   │   ├── contracts.py        # typed state/code/policy/action batches
 │   │   ├── continuous_state.py # causal state encoder and Stage-0 head
@@ -43,7 +49,7 @@ CodeWAM/
 │   ├── model.py               # legacy FastWAM-compatible prototype
 │   ├── probe.py               # legacy compatibility probe
 │   └── runtime.py             # legacy Hydra factory
-├── configs/                   # model, data, task, and codebook configs
+├── configs/                   # model, data, task, codebook and Gate 2 configs
 ├── scripts/                   # setup, checks, export, clustering, and training
 ├── requirements/              # local and CUDA dependency sets
 ├── docs/                      # three canonical documents
@@ -55,8 +61,9 @@ CodeWAM/
 ```
 
 大型公开数据集放在独立共享数据根目录,不复制到仓库。下载、校验和训练 artifact 也不进入
-git。canonical model 已位于 `codewam/models/`;当前缺口是 real-data `JointWindowCache`、
-dataloader、distributed trainer 和部署侧 frozen causal assigner,不是模型文件。
+git。canonical model、real-data `JointWindowCache`、frozen causal assigner、rank-aware
+exporter 和 Gate 2 runner 已实现。当前缺口是 full-scale Gate 2、language token cache、
+joint policy trainer 和部署侧 online runtime,不是继续补模型骨架。
 
 ## 2. 本机开发
 
@@ -136,6 +143,10 @@ FASTWAM_DIR=/mnt/work/FastWAM \
 INSTALL_EDITABLE=false \
 bash scripts/bootstrap_fastwam.sh
 ```
+
+联合 Wan exporter 的 `--fastwam-src` 同时接受仓库根目录
+`/path/to/FastWAM` 和 package 根目录 `/path/to/FastWAM/src`;contract 会锁定实际使用的
+VAE、loader 与 converter 文件 SHA。
 
 CodeWAM owns:
 
@@ -356,41 +367,78 @@ profile、target 和 P1-only alpha selection;输出目录不能在不同 train f
 `CODEBOOK.md`。一次性下载器和官方数据索引放在共享数据根目录,不放进本仓库。旧
 `scripts/codebook_eval.py` 和 `codewam.probe` 只用于历史兼容检查。
 
-## 7. Canonical 模型状态
+## 7. Canonical Joint Cache 与 Gate 2
 
-独立 CodeWAM v1 五模块和最低验收已经实现:
-
-```text
-codewam/models/ 不 import FastWAM
-C0/C1/C2 使用同一 typed batch contract 和 builder
-Stage-0 encoder 输入从结构上裁掉未来 target
-action/future-code label 无泄漏
-L_action/L_code 梯度路由符合 ARCHITECTURE.md
-frozen centers 在 optimizer step 前后逐位不变
-basic inference 不调用 CodeDynamics
-independent/prefix NLL 使用统一的 per-RQ-level 口径
-```
-
-本机或开发机工程验收:
+先审计官方 DROID endpoint:
 
 ```bash
-python scripts/smoke_codewam_v1.py \
-  --device cuda \
-  --output runs/model_smoke/codewam_v1_cuda.json
+PYTHONPATH=. python scripts/audit_droid_endpoints.py \
+  --data-dir "$DROID_100_ROOT" \
+  --max-episodes 32 \
+  --output "$RUN_ROOT/droid100_endpoint_audit/report.json"
 ```
 
-输出 schema 为 `codewam.model-smoke.v1`,会跑 Stage-0、C0、C1、C2-independent 和 C2-prefix
-各一个 optimizer step,再检查 mixed chart、availability、gradient routes、frozen centers 和
-basic action inference。它只使用合成 tensor/centers,字段
-`scientific_evidence=false`;不能写进实验结果。
+报告必须是 `pass`;它会检查 first/last/terminal flags、末步 action invalid 和
+current-vs-shifted action alignment。联合 cache 单卡命令:
 
-`configs/model/codewam_v1.yaml` 可实例化 `CodeWAMConfig`,但当前仍没有合法的 real-data
-canonical training command。原因是 joint window exporter 尚未完成,而不是继续缺模型模块。
-旧 `scripts/train.py`、`train_zero*.sh` 的成功只能记为 legacy/F0,不能记为 CodeWAM v1。
+```bash
+PYTHONPATH=. python scripts/export_joint_window_cache.py \
+  --source-manifest "$DROID_MANIFEST" \
+  --data-dir "$DROID_RLDS_ROOT" \
+  --output-dir "$JOINT_CACHE_ROOT" \
+  --endpoint-audit "$ENDPOINT_AUDIT" \
+  --artifact Q2="$Q2_ARTIFACT" \
+  --artifact Q3="$Q3_ARTIFACT" \
+  --artifact Q5="$Q5_ARTIFACT" \
+  --vae-path "$WAN_VAE_PATH" \
+  --fastwam-src "$FASTWAM_ROOT" \
+  --camera exterior_image_1_left \
+  --camera wrist_image_left \
+  --device cuda:0 --dtype bfloat16
 
-模型 forward 接收 `CodeMeasurements`,不会在内部从 latent 重新计算 RQ IDs。训练 cache 和
-部署 runtime 都必须用同一 artifact 的 descriptor、normalization、centers 与 chart identity;
-后续 online assigner 只能做冻结赋码,不能流式更新聚类中心。
+PYTHONPATH=. python scripts/export_joint_window_cache.py \
+  --output-dir "$JOINT_CACHE_ROOT" \
+  --finalize-only
+```
+
+8 卡时用 `torchrun --nproc-per-node=8` 包住第一条命令并省略 `--device`;入口自动把每个进程
+映射到 `cuda:$LOCAL_RANK`。每个 rank 读取不同完整 TFRecord shards,不做 DDP 梯度同步。
+
+cache finalize 后运行 Gate 2:
+
+```bash
+torchrun --standalone --nproc-per-node=8 \
+  scripts/run_gate2.py \
+  --config configs/gate2/droid_joint_v1.yaml \
+  --cache-dir "$JOINT_CACHE_ROOT" \
+  --output-dir "$GATE2_ROOT/seed-7" \
+  --artifact Q2="$Q2_ARTIFACT" \
+  --artifact Q3="$Q3_ARTIFACT" \
+  --artifact Q5="$Q5_ARTIFACT" \
+  --seed 7
+```
+
+输出包括 immutable `protocol.json`、共享 `initialization.pt`、NOACT/TRUE/SHUFFLE 的
+latest/final checkpoints 和 `report.json`。同目录续跑只接受相同 protocol。正式 gate 默认
+至少 30 个独立 changed-code test episodes;不足返回 `invalid`。
+
+独立 CodeWAM v1 与数据链的本机最低验收:
+
+```bash
+python -m unittest discover -s tests -v
+python scripts/smoke_codewam_v1.py \
+  --device cpu \
+  --output runs/model_smoke/codewam_v1.json
+```
+
+当前 155 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
+JointWindowCache、Gate 2 controls 和 resume;本机只跳过一项 CUDA 专项。合成 model smoke
+仍标记 `scientific_evidence=false`;真实 2-step Gate 2 smoke 同样只能证明工程链路。
+
+模型 forward 接收 `CodeMeasurements`,不会在内部重新聚类。训练 cache 与部署 runtime 必须
+使用同一 descriptor、normalization、centers 和 chart identity;online runtime 只能调用
+冻结赋码,不能流式更新聚类中心。`configs/model/codewam_v1.yaml` 仍不是 policy trainer;
+正式 C0/C1/C2 要等 full-scale Gate 2 通过后实现。
 
 ## 8. Legacy/F0 模型训练
 
