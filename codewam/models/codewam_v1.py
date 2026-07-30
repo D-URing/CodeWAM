@@ -169,7 +169,7 @@ class CodeWAMV1(nn.Module):
         *,
         state: StateInputs,
         codes: CodeMeasurements | None,
-        candidate_actions: ActionBatch,
+        candidate_actions: ActionBatch | None,
     ) -> FutureCodePrediction:
         belief = self.build_belief(state, codes)
         return self.code_dynamics(belief, candidate_actions)

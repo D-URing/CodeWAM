@@ -199,6 +199,28 @@ class CodeDynamicsTests(unittest.TestCase):
             all(torch.isfinite(logits).all() for logits in prediction.logits)
         )
 
+    def test_no_action_path_ignores_all_action_parameters(self) -> None:
+        torch.manual_seed(29)
+        decoder = CodeDynamicsDecoder(
+            dim=16,
+            heads=4,
+            action_dim=7,
+            max_horizon=4,
+            families=("Q2", "Q3", "Q5"),
+            codebook_sizes=((4, 4, 4),) * 3,
+            mode="independent",
+            layers=1,
+            action_layers=1,
+        ).eval()
+        belief = WorldBelief(tokens=torch.randn(2, 3, 16))
+        first = decoder(belief, None)
+        with torch.no_grad():
+            decoder.action_projection.weight.add_(1_000.0)
+            decoder.action_position.add_(1_000.0)
+        second = decoder(belief, None)
+        for expected, actual in zip(first.logits, second.logits):
+            torch.testing.assert_close(expected, actual)
+
     def test_persistence_and_changed_family_metrics_are_separated(self) -> None:
         current_ids = torch.tensor(
             [

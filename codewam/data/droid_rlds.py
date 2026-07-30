@@ -58,6 +58,58 @@ def _validate_modalities(
     return length
 
 
+def _validate_step_flags(
+    episode_id: str,
+    *,
+    length: int,
+    is_first: torch.Tensor | None,
+    is_last: torch.Tensor | None,
+    is_terminal: torch.Tensor | None,
+    require_episode_boundaries: bool,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    values = {
+        "is_first": is_first,
+        "is_last": is_last,
+        "is_terminal": is_terminal,
+    }
+    if all(value is None for value in values.values()):
+        return None, None, None
+    if any(value is None for value in values.values()):
+        missing = sorted(name for name, value in values.items() if value is None)
+        raise ValueError(
+            f"DROID episode `{episode_id}` has incomplete RLDS flags: {missing}."
+        )
+    normalized: dict[str, torch.Tensor] = {}
+    for name, value in values.items():
+        assert value is not None
+        if value.dtype != torch.bool or tuple(value.shape) != (length,):
+            raise ValueError(
+                f"DROID `{name}` for `{episode_id}` must be bool [{length}], "
+                f"got {value.dtype} {tuple(value.shape)}."
+            )
+        normalized[name] = value.contiguous()
+    if require_episode_boundaries:
+        first_indices = normalized["is_first"].nonzero(as_tuple=False).flatten()
+        last_indices = normalized["is_last"].nonzero(as_tuple=False).flatten()
+        if first_indices.tolist() != [0]:
+            raise ValueError(
+                f"DROID episode `{episode_id}` must have only step 0 as is_first."
+            )
+        if last_indices.tolist() != [length - 1]:
+            raise ValueError(
+                f"DROID episode `{episode_id}` must have only its final step as is_last."
+            )
+        if torch.any(normalized["is_terminal"] & ~normalized["is_last"]):
+            raise ValueError(
+                f"DROID episode `{episode_id}` marks a non-final step terminal."
+            )
+    return (
+        normalized["is_first"],
+        normalized["is_last"],
+        normalized["is_terminal"],
+    )
+
+
 def _validate_keep_ranges(
     ranges: Iterable[Sequence[int]],
     *,
@@ -93,6 +145,9 @@ class DroidRLDSSegment:
     proprio: torch.Tensor
     language_instruction: str
     action_components: dict[str, torch.Tensor] = field(default_factory=dict)
+    is_first: torch.Tensor | None = None
+    is_last: torch.Tensor | None = None
+    is_terminal: torch.Tensor | None = None
     split: str | None = None
     manifest_key: str | None = None
     source_shard: str | None = None
@@ -117,7 +172,18 @@ class DroidRLDSSegment:
                 f"DROID segment `{self.segment_id}` contains {length} rows, "
                 f"expected {self.stop - self.start}."
             )
+        is_first, is_last, is_terminal = _validate_step_flags(
+            self.episode_id,
+            length=length,
+            is_first=self.is_first,
+            is_last=self.is_last,
+            is_terminal=self.is_terminal,
+            require_episode_boundaries=False,
+        )
         object.__setattr__(self, "action_components", dict(self.action_components))
+        object.__setattr__(self, "is_first", is_first)
+        object.__setattr__(self, "is_last", is_last)
+        object.__setattr__(self, "is_terminal", is_terminal)
 
     @property
     def segment_id(self) -> str:
@@ -126,6 +192,12 @@ class DroidRLDSSegment:
     @property
     def steps(self) -> int:
         return int(self.action.shape[0])
+
+    @property
+    def action_valid(self) -> torch.Tensor | None:
+        """Whether each RLDS action has a successor observation."""
+
+        return None if self.is_last is None else ~self.is_last
 
 
 @dataclass(frozen=True)
@@ -139,6 +211,9 @@ class DroidRLDSEpisode:
     source_file: str
     recording_folder: str
     action_components: dict[str, torch.Tensor] = field(default_factory=dict)
+    is_first: torch.Tensor | None = None
+    is_last: torch.Tensor | None = None
+    is_terminal: torch.Tensor | None = None
     split: str | None = None
     keep_ranges: tuple[tuple[int, int], ...] = ()
     manifest_key: str | None = None
@@ -160,14 +235,31 @@ class DroidRLDSEpisode:
             num_steps=steps,
             episode_id=self.episode_id,
         )
+        is_first, is_last, is_terminal = _validate_step_flags(
+            self.episode_id,
+            length=steps,
+            is_first=self.is_first,
+            is_last=self.is_last,
+            is_terminal=self.is_terminal,
+            require_episode_boundaries=True,
+        )
         object.__setattr__(self, "keep_ranges", ranges)
         object.__setattr__(self, "action_components", dict(self.action_components))
+        object.__setattr__(self, "is_first", is_first)
+        object.__setattr__(self, "is_last", is_last)
+        object.__setattr__(self, "is_terminal", is_terminal)
         if self.split is not None and self.split not in {"train", "val", "test"}:
             raise ValueError(f"Unsupported DROID split `{self.split}`.")
 
     @property
     def steps(self) -> int:
         return int(self.action.shape[0])
+
+    @property
+    def action_valid(self) -> torch.Tensor | None:
+        """Whether each RLDS action has a successor observation."""
+
+        return None if self.is_last is None else ~self.is_last
 
     def iter_eligible_segments(self) -> Iterator[DroidRLDSSegment]:
         ranges = self.keep_ranges or ((0, self.steps),)
@@ -188,6 +280,15 @@ class DroidRLDSEpisode:
                     name: values[start:stop]
                     for name, values in self.action_components.items()
                 },
+                is_first=(
+                    None if self.is_first is None else self.is_first[start:stop]
+                ),
+                is_last=None if self.is_last is None else self.is_last[start:stop],
+                is_terminal=(
+                    None
+                    if self.is_terminal is None
+                    else self.is_terminal[start:stop]
+                ),
                 split=self.split,
                 manifest_key=self.manifest_key,
                 source_shard=self.source_shard,
@@ -312,6 +413,18 @@ def _decode_text(value: object) -> str:
     return str(value)
 
 
+def _decode_step_flags(
+    step_rows: Sequence[Mapping[str, Any]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return tuple(
+        torch.tensor(
+            [bool(row[name]) for row in step_rows],
+            dtype=torch.bool,
+        )
+        for name in ("is_first", "is_last", "is_terminal")
+    )
+
+
 def _episode_id(index: int, source_file: str, recording_folder: str) -> str:
     source = recording_folder or source_file or f"index-{index}"
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
@@ -421,6 +534,7 @@ def _decode_manifest_record(
         )
     ).float()
     instruction = _decode_text(step_rows[0]["language_instruction"])
+    is_first, is_last, is_terminal = _decode_step_flags(step_rows)
     keep_ranges = _validate_keep_ranges(
         record.metadata.get("keep_ranges", ()),
         num_steps=record.num_steps,
@@ -443,6 +557,9 @@ def _decode_manifest_record(
         source_file=source_file,
         recording_folder=recording_folder,
         action_components=action_components,
+        is_first=is_first,
+        is_last=is_last,
+        is_terminal=is_terminal,
         split=record.split,
         keep_ranges=keep_ranges,
         manifest_key=record.key,
@@ -785,6 +902,7 @@ def iter_droid_rlds_episodes(
             )
         ).float()
         instruction = _decode_text(step_rows[0]["language_instruction"])
+        is_first, is_last, is_terminal = _decode_step_flags(step_rows)
         yield DroidRLDSEpisode(
             episode_id=_episode_id(index, source_file, recording_folder),
             index=index,
@@ -795,4 +913,7 @@ def iter_droid_rlds_episodes(
             source_file=source_file,
             recording_folder=recording_folder,
             action_components=action_components,
+            is_first=is_first,
+            is_last=is_last,
+            is_terminal=is_terminal,
         )

@@ -212,53 +212,68 @@ class CodeDynamicsDecoder(nn.Module):
     def forward(
         self,
         belief: WorldBelief,
-        actions: ActionBatch,
+        actions: ActionBatch | None,
     ) -> FutureCodePrediction:
-        batch, horizon, action_dim = actions.values.shape
-        if action_dim != self.action_dim:
-            raise ValueError(
-                f"Expected dynamics action dim {self.action_dim}, got {action_dim}."
-            )
-        if horizon > self.max_horizon:
-            raise ValueError(
-                f"Dynamics action horizon {horizon} exceeds {self.max_horizon}."
-            )
-        if belief.tokens.shape[0] != batch or belief.tokens.shape[2] != self.dim:
+        batch = int(belief.tokens.shape[0])
+        if belief.tokens.shape[2] != self.dim:
             raise ValueError("World belief does not match dynamics batch/width.")
-        action_valid = (
-            actions.valid
-            if actions.valid is not None
-            else torch.ones(
-                (batch, horizon),
+        if actions is None:
+            context = belief.tokens
+            context_valid = torch.ones(
+                belief.tokens.shape[:2],
                 dtype=torch.bool,
-                device=actions.values.device,
+                device=belief.tokens.device,
             )
-        )
-        action_tokens = self.action_projection(actions.values)
-        action_tokens = action_tokens + self.action_position[:horizon][None]
-        action_padding = ~action_valid
-        all_missing = action_padding.all(dim=1)
-        safe_action_padding = action_padding.clone()
-        safe_action_padding[all_missing, 0] = False
-        action_tokens = self.action_encoder(
-            action_tokens,
-            src_key_padding_mask=safe_action_padding,
-        )
-        action_tokens = action_tokens * action_valid[:, :, None].to(
-            action_tokens.dtype
-        )
-        context = torch.cat((belief.tokens, action_tokens), dim=1)
-        context_valid = torch.cat(
-            (
-                torch.ones(
-                    belief.tokens.shape[:2],
+        else:
+            action_batch, horizon, action_dim = actions.values.shape
+            if action_batch != batch:
+                raise ValueError(
+                    "World belief and dynamics actions must share a batch size."
+                )
+            if action_dim != self.action_dim:
+                raise ValueError(
+                    f"Expected dynamics action dim {self.action_dim}, "
+                    f"got {action_dim}."
+                )
+            if horizon > self.max_horizon:
+                raise ValueError(
+                    f"Dynamics action horizon {horizon} exceeds "
+                    f"{self.max_horizon}."
+                )
+            action_valid = (
+                actions.valid
+                if actions.valid is not None
+                else torch.ones(
+                    (batch, horizon),
                     dtype=torch.bool,
-                    device=belief.tokens.device,
+                    device=actions.values.device,
+                )
+            )
+            action_tokens = self.action_projection(actions.values)
+            action_tokens = action_tokens + self.action_position[:horizon][None]
+            action_padding = ~action_valid
+            all_missing = action_padding.all(dim=1)
+            safe_action_padding = action_padding.clone()
+            safe_action_padding[all_missing, 0] = False
+            action_tokens = self.action_encoder(
+                action_tokens,
+                src_key_padding_mask=safe_action_padding,
+            )
+            action_tokens = action_tokens * action_valid[:, :, None].to(
+                action_tokens.dtype
+            )
+            context = torch.cat((belief.tokens, action_tokens), dim=1)
+            context_valid = torch.cat(
+                (
+                    torch.ones(
+                        belief.tokens.shape[:2],
+                        dtype=torch.bool,
+                        device=belief.tokens.device,
+                    ),
+                    action_valid,
                 ),
-                action_valid,
-            ),
-            dim=1,
-        )
+                dim=1,
+            )
         queries = self.future_queries[None].expand(batch, -1, -1)
         for block in self.blocks:
             queries = block(
