@@ -1293,6 +1293,11 @@ TFRecord source shards,`LOCAL_RANK` 自动选择对应 GPU:
 后各 rank 的 JPEG decode、VAE encode、冻结赋码和 shard 写入完全并行。这样避免受限 pod
 主存被多个约 2.8GB checkpoint load 峰值击穿,不串行化正式导出。
 
+长轨迹也不整段、整视角同时建立 float32 resize 中间量。canonical bilinear/antialias
+预处理按 64 帧分块写入同一输出,每个 camera view 随即搬到对应 GPU 并独立完成 Wan encode,
+只保留较小的 latent 再处理下一视角。该调度保持预处理数值定义和 view 顺序,同时让 CPU
+峰值由“两路完整 float 视频”降为“一路 dtype 视频 + 一个 64 帧 float 工作块”。
+
 ```bash
 torchrun --standalone --nproc-per-node=8 \
   scripts/export_joint_window_cache.py \

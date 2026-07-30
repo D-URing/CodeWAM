@@ -5,7 +5,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 import torch
 import torch.nn.functional as F
@@ -143,19 +143,63 @@ def _preprocess_video(
     height: int,
     width: int,
     dtype: torch.dtype,
+    frame_batch_size: int = 64,
 ) -> torch.Tensor:
     if frames.ndim != 4 or frames.shape[-1] != 3 or frames.dtype != torch.uint8:
         raise ValueError(f"Expected uint8 [T,H,W,3] frames, got {tuple(frames.shape)}.")
-    values = frames.permute(0, 3, 1, 2).float()
-    values = F.interpolate(
-        values,
-        size=(int(height), int(width)),
-        mode="bilinear",
-        align_corners=False,
-        antialias=True,
+    if int(frame_batch_size) <= 0:
+        raise ValueError("Wan preprocessing frame batch size must be positive.")
+    output = torch.empty(
+        (3, int(frames.shape[0]), int(height), int(width)),
+        dtype=dtype,
+        device=frames.device,
     )
-    values = values / 127.5 - 1.0
-    return values.to(dtype=dtype).permute(1, 0, 2, 3).contiguous()
+    for start in range(0, int(frames.shape[0]), int(frame_batch_size)):
+        stop = min(start + int(frame_batch_size), int(frames.shape[0]))
+        values = frames[start:stop].permute(0, 3, 1, 2).float()
+        values = F.interpolate(
+            values,
+            size=(int(height), int(width)),
+            mode="bilinear",
+            align_corners=False,
+            antialias=True,
+        )
+        values = values / 127.5 - 1.0
+        output[:, start:stop].copy_(
+            values.to(dtype=dtype).permute(1, 0, 2, 3)
+        )
+    return output
+
+
+@torch.inference_mode()
+def _encode_wan_views_streaming(
+    camera_frames: Iterable[torch.Tensor],
+    *,
+    vae: Any,
+    device: torch.device,
+    height: int,
+    width: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    hidden_states = []
+    for frames in camera_frames:
+        video = _preprocess_video(
+            frames,
+            height=height,
+            width=width,
+            dtype=dtype,
+        ).to(device=device)
+        encoded = vae.encode([video], device=device, tiled=False)
+        if encoded.ndim != 5 or int(encoded.shape[0]) != 1:
+            raise RuntimeError(
+                "Wan streaming view encode must return [1,C,T,H,W], "
+                f"got {tuple(encoded.shape)}."
+            )
+        hidden_states.append(encoded[0])
+        del video, encoded
+    if not hidden_states:
+        raise ValueError("Wan streaming encode needs at least one camera view.")
+    return torch.stack(hidden_states)
 
 
 def _thumbnails(
@@ -180,21 +224,14 @@ def _encode_episode(
     config: WanProbeExportConfig,
 ) -> PooledFeatureEpisode:
     dtype = _torch_dtype(config.dtype)
-    camera_videos = [
-        _preprocess_video(
-            episode.frames[camera],
-            height=config.image_height,
-            width=config.image_width,
-            dtype=dtype,
-        )
-        for camera in config.cameras
-    ]
-    with torch.inference_mode():
-        latent = vae.encode(
-            camera_videos,
-            device=torch.device(config.device),
-            tiled=False,
-        )
+    latent = _encode_wan_views_streaming(
+        (episode.frames[camera] for camera in config.cameras),
+        vae=vae,
+        device=torch.device(config.device),
+        height=config.image_height,
+        width=config.image_width,
+        dtype=dtype,
+    )
     if latent.ndim != 5 or latent.shape[0] != len(config.cameras):
         raise RuntimeError(f"Unexpected Wan latent shape: {tuple(latent.shape)}.")
     views, channels, ticks, latent_height, latent_width = latent.shape

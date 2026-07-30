@@ -5,9 +5,11 @@ import unittest
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 
 from codewam.codebook_eval.wan_probe_export import (
     _construct_wan_vae,
+    _encode_wan_views_streaming,
     _preprocess_video,
     _reused_episode_row,
     latent_frame_indices,
@@ -112,6 +114,75 @@ class WanProbeExportTests(unittest.TestCase):
         self.assertEqual(tuple(video.shape), (3, 2, 16, 16))
         self.assertGreaterEqual(float(video.min()), -1.0)
         self.assertLessEqual(float(video.max()), 1.0)
+
+    def test_chunked_preprocess_matches_full_batch_definition(self) -> None:
+        torch.manual_seed(41)
+        frames = torch.randint(
+            0,
+            256,
+            (19, 18, 30, 3),
+            dtype=torch.uint8,
+        )
+        values = frames.permute(0, 3, 1, 2).float()
+        expected = F.interpolate(
+            values,
+            size=(16, 32),
+            mode="bilinear",
+            align_corners=False,
+            antialias=True,
+        )
+        expected = (
+            (expected / 127.5 - 1.0)
+            .to(dtype=torch.bfloat16)
+            .permute(1, 0, 2, 3)
+            .contiguous()
+        )
+
+        observed = _preprocess_video(
+            frames,
+            height=16,
+            width=32,
+            dtype=torch.bfloat16,
+            frame_batch_size=3,
+        )
+
+        torch.testing.assert_close(observed, expected, rtol=0, atol=0)
+
+    def test_streaming_encode_processes_one_camera_at_a_time(self) -> None:
+        class RecordingVAE:
+            def __init__(self) -> None:
+                self.batch_sizes: list[int] = []
+
+            def encode(
+                self,
+                videos: list[torch.Tensor],
+                *,
+                device: torch.device,
+                tiled: bool,
+            ) -> torch.Tensor:
+                del tiled
+                self.batch_sizes.append(len(videos))
+                ticks = 1 + (int(videos[0].shape[1]) - 1) // 4
+                marker = videos[0][0, 0, 0, 0].float()
+                return marker.expand(1, 48, ticks, 1, 1).to(device)
+
+        vae = RecordingVAE()
+        first = torch.zeros((9, 8, 8, 3), dtype=torch.uint8)
+        second = torch.full((9, 8, 8, 3), 255, dtype=torch.uint8)
+
+        latent = _encode_wan_views_streaming(
+            (first, second),
+            vae=vae,
+            device=torch.device("cpu"),
+            height=16,
+            width=16,
+            dtype=torch.float32,
+        )
+
+        self.assertEqual(vae.batch_sizes, [1, 1])
+        self.assertEqual(tuple(latent.shape), (2, 48, 3, 1, 1))
+        self.assertEqual(float(latent[0, 0, 0, 0, 0]), -1.0)
+        self.assertEqual(float(latent[1, 0, 0, 0, 0]), 1.0)
 
     def test_probe_split_is_episode_level_and_balanced_per_cycle(self) -> None:
         splits = [probe_split(index) for index in range(12)]

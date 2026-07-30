@@ -29,8 +29,8 @@ from .shards import (
     write_pooled_feature_shard,
 )
 from .wan_probe_export import (
+    _encode_wan_views_streaming,
     _load_wan_vae,
-    _preprocess_video,
     _torch_dtype,
     latent_frame_indices,
 )
@@ -358,21 +358,14 @@ def encode_droid_segment(
     if segment.split is None:
         raise ValueError(f"DROID segment `{segment.segment_id}` has no split.")
     dtype = _torch_dtype(config.dtype)
-    camera_videos = [
-        _preprocess_video(
-            segment.frames[camera],
-            height=config.image_height,
-            width=config.image_width,
-            dtype=dtype,
-        )
-        for camera in config.cameras
-    ]
-    with torch.inference_mode():
-        latent = vae.encode(
-            camera_videos,
-            device=torch.device(config.device),
-            tiled=False,
-        )
+    latent = _encode_wan_views_streaming(
+        (segment.frames[camera] for camera in config.cameras),
+        vae=vae,
+        device=torch.device(config.device),
+        height=config.image_height,
+        width=config.image_width,
+        dtype=dtype,
+    )
     if latent.ndim != 5 or latent.shape[0] != len(config.cameras):
         raise RuntimeError(f"Unexpected Wan latent shape: {tuple(latent.shape)}.")
     views, channels, ticks, latent_height, latent_width = latent.shape

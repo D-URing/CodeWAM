@@ -15,8 +15,8 @@ import torch
 from codewam.codebook_eval.manifest import EpisodeManifest, EpisodeRecord
 from codewam.codebook_eval.shards import file_sha256
 from codewam.codebook_eval.wan_probe_export import (
+    _encode_wan_views_streaming,
     _load_wan_vae,
-    _preprocess_video,
     _torch_dtype,
     latent_frame_indices,
 )
@@ -337,19 +337,13 @@ def encode_joint_segment(
             f"DROID segment `{segment.segment_id}` lacks RLDS terminal flags."
         )
     dtype = _torch_dtype(config.dtype)
-    videos = [
-        _preprocess_video(
-            segment.frames[camera],
-            height=config.image_height,
-            width=config.image_width,
-            dtype=dtype,
-        )
-        for camera in config.cameras
-    ]
-    latent = vae.encode(
-        videos,
+    latent = _encode_wan_views_streaming(
+        (segment.frames[camera] for camera in config.cameras),
+        vae=vae,
         device=torch.device(config.device),
-        tiled=False,
+        height=config.image_height,
+        width=config.image_width,
+        dtype=dtype,
     )
     if latent.ndim != 5 or latent.shape[0] != len(config.cameras):
         raise RuntimeError(f"Unexpected Wan latent shape: {tuple(latent.shape)}.")
