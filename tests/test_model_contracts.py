@@ -53,6 +53,24 @@ class ModelContractTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_joint_cache_import_does_not_load_optional_video_decoder(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "from codewam.data.joint_cache import JointWindowCache; "
+                    "assert JointWindowCache is not None; "
+                    "assert 'av' not in sys.modules"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_state_and_code_measurements_reject_misaligned_inputs(self) -> None:
         with self.assertRaisesRegex(ValueError, "6D"):
             StateInputs(

@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING, Any
+
 from .droid_manifest import (
     DroidBalancedSampleResult,
     DroidManifestBuildResult,
@@ -43,7 +45,9 @@ from .joint_cache import (
     write_joint_cache_contract,
     write_joint_episode_shard,
 )
-from .package_scan_v6 import PackageScanV6Dataset
+
+if TYPE_CHECKING:
+    from .package_scan_v6 import PackageScanV6Dataset
 
 __all__ = [
     "DroidBalancedSampleResult",
@@ -102,3 +106,11 @@ __all__ += [
     "role_supervision",
     "trajectory_role",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "PackageScanV6Dataset":
+        from .package_scan_v6 import PackageScanV6Dataset
+
+        return PackageScanV6Dataset
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
