@@ -34,10 +34,13 @@ CodeWAM/
 │   │   ├── frozen_assignment.py # frozen causal Q2/Q3/Q5 assignment
 │   │   ├── joint_cache.py     # verified episode shards, windows and collator
 │   │   ├── joint_cache_export.py # DROID/Wan production exporter
+│   │   ├── language_cache.py  # frozen token-level task sidecar
+│   │   ├── policy_normalization.py # reversible train-only policy stats
 │   │   ├── roles.py            # trajectory role and objective masks
 │   │   └── package_scan_v6.py # local regression adapter
 │   ├── experiments/
-│   │   └── gate2.py           # controlled action-conditioned dynamics gate
+│   │   ├── gate2.py           # controlled action-conditioned dynamics gate
+│   │   └── policy_ablation.py # paired C0/C1/C2 policy protocol
 │   ├── models/
 │   │   ├── contracts.py        # typed state/code/policy/action batches
 │   │   ├── continuous_state.py # causal state encoder and Stage-0 head
@@ -49,7 +52,7 @@ CodeWAM/
 │   ├── model.py               # legacy FastWAM-compatible prototype
 │   ├── probe.py               # legacy compatibility probe
 │   └── runtime.py             # legacy Hydra factory
-├── configs/                   # model, data, task, codebook and Gate 2 configs
+├── configs/                   # model, data, task, codebook, Gate 2 and policy configs
 ├── scripts/                   # setup, checks, export, clustering, and training
 ├── requirements/              # local and CUDA dependency sets
 ├── docs/                      # three canonical documents
@@ -62,8 +65,9 @@ CodeWAM/
 
 大型公开数据集放在独立共享数据根目录,不复制到仓库。下载、校验和训练 artifact 也不进入
 git。canonical model、real-data `JointWindowCache`、frozen causal assigner、rank-aware
-exporter、Gate 2 runner 和 DROID-10k 三种子正式 Gate 2 已完成。当前缺口是 language token
-cache、joint policy trainer 和部署侧 online runtime,不是继续补模型骨架或重复 Gate 2。
+exporter、Gate 2、frozen language/normalization sidecars、C0/C1/C2 trainer 和 DROID-10k
+三种子 200-step policy pilot 已完成。当前缺口是 action-target sidecar、充分收敛的 Gate 4、
+部署侧 online runtime 与闭环 benchmark,不是继续补模型骨架或重复短跑。
 
 ## 2. 本机开发
 
@@ -460,6 +464,53 @@ shard。每个 loader 按行读取索引,只构造目标 split 的窗口对象,�
 `pass`;根目录 `multi_seed_summary.json` 是跨 seed 的保守汇总。该结论只允许进入等预算
 C0/C1/C2 policy 原型,不替代闭环 benchmark。
 
+冻结 language/normalization sidecar 只构建一次,不改写 28 GB Wan episode shards:
+
+```bash
+python scripts/export_language_cache.py \
+  --cache-dir "$JOINT_CACHE_ROOT/cache" \
+  --source-manifest "$DROID_10K_MANIFEST" \
+  --model-path "$T5_BASE_PATH" \
+  --model-id google-t5/t5-base \
+  --model-revision a9723ea7f1b39c1eae772870f3b547bf6ef7e6c1 \
+  --output-dir "$LANGUAGE_CACHE_ROOT" \
+  --max-tokens 96 --batch-size 256 --device cuda:0 --dtype bfloat16
+
+python scripts/fit_policy_normalization.py \
+  --cache-dir "$JOINT_CACHE_ROOT/cache" \
+  --output-dir "$POLICY_NORMALIZATION_ROOT" --workers 16
+```
+
+当前 T5 sidecar 覆盖 9,894 个 parent episodes、7,987 条去重指令和 99,235 tokens;
+最长指令 92 tokens,不做静默截断。normalization 只读 train split 中实际被窗口引用的
+10,011 个 segments,动作/本体各统计 2,329,597 个 source rows。flat DROID action 的本地
+实际值是 commanded Cartesian position RPY + gripper,编码为可逆 10D sin/cos 表示;
+proprio 编码为 17D。该动作语义必须在闭环前与 `action_dict`/controller 再核对。
+
+三路 policy 运行与汇总:
+
+```bash
+torchrun --standalone --nproc_per_node=8 scripts/run_policy_ablation.py \
+  --config configs/policy/droid_c012_v1.yaml \
+  --cache-dir "$JOINT_CACHE_ROOT/cache" \
+  --language-cache-dir "$LANGUAGE_CACHE_ROOT" \
+  --normalization-dir "$POLICY_NORMALIZATION_ROOT" \
+  --output-dir "$POLICY_ROOT/seed-7" \
+  --artifact Q2="$Q2_ARTIFACT" \
+  --artifact Q3="$Q3_ARTIFACT" \
+  --artifact Q5="$Q5_ARTIFACT" --seed 7
+
+python scripts/summarize_policy_ablation_seeds.py \
+  --report "$POLICY_ROOT/seed-7/report.json" \
+  --report "$POLICY_ROOT/seed-19/report.json" \
+  --report "$POLICY_ROOT/seed-31/report.json" \
+  --output "$POLICY_ROOT/multi_seed_summary.json"
+```
+
+2026-07-31 的 seed `7/19/31` 200-step pilot 每变体使用 effective batch `32`。test flow
+MSE 的跨 seed 描述均值为 C0/C1/C2=`0.43446/0.43267/0.43534`;`C2-C1` 在三个 seed
+均变差,但该短跑只见 6,400 个 train windows,不能代替收敛实验或闭环 success。
+
 独立 CodeWAM v1 与数据链的本机最低验收:
 
 ```bash
@@ -469,14 +520,16 @@ python scripts/smoke_codewam_v1.py \
   --output runs/model_smoke/codewam_v1.json
 ```
 
-当前 171 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
-JointWindowCache、Gate 2 controls 和 resume;本机只跳过一项 CUDA 专项。合成 model smoke
-仍标记 `scientific_evidence=false`;真实 2-step Gate 2 smoke 同样只能证明工程链路。
+当前 185 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
+JointWindowCache、language/normalization sidecars、Gate 2、policy controls、resume 和
+multi-seed summary。合成 model smoke 仍标记 `scientific_evidence=false`;真实短跑必须按
+对应 protocol 的限制解释。
 
 模型 forward 接收 `CodeMeasurements`,不会在内部重新聚类。训练 cache 与部署 runtime 必须
 使用同一 descriptor、normalization、centers 和 chart identity;online runtime 只能调用
 冻结赋码,不能流式更新聚类中心。`configs/model/codewam_v1.yaml` 仍不是 policy trainer;
-正式 C0/C1/C2 要等 full-scale Gate 2 通过后实现。
+正式 policy 入口是 `configs/policy/droid_c012_v1.yaml` 与
+`scripts/run_policy_ablation.py`。
 
 ## 8. Legacy/F0 模型训练
 

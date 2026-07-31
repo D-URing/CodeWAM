@@ -1,7 +1,7 @@
 # CodeWAM Architecture
 
-Status: canonical CodeWAM v1 and full-scale DROID-10k Gate 2 verified;
-joint policy trainer and online runtime pending.
+Status: canonical CodeWAM v1, DROID-10k Gate 2, and three-seed policy pilot
+verified; action-target contract, converged Gate 4, and online runtime pending.
 
 本文件是 CodeWAM 的唯一结构规范,约束模型模块、信息身份、训练目标、可见性和实验门。
 码本数据、离线训练与评估见 `CODEBOOK.md`;环境和工程边界见 `DEVELOPMENT.md`。当前
@@ -661,6 +661,33 @@ code 指标提高而控制不提高  world objective 可学但无控制增益
 
 只有在固定窗口模型出现明确长时失败后才增加 C3 memory。
 
+### Gate 4.1: DROID-10k 200-step policy pilot
+
+2026-07-31 的第一轮真实 policy pilot 使用冻结 T5-base token sidecar、train-only
+`xyz + sin/cos(RPY) + gripper` action normalization、同一初始化、同一窗口顺序、同一 flow
+噪声和 8-GPU effective batch `32`。seed `7/19/31` 中每个变体各 200 optimizer steps,
+即每个变体只见 6,400 个窗口,约为 445,986 个 train windows 的 `1.44%`。三者可训练参数量
+分别为 `9.91M/15.22M/19.20M`,因此这是短预算结构探针,不是收敛或算力匹配实验。
+
+| split / metric | C0 mean +/- seed SD | C1 mean +/- seed SD | C2 mean +/- seed SD |
+|---|---:|---:|---:|
+| val flow MSE | 0.47657 +/- 0.02487 | 0.47593 +/- 0.02407 | 0.47997 +/- 0.02421 |
+| test flow MSE | 0.43446 +/- 0.01854 | 0.43267 +/- 0.01388 | 0.43534 +/- 0.01424 |
+| test sampled normalized MAE | 0.41917 +/- 0.01335 | 0.41685 +/- 0.01109 | 0.41790 +/- 0.00984 |
+
+`C1-C0` 的 test flow delta 为 `-0.00662/-0.00225/+0.00350`,只在 2/3 seed 有利;
+val 只在 1/3 seed 有利。更明确的是 `C2-C1`:val delta 为
+`+0.00533/+0.00366/+0.00312`,test 为 `+0.00294/+0.00282/+0.00226`,三个 seed 都变差。
+完整 ODE sample 也没有跨 seed 一致支持 C2。跨 seed 均值仅为描述统计;每个 seed 的
+episode-block CI 保留在 immutable report 中,不把三个 seed 当成大样本显著性检验。
+
+因此当前结论不是“code 无用”,也不是“C2 已失败”。Gate 2 已证明 code transition 中存在
+action-conditioned world signal;Gate 4.1 说明 **该信号在 200-step joint loss 下没有稳定转化
+为动作收益**。下一轮先区分三种原因:flat DROID action target 是否适合部署、较大 C1/C2
+是否明显欠收敛、`0.1 * L_code` 是否与 action gradient 干扰。仍保持简单 loss;优先使用
+更长 learning curve、较低固定 lambda 或 world-pretrain -> policy-finetune 两阶段对照,
+不直接引入动态 loss weighting/gradient surgery。
+
 ## 10. 研究借鉴与取舍
 
 | 工作 | 吸收的原则 | CodeWAM 的取舍 |
@@ -713,8 +740,12 @@ codewam/data/droid_endpoint.py       RLDS endpoint/flag/alignment audit
 codewam/data/frozen_assignment.py    frozen causal Q2/Q3/Q5 assignment
 codewam/data/joint_cache.py          deduplicated episode shards + verified windows
 codewam/data/joint_cache_export.py   rank-aware DROID -> Wan -> code/cache export
+codewam/data/language_cache.py       frozen token-level task sidecar
+codewam/data/policy_normalization.py reversible action/proprio contract
 codewam/experiments/gate2.py         fixed-budget four-condition Gate 2
 codewam/experiments/gate2_summary.py conservative three-seed decision
+codewam/experiments/policy_ablation.py equal-budget C0/C1/C2 policy pilot
+codewam/experiments/policy_ablation_summary.py three-seed descriptive summary
 ```
 
 `JointWindowCache v1` 物理上按 episode/keep-range 去重保存未池化多相机 latent、source-rate
@@ -736,23 +767,23 @@ PERSIST/NOACT/TRUE/SHUFFLE 和 TRUE 模型两种干预均完成 GPU 前反向、
 与全指标报告。因为 test 只有两个独立 episode,更新后的协议正确返回 `invalid`;这只是
 engineering smoke,不是 Gate 2 结果。
 
-唯一下一张工程单改为 **DROID-10k JointWindowCache 扩展与正式 Gate 2**:
+Gate 2、language sidecar、policy normalization 和首轮 C0/C1/C2 pilot 已完成。唯一下一张
+工程单改为 **DROID action-target contract 与 Gate 4 收敛实验**:
 
 ```text
-1. 用 8 个独立 rank 导出 canonical 10k 的完整未池化 cache,每 rank 拥有完整 source shards。
-2. finalize 后复核所有 shard/index SHA、split episode 数、changed-family coverage 与 overlap。
-3. independent dynamics 固定三个 seed,每个 seed 等预算训练 NOACT/TRUE/SHUFFLE。
-4. 以 >=30 个共同 changed-code test episodes 为硬有效性下限,目标使用 >=100 个。
-5. 三个 seed 均报告 all/changed/family/overlap、paired episode CI 和 TRUE 模型动作干预,
-   再由固定汇总器核对协议并要求三个 seed 独立通过。
-6. 只有 independent Gate 2 通过,才比较 prefix head 和 scratch/Stage-0 initialization。
-7. 之后实现冻结 language cache 与参数预算一致的 DROID C0/C1/C2 trainer。
-8. LIBERO 使用独立 chart/refit 重复;FastWAM 仍只作 F0。
+1. 从同一官方 RLDS position/keep-range 导出 immutable action-target sidecar,保留
+   cartesian/joint position/velocity 与 gripper 分量,不重跑 Wan 或 RQ。
+2. 对照当前 flat action 的真实实现语义与部署 controller,选择并固定 action contract。
+3. 在同一 target 上记录 C0/C1/C2 的 200/500/1000/2000-step learning curve,seed 7/19/31
+   继续保持 initialization/data/noise 配对,同时报告 update 和 wall-clock/parameter budget。
+4. 若收敛后 C2 仍稳定弱于 C1,只比较固定较低 lambda 与 world-pretrain -> policy-finetune;
+   不增加难解释的复合 loss。
+5. 通过离线 Gate 4 后进入 LIBERO 独立 chart/refit 的闭环 task-success;FastWAM 仍只作 F0。
 ```
 
-online assigner/runtime、language token export、正式 joint policy trainer 和闭环 benchmark
-仍未完成。当前 `codewam/model.py`、`codewam/codebook.py`、`codewam/runtime.py` 与旧训练配置
-仍是 legacy,不能接到 canonical v1 上冒充真实 trainer。
+online assigner/runtime、action-target sidecar 和闭环 benchmark 仍未完成。当前
+`codewam/model.py`、`codewam/codebook.py`、`codewam/runtime.py` 与旧训练配置仍是 legacy,
+不能接到 canonical v1 上冒充真实 trainer。
 
 ## 13. 可证伪主张
 
