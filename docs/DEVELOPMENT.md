@@ -62,8 +62,8 @@ CodeWAM/
 
 大型公开数据集放在独立共享数据根目录,不复制到仓库。下载、校验和训练 artifact 也不进入
 git。canonical model、real-data `JointWindowCache`、frozen causal assigner、rank-aware
-exporter 和 Gate 2 runner 已实现。当前缺口是 full-scale Gate 2、language token cache、
-joint policy trainer 和部署侧 online runtime,不是继续补模型骨架。
+exporter、Gate 2 runner 和 DROID-10k 三种子正式 Gate 2 已完成。当前缺口是 language token
+cache、joint policy trainer 和部署侧 online runtime,不是继续补模型骨架或重复 Gate 2。
 
 ## 2. 本机开发
 
@@ -432,7 +432,8 @@ torchrun --standalone --nproc-per-node=8 \
 ```
 
 输出包括 immutable `protocol.json`、共享 `initialization.pt`、NOACT/TRUE/SHUFFLE 的
-latest/final checkpoints 和 `report.json`。同目录续跑只接受相同 protocol。正式 gate 默认
+`final.pt` 和 `report.json`;训练中断前由 `latest.pt` 提供恢复点,成功原子写入 final 后自动
+删除 latest。同目录续跑只接受相同 protocol。正式 gate 默认
 至少 30 个独立 changed-code test episodes;不足返回 `invalid`。protocol 同时固定 DDP
 world size、单 rank batch 和有效全局 batch,不能跨卡数续跑同一实验目录。
 
@@ -454,6 +455,11 @@ shard。每个 loader 按行读取索引,只构造目标 split 的窗口对象,�
 全 split 字典列表。三个 seed 不会重复构建动作表,汇总器也会拒绝除 seed/permutation 外任何
 协议差异。
 
+2026-07-31 的正式目录
+`runs/gate2/droid10k_gate2_200step_12e7bfd` 已完成 seed `7/19/31`,三个独立 gate 均为
+`pass`;根目录 `multi_seed_summary.json` 是跨 seed 的保守汇总。该结论只允许进入等预算
+C0/C1/C2 policy 原型,不替代闭环 benchmark。
+
 独立 CodeWAM v1 与数据链的本机最低验收:
 
 ```bash
@@ -463,7 +469,7 @@ python scripts/smoke_codewam_v1.py \
   --output runs/model_smoke/codewam_v1.json
 ```
 
-当前 167 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
+当前 171 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
 JointWindowCache、Gate 2 controls 和 resume;本机只跳过一项 CUDA 专项。合成 model smoke
 仍标记 `scientific_evidence=false`;真实 2-step Gate 2 smoke 同样只能证明工程链路。
 

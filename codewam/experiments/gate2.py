@@ -1467,6 +1467,7 @@ def _train_condition(
     }
     if context.is_primary:
         atomic_torch_save(final_checkpoint, final_path)
+        latest_path.unlink(missing_ok=True)
     _barrier(context)
     return {
         "condition": condition,

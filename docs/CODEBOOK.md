@@ -982,7 +982,7 @@ train-only moments,由 rank 0 在完整 train stream 上建立确定性 reservoi
 再向所有 rank 广播 `K x D` centers。Lloyd/RQ 阶段各 rank 只读自己的 shards并 all-reduce
 `K x D` sums、`K` counts 和 inertia;只有 rank 0 写 contract、checkpoint 与 artifact。
 
-当前 167 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
+当前 171 项单元测试(本机仅 1 项 CUDA 专项跳过)覆盖 manifest round-trip、scene isolation、
 DROID join/exclusion、
 institution/shard-aware sampling、shared-readable atomic artifact、invalid tick、train-only
 normalization、batch partition invariance、streaming/reference Lloyd 等价、checkpoint resume、
@@ -1378,3 +1378,32 @@ python scripts/summarize_gate2_seeds.py \
 三个 seed 当额外 episode 伪造 pooled CI。先完成 independent head;通过后才比较 prefix、
 Stage-0 和 C0/C1/C2。失败时先检查 endpoint、coverage、overlap 和 action relevance,
 不增加辅助 loss 强行调门。
+
+#### 14.4.1 DROID-10k 正式结果（2026-07-31）
+
+正式 cache 含 15,202 个 keep-range episodes、561,338 个窗口,split 为
+`445,986/50,868/64,484`。在 commit `12e7bfd`、8-GPU、每条件 200 optimizer steps 和
+bootstrap 2,000 的固定协议下,seed `7/19/31` 均独立通过 Gate 2。每个 paired comparison
+包含 995 个共同 changed-code test parent episodes:
+
+| comparison | seed 7 | seed 19 | seed 31 | seed-mean |
+|---|---:|---:|---:|---:|
+| TRUE-NOACT | -0.02476 | -0.02737 | -0.04439 | -0.03217 |
+| TRUE-SHUFFLE | -0.02777 | -0.02358 | -0.04139 | -0.03091 |
+| TRUE-TRUE@NOACT | -0.06101 | -0.06909 | -0.05161 | -0.06057 |
+| TRUE-TRUE@SHUFFLE | -0.09171 | -0.09144 | -0.10652 | -0.09656 |
+
+上表单位均为 episode-mean changed-family normalized-NLL delta,负值支持 aligned action。
+所有预注册比较在每个 seed 的 episode-block 95% CI 上界都小于零;表中的 seed-mean 只是
+描述性均值,没有把三个 seed 合并成新的置信区间。
+
+按时间族分解,`TRUE-NOACT` 的三 seed 描述性均值为 Q2 `-0.04870`、Q3 `-0.04213`、
+Q5 `-0.01705`,且九个 family/seed 组合方向全部为负。短时间尺度对动作最敏感,Q5 信号较小
+但跨 seed 最稳定。changed stratum 上,TRUE 的 normalized NLL 为 `1.27457`,低于 NOACT
+`1.31072` 和 SHUFFLE `1.30869`;完整三层 prefix accuracy 从 NOACT `10.10%` 提高到 TRUE
+`11.29%`。
+
+边界同样重要:TRUE 的 chart-local center-MSE 为 `0.19871`,仍略差于 current-code
+PERSIST 的 `0.19569`。因此该实验确认的是“冻结码本坐标中的未来转移可被动作条件化学习”,
+不是“200-step decoder 已经优于所有连续或持久化预测”,更不是闭环控制增益。下一实验必须
+转向同数据、同预算的 C0/C1/C2,而不是继续用更复杂 loss 美化 Gate 2。

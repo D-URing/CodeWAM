@@ -208,7 +208,7 @@ BridgeData V2 frozen-transfer and independent-refit replication
 - 已实现:RLDS endpoint audit、冻结 Q2/Q3/Q5 causal assigner、未池化多相机
   `JointWindowCache v1`、source-rate action/proprio、rank-aware Wan exporter、verified
   dataloader/collator,以及等预算 Gate 2 runner 与 episode-block bootstrap。
-- 已验证:167 项单元测试(本机仅 1 项 CUDA 专项跳过)、单卡/双 rank centers 等价、
+- 已验证:171 项单元测试(本机仅 1 项 CUDA 专项跳过)、单卡/双 rank centers 等价、
   synthetic Q2/Q3/Q5 端到端 smoke、
   58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
   causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较、val/test 一致的时间反事实
@@ -225,12 +225,13 @@ BridgeData V2 frozen-transfer and independent-refit replication
   恒为 `1/0/0`;三学习条件各 2 步的 GPU Gate 2 链完整运行。test 仅两个独立 episode,
   因而报告按 30-episode 下限正确标记 `invalid`,不构成研究结论。
 - 默认关闭:legacy online-EMA single-token codebook。
-- 尚未实现:full-scale Gate 2、frozen language token cache、canonical C0/C1/C2 policy trainer、
-  部署侧 online runtime 和闭环 benchmark。
-- 下一步:按 GPU 与 pod 主存共同确定并发度,导出完整 DROID-10k JointWindowCache,再以
-  7/19/31 三个 seed 正式运行 Gate 2。
-  只有 Gate 2 通过后才启动 `C0/C1/C2`;LIBERO 使用独立 chart/refit,不能把 DROID code ID
-  当成共享语义。
+- 已验证:DROID-10k 561,338-window JointWindowCache 上,seed `7/19/31` 的正式 8-GPU
+  Gate 2 均独立通过;aligned action 在 995 个共同 test parent episodes 上稳定降低
+  changed-family future-code NLL,Q2/Q3/Q5 三族方向一致。该结果解锁原型,不等同于策略增益。
+- 尚未实现:frozen language token cache、canonical C0/C1/C2 policy trainer、部署侧 online
+  runtime 和闭环 benchmark。
+- 下一步:实现同数据、同动作 decoder、同更新预算的 `C0/C1/C2` policy trainer 和真实缓存
+  smoke,再进入闭环评估;LIBERO 使用独立 chart/refit,不能把 DROID code ID 当成共享语义。
 
 外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
 checkpoints 和运行结果始终放在 git 之外。

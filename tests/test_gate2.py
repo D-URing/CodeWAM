@@ -353,6 +353,10 @@ class Gate2Tests(unittest.TestCase):
                 map_location="cpu",
                 weights_only=False,
             )["model"]
+            for condition in ("noact", "true", "shuffle"):
+                self.assertFalse(
+                    (root / "gate2" / condition / "latest.pt").exists()
+                )
             protocol = json.loads(
                 (root / "gate2" / "protocol.json").read_text(encoding="utf-8")
             )

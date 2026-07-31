@@ -1,7 +1,7 @@
 # CodeWAM Architecture
 
-Status: canonical CodeWAM v1, verified JointWindowCache and Gate 2 runner
-implemented; full-scale Gate 2, joint policy trainer and online runtime pending.
+Status: canonical CodeWAM v1 and full-scale DROID-10k Gate 2 verified;
+joint policy trainer and online runtime pending.
 
 本文件是 CodeWAM 的唯一结构规范,约束模型模块、信息身份、训练目标、可见性和实验门。
 码本数据、离线训练与评估见 `CODEBOOK.md`;环境和工程边界见 `DEVELOPMENT.md`。当前
@@ -610,6 +610,15 @@ descriptor overlap `0/1/2/3` 分层。`TRUE` 还要原模型执行 `TRUE@NOACT` 
 changed-family label 的共同 test parent episodes,不足时只能是 `invalid`,不能输出科学性
 pass/fail。通过要求 `TRUE-NOACT`、`TRUE-SHUFFLE` 和
 `TRUE-TRUE@SHUFFLE` 的 changed-family normalized-NLL 95% CI 上界都小于零。
+
+2026-07-31 的 DROID-10k 正式实验使用同一份 561,338-window cache、8-GPU topology、
+200 optimizer steps 和预注册 seed `7/19/31`。三个 seed 均独立通过;995 个共同 test parent
+episodes 上,`TRUE-NOACT` 的 seed 均值为 `-0.02476/-0.02737/-0.04439`,各自 95% CI 上界
+均小于零。Q2/Q3/Q5 的描述性 `TRUE-NOACT` seed-mean 分别为
+`-0.04870/-0.04213/-0.01705`,三族在每个 seed 中方向一致。这证明固定 DROID chart 的 code
+transition 含稳定的 action-conditioned world-rule 信号,从而解锁 C0/C1/C2 原型;它不证明
+closed-loop policy 增益。200-step `TRUE` 的 changed center-MSE `0.19871` 仍略差于
+PERSIST `0.19569`,因此也不应把当前 dynamics head 描述成成熟 rollout model。
 
 已完成的 P0/P1/P2/P3 ridge screen 保留为历史接口诊断。它说明 hard categorical additive
 feature 没有超过连续 H,也说明该 proxy 受 absolute action/proprio shortcut 和高维小样本
