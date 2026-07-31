@@ -1024,7 +1024,10 @@ def _distributed_context(device_name: str) -> _DistributedContext:
         if not torch.cuda.is_available():
             raise RuntimeError("Distributed Gate2 currently requires CUDA/NCCL.")
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(
+            backend="nccl",
+            device_id=torch.device("cuda", local_rank),
+        )
         initialized_here = True
     if world_size > 1:
         device = torch.device("cuda", local_rank)

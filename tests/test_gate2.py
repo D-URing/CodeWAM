@@ -155,6 +155,40 @@ class Gate2Tests(unittest.TestCase):
         self.assertEqual(list(sampler), [4, 5])
         self.assertEqual(len(sampler), 2)
 
+    def test_distributed_context_registers_its_cuda_device(self) -> None:
+        environment = {
+            "WORLD_SIZE": "8",
+            "RANK": "3",
+            "LOCAL_RANK": "3",
+        }
+        with (
+            mock.patch.dict(gate2_module.os.environ, environment),
+            mock.patch.object(
+                gate2_module.torch.cuda,
+                "is_available",
+                return_value=True,
+            ),
+            mock.patch.object(gate2_module.torch.cuda, "set_device") as set_device,
+            mock.patch.object(
+                gate2_module.dist,
+                "is_initialized",
+                return_value=False,
+            ),
+            mock.patch.object(
+                gate2_module.dist,
+                "init_process_group",
+            ) as initialize,
+        ):
+            context = gate2_module._distributed_context("cuda")
+
+        set_device.assert_called_once_with(3)
+        initialize.assert_called_once_with(
+            backend="nccl",
+            device_id=torch.device("cuda", 3),
+        )
+        self.assertEqual(context.rank, 3)
+        self.assertEqual(context.device, torch.device("cuda", 3))
+
     def test_action_permutation_is_fixed_group_local_and_deranged(self) -> None:
         def row(
             index: int,
