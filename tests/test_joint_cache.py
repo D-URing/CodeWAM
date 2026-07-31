@@ -19,6 +19,7 @@ from codewam.data.joint_cache import (
     JointEpisode,
     JointWindowCache,
     JointWindowConfig,
+    add_compact_joint_window_index,
     build_joint_windows,
     collate_joint_windows,
     create_joint_cache_contract,
@@ -189,6 +190,7 @@ class JointCacheTests(unittest.TestCase):
         self.assertEqual(len(windows), 6)
         self.assertEqual(summary["episodes"], 1)
         self.assertEqual(summary["windows"], 6)
+        self.assertIn("window_records", summary["indices"])
         self.assertEqual(pickle.loads(pickle.dumps(windows[0])), windows[0])
         self.assertEqual(tuple(batch.model.state.latents.shape), (2, 8, 1, 4, 4, 4))
         self.assertEqual(tuple(batch.model.actions.values.shape), (2, 16, 7))
@@ -293,7 +295,11 @@ class JointCacheTests(unittest.TestCase):
                 )
 
     def test_index_hash_change_is_detected_before_loading_tensors(self) -> None:
-        for relative in ("windows.jsonl", "window_actions.pt"):
+        for relative in (
+            "windows.jsonl",
+            "window_records.pt",
+            "window_actions.pt",
+        ):
             with self.subTest(relative=relative):
                 with tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
@@ -330,6 +336,60 @@ class JointCacheTests(unittest.TestCase):
                 cache = JointWindowCache(root, split="train")
 
         self.assertEqual(len(cache), 6)
+
+    def test_compact_loader_does_not_parse_window_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, windows, _ = self._write_cache(root)
+            from codewam.data import joint_cache
+
+            original_iter_jsonl = joint_cache._iter_jsonl
+
+            def reject_window_jsonl(path: Path):
+                if Path(path).name == "windows.jsonl":
+                    raise AssertionError(
+                        "Compact cache must not parse windows.jsonl."
+                    )
+                yield from original_iter_jsonl(path)
+
+            with mock.patch.object(
+                joint_cache,
+                "_iter_jsonl",
+                new=reject_window_jsonl,
+            ):
+                cache = JointWindowCache(root, split="train")
+
+            expected = tuple(sorted(windows, key=lambda row: row.window_id))
+            self.assertEqual(tuple(cache.windows), expected)
+            self.assertEqual(cache.split_indices("train"), tuple(range(6)))
+            self.assertEqual(cache.split_indices("val"), ())
+            self.assertEqual(
+                tuple(cache.window_shards),
+                ("episode_shards/shard-00000.pt",) * 6,
+            )
+            self.assertEqual(
+                [row[4] for row in cache.permutation_rows()],
+                [window.window_id for window in expected],
+            )
+
+    def test_legacy_cache_can_be_upgraded_without_reexport(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, windows, summary = self._write_cache(root)
+            (root / summary["indices"]["window_records"]["path"]).unlink()
+            summary["indices"].pop("window_records")
+            (root / "summary.json").write_text(
+                json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            legacy = JointWindowCache(root)
+            expected = tuple(sorted(windows, key=lambda row: row.window_id))
+            self.assertEqual(tuple(legacy.windows), expected)
+            upgraded = add_compact_joint_window_index(root)
+            self.assertIn("window_records", upgraded["indices"])
+            compact = JointWindowCache(root)
+            self.assertEqual(tuple(compact.windows), expected)
 
     def test_shard_hash_is_checked_once_across_lru_reloads(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

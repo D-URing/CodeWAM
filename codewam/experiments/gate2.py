@@ -154,59 +154,85 @@ class FixedActionPermutation:
 
 
 def build_fixed_action_permutation(
-    windows: Sequence[JointWindowRecord],
+    windows: Sequence[JointWindowRecord] | JointWindowCache,
     *,
     seed: int,
 ) -> FixedActionPermutation:
     if not windows:
         raise ValueError("Cannot permute an empty joint cache.")
-    grouped: dict[tuple[str, int], list[int]] = defaultdict(list)
-    for index, window in enumerate(windows):
-        horizon = window.action_stop - window.action_start
-        grouped[(window.split, horizon)].append(index)
+    grouped: dict[tuple[str, int], dict[str, list[int]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    window_ids = [""] * len(windows)
+    parent_ids = [""] * len(windows)
+    splits = [""] * len(windows)
+    horizons = [0] * len(windows)
+    rows = (
+        windows.permutation_rows()
+        if isinstance(windows, JointWindowCache)
+        else (
+            (
+                index,
+                window.split,
+                window.action_stop - window.action_start,
+                window.parent_episode_id,
+                window.window_id,
+            )
+            for index, window in enumerate(windows)
+        )
+    )
+    for index, split, horizon, parent_id, window_id in rows:
+        grouped[(split, horizon)][parent_id].append(index)
+        window_ids[index] = window_id
+        parent_ids[index] = parent_id
+        splits[index] = split
+        horizons[index] = horizon
     donors = [-1] * len(windows)
     singleton_groups = 0
     cross_episode = 0
     paired = 0
-    for key, indices in sorted(grouped.items()):
-        ordered = sorted(
-            indices,
-            key=lambda index: hashlib.sha256(
-                f"{seed}|{windows[index].window_id}".encode("utf-8")
-            ).digest(),
-        )
-        if len(ordered) == 1:
-            donors[ordered[0]] = ordered[0]
+    for key, parent_groups in sorted(grouped.items()):
+        size = sum(len(indices) for indices in parent_groups.values())
+        if size == 1:
+            only = next(iter(next(iter(parent_groups.values()))))
+            donors[only] = only
             singleton_groups += 1
             continue
-        candidate_offsets = range(1, len(ordered))
-        offset = max(
-            candidate_offsets,
-            key=lambda value: (
-                sum(
-                    windows[source].parent_episode_id
-                    != windows[
-                        ordered[(position + value) % len(ordered)]
-                    ].parent_episode_id
-                    for position, source in enumerate(ordered)
-                ),
-                -value,
+        ordered_parents = sorted(
+            parent_groups,
+            key=lambda parent: (
+                -len(parent_groups[parent]),
+                hashlib.sha256(
+                    f"{seed}|parent|{parent}".encode("utf-8")
+                ).digest(),
             ),
         )
+        ordered = []
+        for parent in ordered_parents:
+            ordered.extend(
+                sorted(
+                    parent_groups[parent],
+                    key=lambda index: hashlib.sha256(
+                        f"{seed}|window|{window_ids[index]}".encode("utf-8")
+                    ).digest(),
+                )
+            )
+        largest_parent = len(parent_groups[ordered_parents[0]])
+        # Contiguous parent groups rotated by the largest group attain the
+        # lower bound max(0, 2 * largest_parent - size) on same-parent pairs.
+        offset = largest_parent if largest_parent < size else 1
         for position, source in enumerate(ordered):
-            donor = ordered[(position + offset) % len(ordered)]
+            donor = ordered[(position + offset) % size]
             donors[source] = donor
             paired += 1
             cross_episode += int(
-                windows[source].parent_episode_id
-                != windows[donor].parent_episode_id
+                parent_ids[source] != parent_ids[donor]
             )
             if source == donor:
                 raise RuntimeError("Non-singleton action permutation retained itself.")
-            donor_window = windows[donor]
             if (
-                donor_window.split != key[0]
-                or donor_window.action_stop - donor_window.action_start != key[1]
+                splits[donor] != key[0]
+                or horizons[donor] != key[1]
             ):
                 raise RuntimeError("Action permutation crossed a protocol group.")
     payload = {"donor_indices": donors, "seed": int(seed)}
@@ -1022,6 +1048,22 @@ def _barrier(context: _DistributedContext) -> None:
         dist.barrier()
 
 
+def _broadcast_action_permutation(
+    permutation: FixedActionPermutation | None,
+    context: _DistributedContext,
+) -> FixedActionPermutation:
+    if context.world_size == 1:
+        if permutation is None:
+            raise RuntimeError("Primary Gate2 rank lost its action permutation.")
+        return permutation
+    payload = [permutation if context.is_primary else None]
+    dist.broadcast_object_list(payload, src=0)
+    received = payload[0]
+    if not isinstance(received, FixedActionPermutation):
+        raise RuntimeError("Gate2 action permutation broadcast is invalid.")
+    return received
+
+
 def _gather_payloads(
     payload: dict[str, Any],
     context: _DistributedContext,
@@ -1109,7 +1151,7 @@ def _validate_cache_and_chart(
     if config.model.max_cameras < len(contract["camera_ids"]):
         raise ValueError("Gate2 model camera capacity is smaller than the cache.")
     split_counts = {
-        split: len(_split_indices(cache.windows, split))
+        split: len(cache.split_indices(split))
         for split in ("train", "val", "test")
     }
     missing = [split for split, count in split_counts.items() if count == 0]
@@ -1652,18 +1694,26 @@ def _strip_episode_rows(report: dict[str, Any]) -> dict[str, Any]:
 def run_gate2(config: Gate2RunConfig) -> dict[str, Any]:
     context = _distributed_context(config.device)
     try:
-        cache = JointWindowCache(config.cache_dir)
+        cache = JointWindowCache(
+            config.cache_dir,
+            verify_index_hashes=context.is_primary,
+        )
+        _barrier(context)
         chart = load_frozen_artifact_chart(
             config.chart_name,
             config.artifact_paths,
         )
         _validate_cache_and_chart(cache, chart, config)
-        permutation = build_fixed_action_permutation(
-            cache.windows,
-            seed=config.seed,
+        permutation = _broadcast_action_permutation(
+            (
+                build_fixed_action_permutation(cache, seed=config.seed)
+                if context.is_primary
+                else None
+            ),
+            context,
         )
         split_indices = {
-            split: _split_indices(cache.windows, split)
+            split: cache.split_indices(split)
             for split in ("train", "val", "test")
         }
         minimum_train = context.world_size * config.batch_size

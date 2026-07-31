@@ -156,11 +156,17 @@ class Gate2Tests(unittest.TestCase):
         self.assertEqual(len(sampler), 2)
 
     def test_action_permutation_is_fixed_group_local_and_deranged(self) -> None:
-        def row(index: int, split: str, episode: str) -> JointWindowRecord:
+        def row(
+            index: int,
+            split: str,
+            episode: str,
+            *,
+            parent: str | None = None,
+        ) -> JointWindowRecord:
             return JointWindowRecord(
                 window_id=f"window-{index}",
                 episode_id=episode,
-                parent_episode_id=episode,
+                parent_episode_id=parent or episode,
                 split=split,
                 chart_name="droid",
                 role="expert",
@@ -201,6 +207,34 @@ class Gate2Tests(unittest.TestCase):
                 windows[source].action_stop - windows[source].action_start,
                 windows[donor].action_stop - windows[donor].action_start,
             )
+
+        dominant = tuple(
+            row(
+                index,
+                "train",
+                f"dominant-{index}",
+                parent=("a" if index < 6 else "b" if index < 8 else "c"),
+            )
+            for index in range(10)
+        )
+        optimal = build_fixed_action_permutation(dominant, seed=7)
+        self.assertAlmostEqual(optimal.cross_episode_fraction, 0.8)
+        for source, donor in enumerate(optimal.donor_indices):
+            self.assertNotEqual(source, donor)
+
+        one_parent = tuple(
+            row(
+                index,
+                "train",
+                f"same-{index}",
+                parent="shared",
+            )
+            for index in range(4)
+        )
+        unavoidable = build_fixed_action_permutation(one_parent, seed=7)
+        self.assertEqual(unavoidable.cross_episode_fraction, 0.0)
+        for source, donor in enumerate(unavoidable.donor_indices):
+            self.assertNotEqual(source, donor)
 
     def test_rank_indices_keep_each_shard_contiguous(self) -> None:
         groups = ("a",) * 4 + ("b",) * 3 + ("c",) * 5 + ("d",) * 4

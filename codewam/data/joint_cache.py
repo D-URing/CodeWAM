@@ -10,6 +10,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 
 from codewam.codebook_eval.manifest import VALID_SPLITS
@@ -37,6 +38,24 @@ JOINT_EPISODE_SHARD_SCHEMA = "codewam.joint-episode-shard.v1"
 JOINT_SHARD_INDEX_SCHEMA = "codewam.joint-shard-index.v1"
 JOINT_CACHE_SUMMARY_SCHEMA = "codewam.joint-cache-summary.v1"
 JOINT_ACTION_INDEX_SCHEMA = "codewam.joint-action-index.v1"
+JOINT_WINDOW_INDEX_SCHEMA = "codewam.joint-window-index.v1"
+
+_JOINT_SPLITS = ("train", "val", "test")
+_JOINT_WINDOW_ID_BYTES = 64
+_JOINT_WINDOW_SCALAR_FIELDS = (
+    "state_latent_start",
+    "state_latent_stop",
+    "current_latent_index",
+    "future_latent_index",
+    "proprio_start",
+    "proprio_stop",
+    "past_action_start",
+    "past_action_stop",
+    "action_start",
+    "action_stop",
+    "decision_source_index",
+    "future_observation_source_index",
+)
 
 
 def _canonical_hash(payload: Any) -> str:
@@ -1094,6 +1113,243 @@ def write_joint_episode_shard(
     return sidecar
 
 
+def _joint_chart_fields(
+    contract: Mapping[str, Any],
+) -> tuple[str, tuple[str, ...], tuple[str, ...], int]:
+    chart = contract["chart"]
+    family_rows = tuple(chart["families"])
+    families = tuple(str(row["family"]) for row in family_rows)
+    artifact_sha256 = tuple(str(row["sha256"]) for row in family_rows)
+    levels = {int(row["levels"]) for row in family_rows}
+    if not families or len(levels) != 1:
+        raise RuntimeError(
+            "Compact joint indices require nonempty, level-aligned code families."
+        )
+    return str(chart["name"]), families, artifact_sha256, levels.pop()
+
+
+def _write_compact_joint_window_index(
+    cache_dir: Path,
+    *,
+    contract: Mapping[str, Any],
+    episode_rows: Sequence[Mapping[str, Any]],
+    windows: Iterable[JointWindowRecord],
+    window_count: int,
+    windows_sha256: str,
+) -> dict[str, Any]:
+    if window_count <= 0:
+        raise ValueError("Compact joint window index cannot be empty.")
+    chart_name, families, artifact_sha256, levels = _joint_chart_fields(
+        contract
+    )
+    family_count = len(families)
+    episode_ids = tuple(str(row["episode_id"]) for row in episode_rows)
+    if len(episode_ids) != len(set(episode_ids)):
+        raise RuntimeError("Joint episode rows contain duplicate IDs.")
+    episode_positions = {
+        episode_id: index for index, episode_id in enumerate(episode_ids)
+    }
+    parent_episode_ids = [
+        str(row.get("parent_episode_id", "")) for row in episode_rows
+    ]
+
+    episode_index = np.empty(window_count, dtype=np.int32)
+    split_ids = np.empty(window_count, dtype=np.uint8)
+    window_id_bytes = np.zeros(
+        (window_count, _JOINT_WINDOW_ID_BYTES),
+        dtype=np.uint8,
+    )
+    window_id_lengths = np.empty(window_count, dtype=np.uint8)
+    scalars = np.empty(
+        (window_count, len(_JOINT_WINDOW_SCALAR_FIELDS)),
+        dtype=np.int32,
+    )
+    current_code_ids = np.empty(
+        (window_count, family_count, levels),
+        dtype=np.int32,
+    )
+    future_code_ids = np.empty_like(current_code_ids)
+    code_available = np.empty(
+        (window_count, family_count),
+        dtype=np.bool_,
+    )
+    current_descriptor_sources = np.empty(
+        (window_count, family_count, 3),
+        dtype=np.int32,
+    )
+    future_descriptor_sources = np.empty_like(
+        current_descriptor_sources
+    )
+    descriptor_overlap = np.empty(
+        (window_count, family_count),
+        dtype=np.uint8,
+    )
+    split_positions = {
+        split: index for index, split in enumerate(_JOINT_SPLITS)
+    }
+    previous_window_id: str | None = None
+    written = 0
+    for position, record in enumerate(windows):
+        if position >= window_count:
+            raise RuntimeError(
+                "Joint window source exceeds its declared summary count."
+            )
+        if previous_window_id is not None and record.window_id <= previous_window_id:
+            raise RuntimeError(
+                "Joint windows must be strictly ordered by unique window ID."
+            )
+        previous_window_id = record.window_id
+        try:
+            episode_row = episode_positions[record.episode_id]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"Joint window references unknown episode `{record.episode_id}`."
+            ) from exc
+        locator = episode_rows[episode_row]
+        if (
+            str(locator["split"]) != record.split
+            or str(locator["role"]) != record.role.value
+        ):
+            raise RuntimeError(
+                f"Joint window `{record.window_id}` differs from its episode locator."
+            )
+        known_parent = parent_episode_ids[episode_row]
+        if known_parent and known_parent != record.parent_episode_id:
+            raise RuntimeError(
+                f"Joint episode `{record.episode_id}` has inconsistent parents."
+            )
+        parent_episode_ids[episode_row] = record.parent_episode_id
+        if (
+            record.chart_name != chart_name
+            or record.families != families
+            or record.artifact_sha256 != artifact_sha256
+        ):
+            raise RuntimeError(
+                f"Joint window `{record.window_id}` differs from its chart contract."
+            )
+        encoded_id = record.window_id.encode("utf-8")
+        if len(encoded_id) > _JOINT_WINDOW_ID_BYTES:
+            raise ValueError(
+                f"Joint window ID exceeds {_JOINT_WINDOW_ID_BYTES} UTF-8 bytes."
+            )
+        episode_index[position] = episode_row
+        split_ids[position] = split_positions[record.split]
+        window_id_lengths[position] = len(encoded_id)
+        window_id_bytes[position, : len(encoded_id)] = np.frombuffer(
+            encoded_id,
+            dtype=np.uint8,
+        )
+        scalars[position] = tuple(
+            int(getattr(record, field))
+            for field in _JOINT_WINDOW_SCALAR_FIELDS
+        )
+        current_code_ids[position] = record.current_code_ids
+        future_code_ids[position] = record.future_code_ids
+        code_available[position] = record.code_available
+        current_descriptor_sources[position] = (
+            record.current_descriptor_sources
+        )
+        future_descriptor_sources[position] = (
+            record.future_descriptor_sources
+        )
+        descriptor_overlap[position] = record.descriptor_overlap
+        written = position + 1
+    if written != window_count:
+        raise RuntimeError(
+            f"Joint window source yielded {written}, expected {window_count}."
+        )
+
+    payload = {
+        "schema": JOINT_WINDOW_INDEX_SCHEMA,
+        "contract_hash": str(contract["contract_hash"]),
+        "windows_sha256": str(windows_sha256),
+        "count": int(window_count),
+        "split_names": list(_JOINT_SPLITS),
+        "scalar_fields": list(_JOINT_WINDOW_SCALAR_FIELDS),
+        "chart_name": chart_name,
+        "families": list(families),
+        "artifact_sha256": list(artifact_sha256),
+        "episode_ids": list(episode_ids),
+        "parent_episode_ids": parent_episode_ids,
+        "episode_index": torch.from_numpy(episode_index),
+        "split_ids": torch.from_numpy(split_ids),
+        "window_id_bytes": torch.from_numpy(window_id_bytes),
+        "window_id_lengths": torch.from_numpy(window_id_lengths),
+        "scalars": torch.from_numpy(scalars),
+        "current_code_ids": torch.from_numpy(current_code_ids),
+        "future_code_ids": torch.from_numpy(future_code_ids),
+        "code_available": torch.from_numpy(code_available),
+        "current_descriptor_sources": torch.from_numpy(
+            current_descriptor_sources
+        ),
+        "future_descriptor_sources": torch.from_numpy(
+            future_descriptor_sources
+        ),
+        "descriptor_overlap": torch.from_numpy(descriptor_overlap),
+    }
+    path = cache_dir / "window_records.pt"
+    atomic_torch_save(payload, path)
+    return {
+        "path": path.name,
+        "sha256": file_sha256(path),
+        "source_windows_sha256": str(windows_sha256),
+    }
+
+
+def add_compact_joint_window_index(
+    cache_dir: str | Path,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Add an mmap-friendly index to a finalized legacy joint cache."""
+
+    cache_dir = Path(cache_dir)
+    contract = json.loads(
+        (cache_dir / "contract.json").read_text(encoding="utf-8")
+    )
+    validate_joint_cache_contract(contract)
+    summary_path = cache_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if (
+        summary.get("schema") != JOINT_CACHE_SUMMARY_SCHEMA
+        or summary.get("contract_hash") != contract["contract_hash"]
+    ):
+        raise RuntimeError("Joint cache summary does not match its contract.")
+    indices = summary.get("indices")
+    if not isinstance(indices, dict):
+        raise RuntimeError("Joint cache summary has no index registry.")
+    existing = indices.get("window_records")
+    if existing is not None and not force:
+        path = cache_dir / str(existing["path"])
+        if file_sha256(path) != existing["sha256"]:
+            raise RuntimeError(f"Joint cache index hash changed: {path}.")
+        return summary
+    for name in ("episodes", "windows"):
+        row = indices[name]
+        path = cache_dir / str(row["path"])
+        if file_sha256(path) != row["sha256"]:
+            raise RuntimeError(f"Joint cache index hash changed: {path}.")
+    episode_rows = list(
+        _iter_jsonl(cache_dir / str(indices["episodes"]["path"]))
+    )
+    windows_path = cache_dir / str(indices["windows"]["path"])
+    compact_row = _write_compact_joint_window_index(
+        cache_dir,
+        contract=contract,
+        episode_rows=episode_rows,
+        windows=(
+            JointWindowRecord.from_dict(row)
+            for row in _iter_jsonl(windows_path)
+        ),
+        window_count=int(summary["windows"]),
+        windows_sha256=str(indices["windows"]["sha256"]),
+    )
+    updated = dict(summary)
+    updated["indices"] = {**indices, "window_records": compact_row}
+    _write_json(summary_path, updated)
+    return updated
+
+
 def finalize_joint_cache(
     cache_dir: str | Path,
     *,
@@ -1179,6 +1435,7 @@ def finalize_joint_cache(
             episode_rows.append(
                 {
                     **locator,
+                    "parent_episode_id": episode.parent_episode_id,
                     "episode_shard": str(sidecar["episode_shard"]),
                     "episode_shard_sha256": str(
                         sidecar["episode_shard_sha256"]
@@ -1238,6 +1495,14 @@ def finalize_joint_cache(
         (window.to_dict() for window in parsed_windows),
     )
     windows_sha256 = file_sha256(windows_path)
+    compact_window_row = _write_compact_joint_window_index(
+        cache_dir,
+        contract=contract,
+        episode_rows=episode_rows,
+        windows=parsed_windows,
+        window_count=len(parsed_windows),
+        windows_sha256=windows_sha256,
+    )
     actions_path = cache_dir / "window_actions.pt"
     atomic_torch_save(
         {
@@ -1284,6 +1549,7 @@ def finalize_joint_cache(
                 "path": windows_path.name,
                 "sha256": windows_sha256,
             },
+            "window_records": compact_window_row,
             "actions": {
                 "path": actions_path.name,
                 "sha256": file_sha256(actions_path),
@@ -1311,6 +1577,278 @@ class JointWindowSample:
     language_valid: torch.Tensor | None
 
 
+def _sequence_position(index: int, length: int) -> int:
+    position = int(index)
+    if position < 0:
+        position += length
+    if position < 0 or position >= length:
+        raise IndexError("Joint window index is out of range.")
+    return position
+
+
+class _CompactJointWindowIndex:
+    def __init__(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        contract: Mapping[str, Any],
+        summary: Mapping[str, Any],
+        locators: Mapping[str, Mapping[str, Any]],
+    ):
+        windows_row = summary["indices"]["windows"]
+        if (
+            payload.get("schema") != JOINT_WINDOW_INDEX_SCHEMA
+            or payload.get("contract_hash") != contract["contract_hash"]
+            or payload.get("windows_sha256") != windows_row["sha256"]
+            or int(payload.get("count", -1)) != int(summary["windows"])
+            or tuple(payload.get("split_names", ())) != _JOINT_SPLITS
+            or tuple(payload.get("scalar_fields", ()))
+            != _JOINT_WINDOW_SCALAR_FIELDS
+        ):
+            raise RuntimeError(
+                "Compact joint window index does not match its cache."
+            )
+        chart_name, families, artifact_sha256, levels = _joint_chart_fields(
+            contract
+        )
+        if (
+            payload.get("chart_name") != chart_name
+            or tuple(payload.get("families", ())) != families
+            or tuple(payload.get("artifact_sha256", ())) != artifact_sha256
+        ):
+            raise RuntimeError(
+                "Compact joint window index differs from its chart contract."
+            )
+        self.count = int(payload["count"])
+        self.chart_name = chart_name
+        self.families = families
+        self.artifact_sha256 = artifact_sha256
+        self.episode_ids = tuple(
+            str(value) for value in payload.get("episode_ids", ())
+        )
+        self.parent_episode_ids = tuple(
+            str(value) for value in payload.get("parent_episode_ids", ())
+        )
+        if (
+            len(self.episode_ids) != len(self.parent_episode_ids)
+            or len(self.episode_ids) != len(locators)
+            or len(set(self.episode_ids)) != len(self.episode_ids)
+        ):
+            raise RuntimeError(
+                "Compact joint window episode identities are invalid."
+            )
+        try:
+            self.episode_locators = tuple(
+                locators[episode_id] for episode_id in self.episode_ids
+            )
+        except KeyError as exc:
+            raise RuntimeError(
+                f"Compact joint index references unknown episode `{exc.args[0]}`."
+            ) from exc
+
+        tensor_specs = {
+            "episode_index": (torch.int32, (self.count,)),
+            "split_ids": (torch.uint8, (self.count,)),
+            "window_id_bytes": (
+                torch.uint8,
+                (self.count, _JOINT_WINDOW_ID_BYTES),
+            ),
+            "window_id_lengths": (torch.uint8, (self.count,)),
+            "scalars": (
+                torch.int32,
+                (self.count, len(_JOINT_WINDOW_SCALAR_FIELDS)),
+            ),
+            "current_code_ids": (
+                torch.int32,
+                (self.count, len(families), levels),
+            ),
+            "future_code_ids": (
+                torch.int32,
+                (self.count, len(families), levels),
+            ),
+            "code_available": (
+                torch.bool,
+                (self.count, len(families)),
+            ),
+            "current_descriptor_sources": (
+                torch.int32,
+                (self.count, len(families), 3),
+            ),
+            "future_descriptor_sources": (
+                torch.int32,
+                (self.count, len(families), 3),
+            ),
+            "descriptor_overlap": (
+                torch.uint8,
+                (self.count, len(families)),
+            ),
+        }
+        for name, (dtype, shape) in tensor_specs.items():
+            value = payload.get(name)
+            if (
+                not isinstance(value, torch.Tensor)
+                or value.dtype != dtype
+                or tuple(value.shape) != shape
+            ):
+                raise RuntimeError(
+                    f"Compact joint window tensor `{name}` is invalid."
+                )
+            setattr(self, name, value)
+        if self.count:
+            if (
+                int(self.episode_index.min()) < 0
+                or int(self.episode_index.max()) >= len(self.episode_ids)
+                or int(self.split_ids.max()) >= len(_JOINT_SPLITS)
+                or int(self.window_id_lengths.max())
+                > _JOINT_WINDOW_ID_BYTES
+            ):
+                raise RuntimeError(
+                    "Compact joint window index contains invalid row IDs."
+                )
+
+    def window_id(self, position: int) -> str:
+        length = int(self.window_id_lengths[position])
+        return bytes(
+            self.window_id_bytes[position, :length].tolist()
+        ).decode("utf-8")
+
+    def episode_row(self, position: int) -> int:
+        return int(self.episode_index[position])
+
+    def split(self, position: int) -> str:
+        return _JOINT_SPLITS[int(self.split_ids[position])]
+
+    def parent_episode_id(self, position: int) -> str:
+        return self.parent_episode_ids[self.episode_row(position)]
+
+    def action_horizon(self, position: int) -> int:
+        row = self.scalars[position]
+        return int(row[9]) - int(row[8])
+
+    def episode_shard(self, position: int) -> str:
+        locator = self.episode_locators[self.episode_row(position)]
+        return str(locator["episode_shard"])
+
+    def record(self, position: int) -> JointWindowRecord:
+        episode_row = self.episode_row(position)
+        locator = self.episode_locators[episode_row]
+        scalar_values = self.scalars[position].tolist()
+        scalar_fields = dict(
+            zip(_JOINT_WINDOW_SCALAR_FIELDS, scalar_values)
+        )
+        return JointWindowRecord(
+            window_id=self.window_id(position),
+            episode_id=self.episode_ids[episode_row],
+            parent_episode_id=self.parent_episode_ids[episode_row],
+            split=self.split(position),
+            chart_name=self.chart_name,
+            role=str(locator["role"]),
+            families=self.families,
+            **scalar_fields,
+            current_code_ids=tuple(
+                tuple(int(code) for code in row)
+                for row in self.current_code_ids[position].tolist()
+            ),
+            future_code_ids=tuple(
+                tuple(int(code) for code in row)
+                for row in self.future_code_ids[position].tolist()
+            ),
+            code_available=tuple(
+                bool(value)
+                for value in self.code_available[position].tolist()
+            ),
+            current_descriptor_sources=tuple(
+                tuple(int(value) for value in row)
+                for row in self.current_descriptor_sources[position].tolist()
+            ),
+            future_descriptor_sources=tuple(
+                tuple(int(value) for value in row)
+                for row in self.future_descriptor_sources[position].tolist()
+            ),
+            descriptor_overlap=tuple(
+                int(value)
+                for value in self.descriptor_overlap[position].tolist()
+            ),
+            artifact_sha256=self.artifact_sha256,
+        )
+
+
+class _CompactJointWindowSequence(Sequence[JointWindowRecord]):
+    def __init__(
+        self,
+        index: _CompactJointWindowIndex,
+        positions: torch.Tensor | None,
+    ):
+        self.index = index
+        self.positions = positions
+
+    def __len__(self) -> int:
+        if self.positions is None:
+            return self.index.count
+        return int(self.positions.numel())
+
+    def global_position(self, index: int) -> int:
+        position = _sequence_position(index, len(self))
+        if self.positions is None:
+            return position
+        return int(self.positions[position])
+
+    def __getitem__(
+        self,
+        index: int | slice,
+    ) -> JointWindowRecord | tuple[JointWindowRecord, ...]:
+        if isinstance(index, slice):
+            return tuple(
+                self[position]
+                for position in range(*index.indices(len(self)))
+            )
+        return self.index.record(self.global_position(index))
+
+    def split_indices(self, split: str) -> tuple[int, ...]:
+        split_id = _JOINT_SPLITS.index(split)
+        if self.positions is None:
+            selected = self.index.split_ids == split_id
+        else:
+            selected = (
+                self.index.split_ids.index_select(0, self.positions) == split_id
+            )
+        return tuple(
+            int(value)
+            for value in torch.nonzero(selected, as_tuple=False).flatten().tolist()
+        )
+
+    def permutation_rows(
+        self,
+    ) -> Iterator[tuple[int, str, int, str, str]]:
+        for local_position in range(len(self)):
+            global_position = self.global_position(local_position)
+            yield (
+                local_position,
+                self.index.split(global_position),
+                self.index.action_horizon(global_position),
+                self.index.parent_episode_id(global_position),
+                self.index.window_id(global_position),
+            )
+
+    def episode_shard(self, index: int) -> str:
+        return self.index.episode_shard(self.global_position(index))
+
+
+class _CompactWindowShardSequence(Sequence[str]):
+    def __init__(self, windows: _CompactJointWindowSequence):
+        self.windows = windows
+
+    def __len__(self) -> int:
+        return len(self.windows)
+
+    def __getitem__(self, index: int | slice) -> str | tuple[str, ...]:
+        if isinstance(index, slice):
+            return tuple(
+                self[position] for position in range(*index.indices(len(self)))
+            )
+        return self.windows.episode_shard(index)
+
+
 class JointWindowCache:
     """Verified random access to deduplicated episode tensors and logical windows."""
 
@@ -1320,6 +1858,7 @@ class JointWindowCache:
         *,
         split: str | None = None,
         max_cached_shards: int = 2,
+        verify_index_hashes: bool = True,
     ):
         self.cache_dir = Path(cache_dir)
         if split is not None and split not in VALID_SPLITS:
@@ -1339,43 +1878,94 @@ class JointWindowCache:
             != self.contract["contract_hash"]
         ):
             raise RuntimeError("Joint cache summary does not match its contract.")
-        for row in self.summary["indices"].values():
-            path = self.cache_dir / row["path"]
-            if file_sha256(path) != row["sha256"]:
-                raise RuntimeError(f"Joint cache index hash changed: {path}.")
+        if verify_index_hashes:
+            for row in self.summary["indices"].values():
+                path = self.cache_dir / row["path"]
+                if file_sha256(path) != row["sha256"]:
+                    raise RuntimeError(
+                        f"Joint cache index hash changed: {path}."
+                    )
         self._locators: dict[str, dict[str, Any]] = {}
-        for row in _iter_jsonl(self.cache_dir / "episodes.jsonl"):
+        episode_row = self.summary["indices"]["episodes"]
+        for row in _iter_jsonl(self.cache_dir / episode_row["path"]):
             episode_id = str(row["episode_id"])
             if episode_id in self._locators:
                 raise RuntimeError("Joint cache episode index contains duplicates.")
             self._locators[episode_id] = row
-        window_positions = []
-        selected_windows = []
-        window_count = 0
-        for index, row in enumerate(
-            _iter_jsonl(self.cache_dir / "windows.jsonl")
-        ):
-            window = JointWindowRecord.from_dict(row)
-            window_count += 1
-            if split is None or window.split == split:
-                window_positions.append(index)
-                selected_windows.append(window)
-        self._window_positions = tuple(window_positions)
-        self.windows = tuple(selected_windows)
-        del selected_windows, window_positions
+        compact_row = self.summary["indices"].get("window_records")
+        self._compact_index: _CompactJointWindowIndex | None = None
+        if compact_row is not None:
+            compact_path = self.cache_dir / str(compact_row["path"])
+            try:
+                compact_payload = torch.load(
+                    compact_path,
+                    map_location="cpu",
+                    weights_only=True,
+                    mmap=True,
+                )
+            except TypeError:
+                compact_payload = load_torch_payload(
+                    compact_path,
+                    map_location="cpu",
+                )
+            if not isinstance(compact_payload, dict):
+                raise RuntimeError("Compact joint window index is invalid.")
+            self._compact_index = _CompactJointWindowIndex(
+                compact_payload,
+                contract=self.contract,
+                summary=self.summary,
+                locators=self._locators,
+            )
+            window_count = self._compact_index.count
+            positions = (
+                None
+                if split is None
+                else torch.nonzero(
+                    self._compact_index.split_ids
+                    == _JOINT_SPLITS.index(split),
+                    as_tuple=False,
+                ).flatten()
+            )
+            compact_windows = _CompactJointWindowSequence(
+                self._compact_index,
+                positions,
+            )
+            self.windows: Sequence[JointWindowRecord] = compact_windows
+            self._window_positions: tuple[int, ...] | torch.Tensor | None = (
+                positions
+            )
+            self.window_shards: Sequence[str] = (
+                _CompactWindowShardSequence(compact_windows)
+            )
+        else:
+            window_positions = []
+            selected_windows = []
+            window_count = 0
+            windows_row = self.summary["indices"]["windows"]
+            for index, row in enumerate(
+                _iter_jsonl(self.cache_dir / windows_row["path"])
+            ):
+                window = JointWindowRecord.from_dict(row)
+                window_count += 1
+                if split is None or window.split == split:
+                    window_positions.append(index)
+                    selected_windows.append(window)
+            self._window_positions = tuple(window_positions)
+            self.windows = tuple(selected_windows)
+            del selected_windows, window_positions
+            try:
+                self.window_shards = tuple(
+                    str(self._locators[window.episode_id]["episode_shard"])
+                    for window in self.windows
+                )
+            except KeyError as exc:
+                raise RuntimeError(
+                    f"Joint window references an unknown episode `{exc.args[0]}`."
+                ) from exc
         if window_count != int(self.summary["windows"]):
             raise RuntimeError("Joint cache window count differs from its summary.")
         if len(self._locators) != int(self.summary["episodes"]):
             raise RuntimeError("Joint cache episode count differs from its summary.")
-        try:
-            self.window_shards = tuple(
-                str(self._locators[window.episode_id]["episode_shard"])
-                for window in self.windows
-            )
-        except KeyError as exc:
-            raise RuntimeError(
-                f"Joint window references an unknown episode `{exc.args[0]}`."
-            ) from exc
         self.max_cached_shards = int(max_cached_shards)
         self._shards: OrderedDict[str, tuple[JointEpisode, ...]] = OrderedDict()
         self._verified_shards: set[str] = set()
@@ -1409,6 +1999,32 @@ class JointWindowCache:
 
     def __len__(self) -> int:
         return len(self.windows)
+
+    def split_indices(self, split: str) -> tuple[int, ...]:
+        if split not in VALID_SPLITS:
+            raise ValueError(f"Unsupported joint cache split `{split}`.")
+        if isinstance(self.windows, _CompactJointWindowSequence):
+            return self.windows.split_indices(split)
+        return tuple(
+            index
+            for index, window in enumerate(self.windows)
+            if window.split == split
+        )
+
+    def permutation_rows(
+        self,
+    ) -> Iterator[tuple[int, str, int, str, str]]:
+        if isinstance(self.windows, _CompactJointWindowSequence):
+            yield from self.windows.permutation_rows()
+            return
+        for index, window in enumerate(self.windows):
+            yield (
+                index,
+                window.split,
+                window.action_stop - window.action_start,
+                window.parent_episode_id,
+                window.window_id,
+            )
 
     def _load_episode(self, episode_id: str) -> JointEpisode:
         try:
@@ -1476,7 +2092,12 @@ class JointWindowCache:
         )
 
     def action_chunk(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        position = self._window_positions[index]
+        local_position = _sequence_position(index, len(self))
+        position = (
+            local_position
+            if self._window_positions is None
+            else int(self._window_positions[local_position])
+        )
         actions = self._action_chunks[position]
         valid = self._action_valid[position]
         record = self.windows[index]
