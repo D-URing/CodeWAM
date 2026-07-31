@@ -305,11 +305,26 @@ class Gate2Tests(unittest.TestCase):
                 max_time=8,
                 max_action_horizon=16,
             )
-            with mock.patch.object(
-                gate2_module,
-                "_make_loader",
-                wraps=gate2_module._make_loader,
-            ) as make_loader:
+            original_getitem = gate2_module._Gate2Dataset.__getitem__
+            sample_reads = 0
+
+            def counted_getitem(dataset, index):
+                nonlocal sample_reads
+                sample_reads += 1
+                return original_getitem(dataset, index)
+
+            with (
+                mock.patch.object(
+                    gate2_module,
+                    "_make_loader",
+                    wraps=gate2_module._make_loader,
+                ) as make_loader,
+                mock.patch.object(
+                    gate2_module._Gate2Dataset,
+                    "__getitem__",
+                    new=counted_getitem,
+                ),
+            ):
                 report = run_gate2(
                     Gate2RunConfig(
                         cache_dir=str(cache_dir),
@@ -353,6 +368,7 @@ class Gate2Tests(unittest.TestCase):
         action_key = "codewam.code_dynamics.action_projection.weight"
         torch.testing.assert_close(noact[action_key], initialization[action_key])
         self.assertEqual(loader_calls, 5)
+        self.assertEqual(sample_reads, 30)
         self.assertEqual(
             protocol["distributed"],
             {

@@ -1379,9 +1379,14 @@ def _train_condition(
         loss_sum = 0.0
         updates = 0
         started = time.monotonic()
-        for cpu_batch in loader:
+        loader_iterator = iter(loader)
+        while True:
             if config.max_steps is not None and global_step >= config.max_steps:
                 stopped = True
+                break
+            try:
+                cpu_batch = next(loader_iterator)
+            except StopIteration:
                 break
             batch = _move_gate2_batch(cpu_batch, context.device)
             model_batch = batch.joint.model
@@ -1496,73 +1501,85 @@ def _load_trained_model(
 
 
 @torch.no_grad()
-def _evaluate_model(
-    model: _Gate2DynamicsModel,
+def _evaluate_split_conditions(
+    models: Mapping[str, _Gate2DynamicsModel],
     *,
-    mode: ActionMode,
     split: str,
     config: Gate2RunConfig,
     loader: DataLoader,
     split_windows: int,
     context: _DistributedContext,
-) -> dict[str, Any]:
-    adapter = model.codewam.frozen_codebook
-    accumulator = Gate2MetricAccumulator(
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    if set(models) != set(LEARNED_CONDITIONS):
+        raise ValueError("Combined Gate2 evaluation needs every trained condition.")
+    true_model = models["TRUE"]
+    adapter = true_model.codewam.frozen_codebook
+    persistence = PersistenceAccumulator(
         families=adapter.families,
         levels=adapter.levels,
-        calibration_bins=config.calibration_bins,
     )
-    model.eval()
+    evaluations: tuple[
+        tuple[str, _Gate2DynamicsModel, ActionMode], ...
+    ] = (
+        ("TRUE", true_model, "true"),
+        ("TRUE@NOACT", true_model, "none"),
+        ("TRUE@SHUFFLE", true_model, "shuffle"),
+        ("NOACT", models["NOACT"], "none"),
+        ("SHUFFLE", models["SHUFFLE"], "shuffle"),
+    )
+    metrics = {
+        name: Gate2MetricAccumulator(
+            families=model.codewam.frozen_codebook.families,
+            levels=model.codewam.frozen_codebook.levels,
+            calibration_bins=config.calibration_bins,
+        )
+        for name, model, _ in evaluations
+    }
+    for model in models.values():
+        model.eval()
     for cpu_batch in loader:
         batch = _move_gate2_batch(cpu_batch, context.device)
         model_batch = batch.joint.model
         if model_batch.codes is None:
             raise RuntimeError("Gate2 evaluation batch lost current codes.")
-        with _autocast_context(config, context.device):
-            prediction = model(
-                model_batch.state,
-                model_batch.codes,
-                _condition_actions(batch, mode),
+        persistence.update(batch.joint, adapter)
+        for name, model, mode in evaluations:
+            with _autocast_context(config, context.device):
+                prediction = model(
+                    model_batch.state,
+                    model_batch.codes,
+                    _condition_actions(batch, mode),
+                )
+            metrics[name].update(
+                prediction,
+                batch.joint,
+                model.codewam.frozen_codebook,
             )
-        accumulator.update(
-            prediction,
-            batch.joint,
-            adapter,
-        )
-    payloads = _gather_payloads(accumulator.payload(), context)
-    merged = Gate2MetricAccumulator.from_payload(payloads[0])
-    for payload in payloads[1:]:
-        merged.merge(Gate2MetricAccumulator.from_payload(payload))
-    report = merged.report()
-    report["split"] = split
-    report["windows"] = split_windows
-    return report
 
-
-@torch.no_grad()
-def _evaluate_persistence(
-    adapter: nn.Module,
-    *,
-    split: str,
-    loader: DataLoader,
-    split_windows: int,
-    context: _DistributedContext,
-) -> dict[str, Any]:
-    accumulator = PersistenceAccumulator(
-        families=adapter.families,
-        levels=adapter.levels,
+    persistence_payloads = _gather_payloads(
+        persistence.payload(),
+        context,
     )
-    for cpu_batch in loader:
-        batch = _move_gate2_batch(cpu_batch, context.device)
-        accumulator.update(batch.joint, adapter)
-    payloads = _gather_payloads(accumulator.payload(), context)
-    merged = PersistenceAccumulator.from_payload(payloads[0])
-    for payload in payloads[1:]:
-        merged.merge(PersistenceAccumulator.from_payload(payload))
-    report = merged.report()
-    report["split"] = split
-    report["windows"] = split_windows
-    return report
+    merged_persistence = PersistenceAccumulator.from_payload(
+        persistence_payloads[0]
+    )
+    for payload in persistence_payloads[1:]:
+        merged_persistence.merge(PersistenceAccumulator.from_payload(payload))
+    persistence_report = merged_persistence.report()
+    persistence_report["split"] = split
+    persistence_report["windows"] = split_windows
+
+    reports = {}
+    for name, _, _ in evaluations:
+        payloads = _gather_payloads(metrics[name].payload(), context)
+        merged = Gate2MetricAccumulator.from_payload(payloads[0])
+        for payload in payloads[1:]:
+            merged.merge(Gate2MetricAccumulator.from_payload(payload))
+        report = merged.report()
+        report["split"] = split
+        report["windows"] = split_windows
+        reports[name] = report
+    return persistence_report, reports
 
 
 def _paired_episode_bootstrap(
@@ -1794,67 +1811,32 @@ def run_gate2(config: Gate2RunConfig) -> dict[str, Any]:
                 batch_size=config.eval_batch_size,
             )
             split_windows = len(split_indices[split])
-            true_model = _load_trained_model(
-                "TRUE",
-                config=config,
-                chart=chart,
-                protocol_hash=protocol["protocol_hash"],
-                device=context.device,
-            )
-            conditions["PERSIST"][split] = _evaluate_persistence(
-                true_model.codewam.frozen_codebook,
-                split=split,
-                loader=loader,
-                split_windows=split_windows,
-                context=context,
-            )
-            conditions["TRUE"][split] = _evaluate_model(
-                true_model,
-                mode="true",
-                split=split,
-                config=config,
-                loader=loader,
-                split_windows=split_windows,
-                context=context,
-            )
-            for name, mode in (
-                ("TRUE@NOACT", "none"),
-                ("TRUE@SHUFFLE", "shuffle"),
-            ):
-                diagnostics[name][split] = _evaluate_model(
-                    true_model,
-                    mode=mode,
-                    split=split,
-                    config=config,
-                    loader=loader,
-                    split_windows=split_windows,
-                    context=context,
-                )
-            del true_model
-            if context.device.type == "cuda":
-                torch.cuda.empty_cache()
-
-            for condition in ("NOACT", "SHUFFLE"):
-                model = _load_trained_model(
+            evaluation_models = {
+                condition: _load_trained_model(
                     condition,
                     config=config,
                     chart=chart,
                     protocol_hash=protocol["protocol_hash"],
                     device=context.device,
                 )
-                conditions[condition][split] = _evaluate_model(
-                    model,
-                    mode=_condition_mode(condition),
-                    split=split,
-                    config=config,
-                    loader=loader,
-                    split_windows=split_windows,
-                    context=context,
-                )
-                del model
-                if context.device.type == "cuda":
-                    torch.cuda.empty_cache()
-            del loader
+                for condition in LEARNED_CONDITIONS
+            }
+            persistence_report, evaluated = _evaluate_split_conditions(
+                evaluation_models,
+                split=split,
+                config=config,
+                loader=loader,
+                split_windows=split_windows,
+                context=context,
+            )
+            conditions["PERSIST"][split] = persistence_report
+            for condition in LEARNED_CONDITIONS:
+                conditions[condition][split] = evaluated[condition]
+            for name in diagnostics:
+                diagnostics[name][split] = evaluated[name]
+            del loader, evaluation_models
+            if context.device.type == "cuda":
+                torch.cuda.empty_cache()
 
         true_rows = conditions["TRUE"]["test"]["episode_changed_nll"]
         comparison_sources = {
