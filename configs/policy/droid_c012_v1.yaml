@@ -1,0 +1,46 @@
+# Equal-budget C0/C1/C2 policy pilot on the immutable DROID-10k joint cache.
+chart_name: droid
+seed: 20260731
+
+batch_size: 4
+eval_batch_size: 8
+epochs: 10
+max_steps: 200
+learning_rate: 2.0e-4
+weight_decay: 1.0e-2
+grad_clip_norm: 1.0
+num_workers: 0
+
+device: cuda
+amp_dtype: bfloat16
+checkpoint_every: 50
+log_every: 10
+
+eval_windows: 2048
+eval_flow_draws: 1
+sample_steps: 10
+bootstrap_samples: 2000
+
+model:
+  variant: C2
+  dynamics_mode: independent
+  latent_channels: 48
+  proprio_dim: 17
+  action_dim: 10
+  language_dim: 768
+  dim: 256
+  heads: 8
+  patch_size: 2
+  max_time: 8
+  max_cameras: 2
+  max_spatial_tokens: 64
+  max_action_horizon: 16
+  state_spatial_layers: 2
+  state_temporal_layers: 2
+  belief_queries: 8
+  belief_layers: 3
+  action_layers: 3
+  dynamics_layers: 3
+  dynamics_action_layers: 1
+  dropout: 0.0
+  lambda_code: 0.1

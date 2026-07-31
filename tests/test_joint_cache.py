@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import torch
@@ -110,6 +111,23 @@ def make_contract(chart: FrozenArtifactChart) -> dict:
 
 
 class JointCacheTests(unittest.TestCase):
+    def test_compact_parent_ids_ignore_segments_without_windows(self) -> None:
+        cache = JointWindowCache.__new__(JointWindowCache)
+        cache._compact_index = SimpleNamespace(
+            episode_ids=("short", "segment-a", "segment-b", "segment-c"),
+            parent_episode_ids=("", "episode-a", "episode-a", "episode-b"),
+        )
+        cache.windows = ()
+
+        self.assertEqual(
+            cache.parent_episode_ids,
+            ("episode-a", "episode-b"),
+        )
+        self.assertEqual(
+            cache.referenced_episode_ids,
+            ("segment-a", "segment-b", "segment-c"),
+        )
+
     def _write_cache(
         self,
         root: Path,

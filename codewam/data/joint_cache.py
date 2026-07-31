@@ -2003,10 +2003,30 @@ class JointWindowCache:
     @property
     def parent_episode_ids(self) -> tuple[str, ...]:
         if self._compact_index is not None:
-            return self._compact_index.parent_episode_ids
+            return tuple(
+                dict.fromkeys(
+                    parent
+                    for parent in self._compact_index.parent_episode_ids
+                    if parent
+                )
+            )
         return tuple(
             dict.fromkeys(window.parent_episode_id for window in self.windows)
         )
+
+    @property
+    def referenced_episode_ids(self) -> tuple[str, ...]:
+        """Segment IDs that contribute at least one logical window."""
+        if self._compact_index is not None:
+            return tuple(
+                episode
+                for episode, parent in zip(
+                    self._compact_index.episode_ids,
+                    self._compact_index.parent_episode_ids,
+                )
+                if parent
+            )
+        return tuple(dict.fromkeys(window.episode_id for window in self.windows))
 
     def split_indices(self, split: str) -> tuple[int, ...]:
         if split not in VALID_SPLITS:

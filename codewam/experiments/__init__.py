@@ -11,13 +11,25 @@ from .gate2_summary import (
     GATE2_MULTI_SEED_SCHEMA,
     summarize_gate2_reports,
 )
+from .policy_ablation import (
+    POLICY_ABLATION_SCHEMA,
+    PolicyAblationRunConfig,
+    fixed_eval_subset,
+    paired_episode_bootstrap,
+    run_policy_ablation,
+)
 
 __all__ = [
     "GATE2_SCHEMA",
     "GATE2_MULTI_SEED_SCHEMA",
     "FixedActionPermutation",
     "Gate2RunConfig",
+    "POLICY_ABLATION_SCHEMA",
+    "PolicyAblationRunConfig",
     "build_fixed_action_permutation",
+    "fixed_eval_subset",
+    "paired_episode_bootstrap",
     "run_gate2",
+    "run_policy_ablation",
     "summarize_gate2_reports",
 ]
