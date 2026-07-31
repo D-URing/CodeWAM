@@ -9,7 +9,8 @@ max_steps: null
 learning_rate: 3.0e-4
 weight_decay: 1.0e-2
 grad_clip_norm: 1.0
-num_workers: 4
+# Each rank owns an episode-shard LRU; extra workers multiply host memory.
+num_workers: 0
 
 device: cuda
 amp_dtype: bfloat16
