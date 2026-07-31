@@ -2000,6 +2000,14 @@ class JointWindowCache:
     def __len__(self) -> int:
         return len(self.windows)
 
+    @property
+    def parent_episode_ids(self) -> tuple[str, ...]:
+        if self._compact_index is not None:
+            return self._compact_index.parent_episode_ids
+        return tuple(
+            dict.fromkeys(window.parent_episode_id for window in self.windows)
+        )
+
     def split_indices(self, split: str) -> tuple[int, ...]:
         if split not in VALID_SPLITS:
             raise ValueError(f"Unsupported joint cache split `{split}`.")
