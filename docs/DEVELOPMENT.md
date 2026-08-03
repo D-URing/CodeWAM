@@ -65,9 +65,9 @@ CodeWAM/
 
 大型公开数据集放在独立共享数据根目录,不复制到仓库。下载、校验和训练 artifact 也不进入
 git。canonical model、real-data `JointWindowCache`、frozen causal assigner、rank-aware
-exporter、Gate 2、frozen language/normalization sidecars、C0/C1/C2 trainer 和 DROID-10k
-三种子 200-step policy pilot 已完成。当前缺口是 action-target sidecar、充分收敛的 Gate 4、
-部署侧 online runtime 与闭环 benchmark,不是继续补模型骨架或重复短跑。
+exporter、Gate 2、frozen language/action/normalization sidecars、C0/C1/C2 trainer 和
+DROID-10k 三种子 200-step policy pilot 已完成。当前缺口是 selected controller contract、
+充分收敛的 Gate 4、部署侧 online runtime 与闭环 benchmark,不是继续补模型骨架或重复短跑。
 
 ## 2. 本机开发
 
@@ -464,9 +464,12 @@ shard。每个 loader 按行读取索引,只构造目标 split 的窗口对象,�
 `pass`;根目录 `multi_seed_summary.json` 是跨 seed 的保守汇总。该结论只允许进入等预算
 C0/C1/C2 policy 原型,不替代闭环 benchmark。
 
-冻结 language/normalization sidecar 只构建一次,不改写 28 GB Wan episode shards:
+冻结 language/action/normalization sidecar 只构建一次,不改写 28 GB Wan episode shards:
 
 ```bash
+export DROID_ROOT="${DROID_ROOT:-/workspace/datasets/droid}"
+export ACTION_TARGET_ROOT="${ACTION_TARGET_ROOT:-runs/action_targets/droid10k_action_dict_v1_373beae}"
+
 python scripts/export_language_cache.py \
   --cache-dir "$JOINT_CACHE_ROOT/cache" \
   --source-manifest "$DROID_10K_MANIFEST" \
@@ -476,16 +479,38 @@ python scripts/export_language_cache.py \
   --output-dir "$LANGUAGE_CACHE_ROOT" \
   --max-tokens 96 --batch-size 256 --device cuda:0 --dtype bfloat16
 
+torchrun --standalone --nproc_per_node=32 scripts/export_droid_action_targets.py export \
+  --source-manifest "$DROID_10K_MANIFEST" \
+  --data-dir "$DROID_ROOT/1.0.1" \
+  --joint-cache-dir "$JOINT_CACHE_ROOT/cache" \
+  --output-dir "$ACTION_TARGET_ROOT"
+
+python scripts/export_droid_action_targets.py finalize \
+  --source-manifest "$DROID_10K_MANIFEST" \
+  --joint-cache-dir "$JOINT_CACHE_ROOT/cache" \
+  --output-dir "$ACTION_TARGET_ROOT"
+
 python scripts/fit_policy_normalization.py \
   --cache-dir "$JOINT_CACHE_ROOT/cache" \
   --output-dir "$POLICY_NORMALIZATION_ROOT" --workers 16
 ```
 
 当前 T5 sidecar 覆盖 9,894 个 parent episodes、7,987 条去重指令和 99,235 tokens;
-最长指令 92 tokens,不做静默截断。normalization 只读 train split 中实际被窗口引用的
-10,011 个 segments,动作/本体各统计 2,329,597 个 source rows。flat DROID action 的本地
-实际值是 commanded Cartesian position RPY + gripper,编码为可逆 10D sin/cos 表示;
-proprio 编码为 17D。该动作语义必须在闭环前与 `action_dict`/controller 再核对。
+最长指令 92 tokens,不做静默截断。2026-08-03 的 action sidecar 覆盖 990 个 source shards、
+15,202 个 segments 和 3,002,148 个原始 15 Hz rows,产物 462,183,254 bytes;六类
+cartesian/joint position/velocity 与 gripper 分量均为 float32。它逐值确认 flat action 等于
+`cartesian_position + gripper_position`:21,015,036/21,015,036 个标量完全相等,max/RMSE 均为 0,
+且与 JointWindowCache 的 action/value-validity 对齐通过。contract hash 为
+`7ad468622f436a2af56bee3a85e0b71d7718ffe49229981c346b627076987c57`,summary SHA-256 为
+`eb3a16414c58b46e197cf876ab0d4777112868760884d9010327ba7754662cb4`。
+
+现有 normalization 只读 train split 中实际被窗口引用的 10,011 个 segments,动作/本体各统计
+2,329,597 个 source rows。pilot 使用的动作表示是 absolute Cartesian position RPY + gripper
+到可逆 10D Euler sin/cos;proprio 为 17D。这一 raw target 已被 sidecar 证实,但 orientation
+transform 仍是 pilot contract,不是最终 controller contract。DROID 官方 policy-learning 实现
+使用 [Cartesian position + Rot6D + gripper](https://github.com/droid-dataset/droid_policy_learning/blob/master/robomimic/utils/rlds_utils.py),
+而 OpenPI 的不同 DROID recipe 使用 joint velocity 或 joint position;Gate 4 开跑前只选一套与
+目标 controller 一致的表示,不并行增加难解释的 action-space 变量。
 
 三路 policy 运行与汇总:
 
@@ -520,7 +545,7 @@ python scripts/smoke_codewam_v1.py \
   --output runs/model_smoke/codewam_v1.json
 ```
 
-当前 185 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
+当前 190 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
 JointWindowCache、language/normalization sidecars、Gate 2、policy controls、resume 和
 multi-seed summary。合成 model smoke 仍标记 `scientific_evidence=false`;真实短跑必须按
 对应 protocol 的限制解释。

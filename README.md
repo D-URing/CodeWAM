@@ -208,7 +208,7 @@ BridgeData V2 frozen-transfer and independent-refit replication
 - 已实现:RLDS endpoint audit、冻结 Q2/Q3/Q5 causal assigner、未池化多相机
   `JointWindowCache v1`、source-rate action/proprio、rank-aware Wan exporter、verified
   dataloader/collator,以及等预算 Gate 2 runner 与 episode-block bootstrap。
-- 已验证:185 项单元测试、单卡/双 rank centers 等价、
+- 已验证:190 项单元测试、单卡/双 rank centers 等价、
   synthetic Q2/Q3/Q5 端到端 smoke、
   58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
   causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较、val/test 一致的时间反事实
@@ -228,16 +228,19 @@ BridgeData V2 frozen-transfer and independent-refit replication
 - 已验证:DROID-10k 561,338-window JointWindowCache 上,seed `7/19/31` 的正式 8-GPU
   Gate 2 均独立通过;aligned action 在 995 个共同 test parent episodes 上稳定降低
   changed-family future-code NLL,Q2/Q3/Q5 三族方向一致。该结果解锁原型,不等同于策略增益。
-- 已实现:T5-base token-level frozen language sidecar、train-only periodic-safe policy
-  normalization、共享初始化/窗口顺序/flow 噪声的 8-GPU `C0/C1/C2` trainer、可恢复
-  checkpoints、固定窗口 action-flow/ODE-sample 评估和三种子汇总器。
+- 已实现:T5-base token-level frozen language sidecar、完整 source-rate DROID `action_dict`
+  sidecar、train-only periodic-safe policy normalization、共享初始化/窗口顺序/flow 噪声的
+  8-GPU `C0/C1/C2` trainer、可恢复 checkpoints、固定窗口 action-flow/ODE-sample 评估和
+  三种子汇总器。
 - 已验证:seed `7/19/31` 各 200 步的 DROID-10k policy pilot。`C1-C0` 方向不稳定;
   `C2-C1` 的 val/test flow MSE 在三个 seed 中均变差。该短跑只覆盖每变体 6,400 个窗口,
   且训练参数量为 `9.91M/15.22M/19.20M`,不能裁决最终结构或闭环收益。
-- 尚未实现:DROID `action_dict` target sidecar、部署侧 online runtime 和闭环 benchmark。
-- 下一步:先锁定 controller-compatible action target,再做足够收敛的多种子 C0/C1/C2
-  learning curve;只有确认不是短预算或梯度干扰后才调整 C2 权重/训练阶段。LIBERO 使用独立
-  chart/refit,不能把 DROID code ID 当成共享语义。
+- 已验证:`action` 与 `action_dict.cartesian_position + gripper_position` 在 DROID-10k 的
+  3,002,148 个 source rows 上逐值相等;六种 position/velocity 分量均已冻结。尚未实现的是
+  部署侧 online runtime 和闭环 benchmark。
+- 下一步:先锁定 controller-compatible raw target 与 orientation representation,再做足够收敛的
+  多种子 C0/C1/C2 learning curve;只有确认不是短预算或梯度干扰后才调整 C2 权重/训练阶段。
+  LIBERO 使用独立 chart/refit,不能把 DROID code ID 当成共享语义。
 
 外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
 checkpoints 和运行结果始终放在 git 之外。

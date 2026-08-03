@@ -1,7 +1,8 @@
 # CodeWAM Architecture
 
-Status: canonical CodeWAM v1, DROID-10k Gate 2, and three-seed policy pilot
-verified; action-target contract, converged Gate 4, and online runtime pending.
+Status: canonical CodeWAM v1, DROID-10k Gate 2, three-seed policy pilot, and raw
+action-target provenance verified; selected controller representation, converged
+Gate 4, and online runtime pending.
 
 本文件是 CodeWAM 的唯一结构规范,约束模型模块、信息身份、训练目标、可见性和实验门。
 码本数据、离线训练与评估见 `CODEBOOK.md`;环境和工程边界见 `DEVELOPMENT.md`。当前
@@ -683,10 +684,10 @@ episode-block CI 保留在 immutable report 中,不把三个 seed 当成大样�
 
 因此当前结论不是“code 无用”,也不是“C2 已失败”。Gate 2 已证明 code transition 中存在
 action-conditioned world signal;Gate 4.1 说明 **该信号在 200-step joint loss 下没有稳定转化
-为动作收益**。下一轮先区分三种原因:flat DROID action target 是否适合部署、较大 C1/C2
-是否明显欠收敛、`0.1 * L_code` 是否与 action gradient 干扰。仍保持简单 loss;优先使用
-更长 learning curve、较低固定 lambda 或 world-pretrain -> policy-finetune 两阶段对照,
-不直接引入动态 loss weighting/gradient surgery。
+为动作收益**。全量 sidecar 已确认 flat DROID action 就是 absolute Cartesian position RPY +
+gripper;尚未裁定的是 orientation representation、部署 controller 与收敛预算。仍保持简单
+loss;优先使用更长 learning curve、较低固定 lambda 或 world-pretrain -> policy-finetune
+两阶段对照,不直接引入动态 loss weighting/gradient surgery。
 
 ## 10. 研究借鉴与取舍
 
@@ -740,6 +741,8 @@ codewam/data/droid_endpoint.py       RLDS endpoint/flag/alignment audit
 codewam/data/frozen_assignment.py    frozen causal Q2/Q3/Q5 assignment
 codewam/data/joint_cache.py          deduplicated episode shards + verified windows
 codewam/data/joint_cache_export.py   rank-aware DROID -> Wan -> code/cache export
+codewam/data/action_targets.py       immutable source-rate action alternatives
+codewam/data/action_target_export.py image-free RLDS extraction and joint alignment
 codewam/data/language_cache.py       frozen token-level task sidecar
 codewam/data/policy_normalization.py reversible action/proprio contract
 codewam/experiments/gate2.py         fixed-budget four-condition Gate 2
@@ -767,13 +770,21 @@ PERSIST/NOACT/TRUE/SHUFFLE 和 TRUE 模型两种干预均完成 GPU 前反向、
 与全指标报告。因为 test 只有两个独立 episode,更新后的协议正确返回 `invalid`;这只是
 engineering smoke,不是 Gate 2 结果。
 
-Gate 2、language sidecar、policy normalization 和首轮 C0/C1/C2 pilot 已完成。唯一下一张
-工程单改为 **DROID action-target contract 与 Gate 4 收敛实验**:
+Gate 2、language/action sidecar、policy normalization 和首轮 C0/C1/C2 pilot 已完成。2026-08-03
+的正式 action sidecar 位于 `runs/action_targets/droid10k_action_dict_v1_373beae`:990 个源 shard、
+15,202 个 keep-range segments、3,002,148 个 source rows 与六类 `action_dict` 均通过 joint-cache
+逐值对齐;flat action 的 21,015,036 个标量与 `cartesian_position + gripper_position` 全部精确
+相等。contract hash 与 summary SHA-256 分别为 `7ad468622f436a2af56bee3a85e0b71d7718ffe49229981c346b627076987c57`
+与 `eb3a16414c58b46e197cf876ab0d4777112868760884d9010327ba7754662cb4`。
+
+唯一下一张工程单仍是 **DROID action-target contract 与 Gate 4 收敛实验**,但步骤 1 已完成:
 
 ```text
-1. 从同一官方 RLDS position/keep-range 导出 immutable action-target sidecar,保留
-   cartesian/joint position/velocity 与 gripper 分量,不重跑 Wan 或 RQ。
-2. 对照当前 flat action 的真实实现语义与部署 controller,选择并固定 action contract。
+1. [done] 从同一官方 RLDS position/keep-range 导出 immutable action-target sidecar,不重跑
+   Wan 或 RQ;flat action 的原始字段映射与 joint alignment 已无歧义。
+2. 对照 DROID official Cartesian+Rot6D、joint velocity 和 joint position controller,选择并
+   固定 raw target、orientation transform 与部署 adapter。DROID 离线 Gate 4 默认优先对齐
+   official Cartesian+Rot6D baseline,不同时扩张三条主实验线。
 3. 在同一 target 上记录 C0/C1/C2 的 200/500/1000/2000-step learning curve,seed 7/19/31
    继续保持 initialization/data/noise 配对,同时报告 update 和 wall-clock/parameter budget。
 4. 若收敛后 C2 仍稳定弱于 C1,只比较固定较低 lambda 与 world-pretrain -> policy-finetune;
@@ -781,7 +792,8 @@ Gate 2、language sidecar、policy normalization 和首轮 C0/C1/C2 pilot 已完
 5. 通过离线 Gate 4 后进入 LIBERO 独立 chart/refit 的闭环 task-success;FastWAM 仍只作 F0。
 ```
 
-online assigner/runtime、action-target sidecar 和闭环 benchmark 仍未完成。当前
+online assigner/runtime 和闭环 benchmark 仍未完成;action-target 原值 sidecar 已完成,selected
+controller contract 尚未冻结。当前
 `codewam/model.py`、`codewam/codebook.py`、`codewam/runtime.py` 与旧训练配置仍是 legacy,
 不能接到 canonical v1 上冒充真实 trainer。
 
