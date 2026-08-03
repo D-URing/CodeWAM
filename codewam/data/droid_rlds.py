@@ -18,6 +18,14 @@ DROID_CAMERA_KEYS = (
     "exterior_image_2_left",
     "wrist_image_left",
 )
+DROID_ACTION_COMPONENT_DIMS = {
+    "cartesian_position": 6,
+    "cartesian_velocity": 6,
+    "gripper_position": 1,
+    "gripper_velocity": 1,
+    "joint_position": 7,
+    "joint_velocity": 7,
+}
 
 
 def _validate_modalities(
@@ -297,6 +305,89 @@ class DroidRLDSEpisode:
 
 
 @dataclass(frozen=True)
+class DroidRLDSActionEpisode:
+    """Image-free official DROID actions at their original source rate."""
+
+    episode_id: str
+    index: int
+    action: torch.Tensor
+    action_components: dict[str, torch.Tensor]
+    is_first: torch.Tensor
+    is_last: torch.Tensor
+    is_terminal: torch.Tensor
+    split: str
+    keep_ranges: tuple[tuple[int, int], ...]
+    manifest_key: str
+    source_file: str
+    recording_folder: str
+    source_shard: str
+    record_index: int
+
+    def __post_init__(self) -> None:
+        if not self.episode_id or not self.manifest_key or not self.source_shard:
+            raise ValueError("DROID action episode identity must not be empty.")
+        if self.split not in {"train", "val", "test"}:
+            raise ValueError(f"Unsupported DROID split `{self.split}`.")
+        if (
+            self.action.dtype != torch.float32
+            or self.action.ndim != 2
+            or self.action.shape[1] != 7
+            or not torch.isfinite(self.action).all()
+        ):
+            raise ValueError("DROID flat action must be finite float32 [T,7].")
+        steps = int(self.action.shape[0])
+        if steps <= 0:
+            raise ValueError("DROID action episode must not be empty.")
+        components = dict(self.action_components)
+        if set(components) != set(DROID_ACTION_COMPONENT_DIMS):
+            raise ValueError("DROID action_dict component schema changed.")
+        for name, width in DROID_ACTION_COMPONENT_DIMS.items():
+            value = components[name]
+            if (
+                value.dtype != torch.float32
+                or tuple(value.shape) != (steps, width)
+                or not torch.isfinite(value).all()
+            ):
+                raise ValueError(
+                    f"DROID action component `{name}` must be finite "
+                    f"float32 [{steps},{width}]."
+                )
+        ranges = _validate_keep_ranges(
+            self.keep_ranges,
+            num_steps=steps,
+            episode_id=self.episode_id,
+        )
+        is_first, is_last, is_terminal = _validate_step_flags(
+            self.episode_id,
+            length=steps,
+            is_first=self.is_first,
+            is_last=self.is_last,
+            is_terminal=self.is_terminal,
+            require_episode_boundaries=True,
+        )
+        object.__setattr__(self, "action_components", components)
+        object.__setattr__(self, "keep_ranges", ranges)
+        object.__setattr__(self, "is_first", is_first)
+        object.__setattr__(self, "is_last", is_last)
+        object.__setattr__(self, "is_terminal", is_terminal)
+
+    @property
+    def steps(self) -> int:
+        return int(self.action.shape[0])
+
+    @property
+    def action_valid(self) -> torch.Tensor:
+        return ~self.is_last
+
+    def eligible_ranges(self) -> tuple[tuple[int, int, int], ...]:
+        ranges = self.keep_ranges or ((0, self.steps),)
+        return tuple(
+            (range_index, start, stop)
+            for range_index, (start, stop) in enumerate(ranges)
+        )
+
+
+@dataclass(frozen=True)
 class DroidShardWork:
     shard_name: str
     source_bytes: int
@@ -568,6 +659,87 @@ def _decode_manifest_record(
     )
 
 
+def _decode_manifest_action_record(
+    *,
+    features: Any,
+    raw_record: Any,
+    decoders: dict[str, Any],
+    record: EpisodeRecord,
+) -> DroidRLDSActionEpisode:
+    decoded = features.deserialize_example(raw_record, decoders=decoders)
+    source_file = _decode_text(decoded["episode_metadata"]["file_path"].numpy())
+    recording_folder = _decode_text(
+        decoded["episode_metadata"]["recording_folderpath"].numpy()
+    )
+    expected_recording_folder = str(
+        record.metadata.get("recording_folderpath") or ""
+    )
+    mismatches = []
+    if source_file != record.source_uri:
+        mismatches.append("source_uri")
+    if recording_folder != expected_recording_folder:
+        mismatches.append("recording_folderpath")
+    if mismatches:
+        raise RuntimeError(
+            f"DROID manifest/source mismatch for `{record.key}`: {mismatches}."
+        )
+    if record.split is None:
+        raise ValueError(f"DROID manifest record `{record.key}` has no split.")
+
+    actions: list[np.ndarray] = []
+    component_rows: dict[str, list[np.ndarray]] = {
+        name: [] for name in DROID_ACTION_COMPONENT_DIMS
+    }
+    flags = {name: [] for name in ("is_first", "is_last", "is_terminal")}
+    for row in decoded["steps"].as_numpy_iterator():
+        row_components = row["action_dict"]
+        if set(row_components) != set(DROID_ACTION_COMPONENT_DIMS):
+            raise RuntimeError(
+                f"DROID action_dict schema changed for `{record.key}`."
+            )
+        actions.append(np.asarray(row["action"]))
+        for name in DROID_ACTION_COMPONENT_DIMS:
+            component_rows[name].append(np.asarray(row_components[name]))
+        for name in flags:
+            flags[name].append(bool(row[name]))
+    if len(actions) != record.num_steps:
+        raise RuntimeError(
+            f"DROID manifest/source mismatch for `{record.key}`: ['num_steps']."
+        )
+
+    keep_ranges = _validate_keep_ranges(
+        record.metadata.get("keep_ranges", ()),
+        num_steps=record.num_steps,
+        episode_id=record.episode_id,
+    )
+    expected_eligible_steps = record.metadata.get("eligible_steps")
+    if expected_eligible_steps is not None and sum(
+        stop - start for start, stop in keep_ranges
+    ) != int(expected_eligible_steps):
+        raise RuntimeError(
+            f"DROID manifest eligible-step mismatch for `{record.key}`."
+        )
+    return DroidRLDSActionEpisode(
+        episode_id=record.episode_id,
+        index=int(record.metadata["rlds_record_index"]),
+        action=torch.from_numpy(np.stack(actions, axis=0)).float().contiguous(),
+        action_components={
+            name: torch.from_numpy(np.stack(rows, axis=0)).float().contiguous()
+            for name, rows in component_rows.items()
+        },
+        is_first=torch.tensor(flags["is_first"], dtype=torch.bool),
+        is_last=torch.tensor(flags["is_last"], dtype=torch.bool),
+        is_terminal=torch.tensor(flags["is_terminal"], dtype=torch.bool),
+        split=record.split,
+        keep_ranges=keep_ranges,
+        manifest_key=record.key,
+        source_file=source_file,
+        recording_folder=recording_folder,
+        source_shard=str(record.metadata["rlds_shard_name"]),
+        record_index=int(record.metadata["rlds_record_index"]),
+    )
+
+
 def iter_manifest_droid_rlds_episodes(
     data_dir: str | Path,
     manifest: EpisodeManifest,
@@ -643,6 +815,91 @@ def iter_manifest_droid_rlds_episodes(
                 decoders=decoders,
                 record=record,
                 cameras=requested_cameras,
+            )
+            if len(found) == len(pending):
+                break
+        missing = sorted(set(pending) - found)
+        if missing:
+            raise RuntimeError(
+                f"DROID shard `{shard.shard_name}` is missing manifest positions "
+                f"{missing[:8]}."
+            )
+
+
+def iter_manifest_droid_action_episodes(
+    data_dir: str | Path,
+    manifest: EpisodeManifest,
+    *,
+    rank: int = 0,
+    world_size: int = 1,
+    completed_episode_keys: Iterable[str] = (),
+) -> Iterator[DroidRLDSActionEpisode]:
+    """Read exact source-rate actions while keeping every RGB field encoded."""
+
+    if world_size <= 0:
+        raise ValueError("DROID reader world size must be positive.")
+    if rank < 0 or rank >= world_size:
+        raise ValueError(
+            f"DROID reader rank {rank} is invalid for world size {world_size}."
+        )
+    data_dir = Path(data_dir)
+    if not (data_dir / "dataset_info.json").is_file():
+        raise FileNotFoundError(f"Not a TFDS builder directory: {data_dir}.")
+    assignment = plan_droid_rank_assignments(manifest, world_size)[rank]
+    completed = {str(value) for value in completed_episode_keys}
+
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    try:
+        import tensorflow as tf
+        import tensorflow_datasets as tfds
+    except ImportError as exc:
+        raise RuntimeError(
+            "Reading DROID RLDS requires `tensorflow-cpu` and "
+            "`tensorflow-datasets`."
+        ) from exc
+    _disable_tensorflow_gpu(tf)
+    builder = tfds.builder_from_directory(builder_dir=str(data_dir))
+    decoders = {
+        "steps": {
+            "observation": {
+                camera: tfds.decode.SkipDecoding()
+                for camera in DROID_CAMERA_KEYS
+            }
+        }
+    }
+
+    for shard in assignment.shards:
+        pending = {
+            int(record.metadata["rlds_record_index"]): record
+            for record in shard.records
+            if record.key not in completed and record.episode_id not in completed
+        }
+        if not pending:
+            continue
+        shard_path = data_dir / shard.shard_name
+        if not shard_path.is_file():
+            raise FileNotFoundError(f"Missing DROID shard `{shard_path}`.")
+        if shard_path.stat().st_size != shard.source_bytes:
+            raise RuntimeError(
+                f"DROID shard `{shard_path}` has {shard_path.stat().st_size} bytes, "
+                f"expected {shard.source_bytes}."
+            )
+
+        maximum_index = max(pending)
+        found: set[int] = set()
+        dataset = tf.data.TFRecordDataset(str(shard_path), num_parallel_reads=1)
+        for record_index, raw_record in enumerate(dataset):
+            if record_index > maximum_index:
+                break
+            record = pending.get(record_index)
+            if record is None:
+                continue
+            found.add(record_index)
+            yield _decode_manifest_action_record(
+                features=builder.info.features,
+                raw_record=raw_record,
+                decoders=decoders,
+                record=record,
             )
             if len(found) == len(pending):
                 break
