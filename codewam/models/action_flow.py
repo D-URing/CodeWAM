@@ -6,7 +6,14 @@ import torch
 from torch import nn
 
 from .blocks import QueryCrossAttentionBlock, masked_mean, sinusoidal_embedding
-from .contracts import ActionBatch, PolicyCondition, StateInputs, WorldBelief
+from .contracts import (
+    ActionBatch,
+    ContinuousState,
+    MultiClockCodeState,
+    PolicyCondition,
+    StateInputs,
+    WorldBelief,
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +39,8 @@ class ActionFlowDecoder(nn.Module):
         language_dim: int,
         max_horizon: int,
         layers: int = 4,
+        include_continuous: bool = False,
+        include_codes: bool = False,
         dropout: float = 0.0,
     ):
         super().__init__()
@@ -52,6 +61,8 @@ class ActionFlowDecoder(nn.Module):
         self.proprio_dim = int(proprio_dim)
         self.language_dim = int(language_dim)
         self.max_horizon = int(max_horizon)
+        self.include_continuous = bool(include_continuous)
+        self.include_codes = bool(include_codes)
         self.action_projection = nn.Linear(action_dim, dim)
         self.language_projection = nn.Linear(language_dim, dim)
         self.proprio_projection = nn.Linear(proprio_dim, dim)
@@ -63,7 +74,10 @@ class ActionFlowDecoder(nn.Module):
         self.position_embedding = nn.Parameter(
             torch.randn(max_horizon, dim) * (dim**-0.5)
         )
-        self.context_identity = nn.Parameter(torch.randn(3, dim) * (dim**-0.5))
+        context_kinds = 3 + int(self.include_continuous) + int(self.include_codes)
+        self.context_identity = nn.Parameter(
+            torch.randn(context_kinds, dim) * (dim**-0.5)
+        )
         self.blocks = nn.ModuleList(
             [
                 QueryCrossAttentionBlock(
@@ -82,6 +96,8 @@ class ActionFlowDecoder(nn.Module):
         belief: WorldBelief,
         policy: PolicyCondition,
         current_proprio: torch.Tensor,
+        continuous: ContinuousState | None = None,
+        codes: MultiClockCodeState | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch = belief.tokens.shape[0]
         if policy.batch_size != batch or current_proprio.shape[0] != batch:
@@ -98,14 +114,6 @@ class ActionFlowDecoder(nn.Module):
             )
         language = self.language_projection(policy.language)
         proprio = self.proprio_projection(current_proprio)[:, None]
-        context = torch.cat(
-            (
-                belief.tokens + self.context_identity[0],
-                language + self.context_identity[1],
-                proprio + self.context_identity[2],
-            ),
-            dim=1,
-        )
         language_valid = (
             policy.language_valid
             if policy.language_valid is not None
@@ -115,19 +123,45 @@ class ActionFlowDecoder(nn.Module):
                 device=policy.language.device,
             )
         )
-        valid = torch.cat(
-            (
-                torch.ones(
-                    belief.tokens.shape[:2],
-                    dtype=torch.bool,
-                    device=belief.tokens.device,
-                ),
-                language_valid,
-                torch.ones((batch, 1), dtype=torch.bool, device=belief.tokens.device),
+        parts = [
+            belief.tokens + self.context_identity[0],
+            language + self.context_identity[1],
+            proprio + self.context_identity[2],
+        ]
+        masks = [
+            torch.ones(
+                belief.tokens.shape[:2],
+                dtype=torch.bool,
+                device=belief.tokens.device,
             ),
-            dim=1,
-        )
-        return context, valid
+            language_valid,
+            torch.ones((batch, 1), dtype=torch.bool, device=belief.tokens.device),
+        ]
+        identity_index = 3
+        if self.include_continuous:
+            if continuous is None:
+                raise ValueError("This action decoder requires continuous detail.")
+            if (
+                continuous.tokens.shape[0] != batch
+                or continuous.tokens.shape[2] != self.dim
+            ):
+                raise ValueError("Continuous detail does not match action context.")
+            parts.append(continuous.tokens + self.context_identity[identity_index])
+            masks.append(continuous.valid)
+            identity_index += 1
+        elif continuous is not None:
+            raise ValueError(
+                "This action decoder was not configured for continuous detail."
+            )
+        if self.include_codes:
+            if codes is not None:
+                if codes.tokens.shape[0] != batch or codes.tokens.shape[2] != self.dim:
+                    raise ValueError("Multi-clock codes do not match action context.")
+                parts.append(codes.tokens + self.context_identity[identity_index])
+                masks.append(codes.valid)
+        elif codes is not None:
+            raise ValueError("This action decoder was not configured for code state.")
+        return torch.cat(parts, dim=1), torch.cat(masks, dim=1)
 
     def velocity(
         self,
@@ -138,6 +172,8 @@ class ActionFlowDecoder(nn.Module):
         policy: PolicyCondition,
         current_proprio: torch.Tensor,
         action_valid: torch.Tensor | None = None,
+        continuous: ContinuousState | None = None,
+        codes: MultiClockCodeState | None = None,
     ) -> torch.Tensor:
         if noised_actions.ndim != 3 or noised_actions.shape[2] != self.action_dim:
             raise ValueError(
@@ -161,6 +197,8 @@ class ActionFlowDecoder(nn.Module):
             belief,
             policy,
             current_proprio,
+            continuous,
+            codes,
         )
         tokens = (
             self.action_projection(noised_actions)
@@ -192,6 +230,8 @@ class ActionFlowDecoder(nn.Module):
         noise: torch.Tensor | None = None,
         flow_time: torch.Tensor | None = None,
         generator: torch.Generator | None = None,
+        continuous: ContinuousState | None = None,
+        codes: MultiClockCodeState | None = None,
     ) -> FlowMatchingOutput:
         target = actions.values
         batch, horizon, _ = target.shape
@@ -233,6 +273,8 @@ class ActionFlowDecoder(nn.Module):
             policy=policy,
             current_proprio=state.current_proprio,
             action_valid=actions.valid,
+            continuous=continuous,
+            codes=codes,
         )
         valid = (
             actions.valid
@@ -265,6 +307,8 @@ class ActionFlowDecoder(nn.Module):
         steps: int = 10,
         initial_noise: torch.Tensor | None = None,
         generator: torch.Generator | None = None,
+        continuous: ContinuousState | None = None,
+        codes: MultiClockCodeState | None = None,
     ) -> torch.Tensor:
         if horizon <= 0 or horizon > self.max_horizon or steps <= 0:
             raise ValueError("Action horizon/steps are outside configured limits.")
@@ -298,5 +342,7 @@ class ActionFlowDecoder(nn.Module):
                 belief=belief,
                 policy=policy,
                 current_proprio=current_proprio,
+                continuous=continuous,
+                codes=codes,
             )
         return values

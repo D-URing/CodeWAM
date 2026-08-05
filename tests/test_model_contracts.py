@@ -17,7 +17,13 @@ from codewam.data.roles import (
     role_supervision,
     trajectory_role,
 )
-from codewam.models import ActionBatch, CodeMeasurements, CodeWAMConfig, StateInputs
+from codewam.models import (
+    ActionBatch,
+    CodeMeasurements,
+    CodeWAMConfig,
+    StateInputs,
+    TransitionSchedule,
+)
 
 
 class ModelContractTests(unittest.TestCase):
@@ -44,6 +50,32 @@ class ModelContractTests(unittest.TestCase):
                 (
                     "import sys; "
                     "from codewam import CodeWAMConfig, CodeWAMV1, build_codewam_v1; "
+                    "assert 'fastwam' not in sys.modules"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_v2_config_and_public_import_are_independent(self) -> None:
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "model"
+            / "codewam_v2.yaml"
+        )
+        config = instantiate(OmegaConf.load(path))
+        self.assertIsInstance(config, CodeWAMConfig)
+        self.assertEqual(config.dynamics_mode, "prefix")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "from codewam import CodeWAMV2, build_codewam_v2; "
                     "assert 'fastwam' not in sys.modules"
                 ),
             ],
@@ -86,6 +118,18 @@ class ModelContractTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "horizon"):
             ActionBatch(values=torch.zeros((2, 0, 7)))
+        with self.assertRaisesRegex(ValueError, "after decision"):
+            StateInputs(
+                latents=torch.zeros((1, 2, 1, 4, 2, 2)),
+                proprio_history=torch.zeros((1, 1, 6)),
+                past_actions=torch.zeros((1, 0, 7)),
+                latent_time_offsets=torch.tensor([[-0.1, 0.1]]),
+            )
+        with self.assertRaisesRegex(ValueError, "positive"):
+            TransitionSchedule(
+                action_prefix_lengths=torch.ones((1, 3), dtype=torch.long),
+                delta_times=torch.tensor([[0.1, 0.0, 0.2]]),
+            )
 
     def test_config_rejects_invalid_training_dimensions(self) -> None:
         with self.assertRaisesRegex(ValueError, "layer counts"):

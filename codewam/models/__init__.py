@@ -11,9 +11,12 @@ from .contracts import (
     CodeWAMBatch,
     ContinuousState,
     FutureCodeTargets,
+    MultiClockCodeState,
     PolicyCondition,
     StateInputs,
+    StructuredWorldState,
     SupervisionMasks,
+    TransitionSchedule,
     WorldBelief,
 )
 from .action_flow import ActionFlowDecoder, FlowMatchingOutput
@@ -32,6 +35,7 @@ from .codewam_v1 import (
     CodeWAMV1,
     build_codewam_v1,
 )
+from .codewam_v2 import CodeWAMV2, build_codewam_v2
 from .config import CodeWAMConfig
 from .continuous_state import (
     ContinuousStateEncoder,
@@ -39,6 +43,8 @@ from .continuous_state import (
     temporal_pretraining_loss,
 )
 from .frozen_codebook import FrozenCodebookAdapter
+from .multiclock_dynamics import MultiClockTransitionModel
+from .world_state import StructuredWorldBuilder
 
 __all__ = [
     "ActionBatch",
@@ -50,19 +56,26 @@ __all__ = [
     "CodeWAMConfig",
     "CodeWAMLossOutput",
     "CodeWAMV1",
+    "CodeWAMV2",
     "ContinuousState",
     "ContinuousStateEncoder",
     "FlowMatchingOutput",
     "FrozenCodebookAdapter",
     "FutureCodePrediction",
     "FutureCodeTargets",
+    "MultiClockCodeState",
+    "MultiClockTransitionModel",
     "PolicyCondition",
     "StateInputs",
+    "StructuredWorldBuilder",
+    "StructuredWorldState",
     "SupervisionMasks",
     "TemporalLatentPredictor",
+    "TransitionSchedule",
     "WorldBeliefCore",
     "WorldBelief",
     "build_codewam_v1",
+    "build_codewam_v2",
     "decode_prefix_ids",
     "encode_prefix_ids",
     "future_code_metrics",

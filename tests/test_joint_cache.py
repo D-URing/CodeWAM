@@ -213,6 +213,23 @@ class JointCacheTests(unittest.TestCase):
         self.assertEqual(tuple(batch.model.state.latents.shape), (2, 8, 1, 4, 4, 4))
         self.assertEqual(tuple(batch.model.actions.values.shape), (2, 16, 7))
         self.assertEqual(tuple(batch.model.codes.code_ids.shape), (2, 3, 3))
+        torch.testing.assert_close(
+            batch.model.state.latent_time_offsets[:, -1],
+            torch.zeros(2),
+        )
+        torch.testing.assert_close(
+            batch.model.state.proprio_time_offsets[:, -1],
+            torch.zeros(2),
+        )
+        self.assertTrue((batch.model.state.past_action_time_offsets < 0).all())
+        self.assertEqual(
+            batch.model.future_codes.schedule.action_prefix_lengths.tolist(),
+            [[16, 16, 16], [16, 16, 16]],
+        )
+        torch.testing.assert_close(
+            batch.model.future_codes.schedule.delta_times,
+            torch.full((2, 3), 16.0 / 15.0),
+        )
         self.assertEqual(batch.episode_ids, ("episode@0:80",) * 2)
         self.assertEqual(batch.parent_episode_ids, ("episode",) * 2)
         self.assertEqual(batch.descriptor_overlap.tolist(), [[1, 0, 0]] * 2)

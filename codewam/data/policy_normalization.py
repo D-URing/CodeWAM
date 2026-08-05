@@ -298,6 +298,9 @@ class PolicyNormalizer:
                 latent_valid=state.latent_valid,
                 proprio_valid=state.proprio_valid,
                 past_action_valid=state.past_action_valid,
+                latent_time_offsets=state.latent_time_offsets,
+                proprio_time_offsets=state.proprio_time_offsets,
+                past_action_time_offsets=state.past_action_time_offsets,
             ),
             actions=ActionBatch(
                 values=self.normalize_actions(batch.actions.values),

@@ -47,6 +47,11 @@ class PolicyAblationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "base model"):
             _config(model=CodeWAMConfig(variant="C1"))
 
+    def test_config_selects_v2_explicitly(self) -> None:
+        self.assertEqual(_config(architecture="v2").architecture, "v2")
+        with self.assertRaisesRegex(ValueError, "architecture"):
+            _config(architecture="latest")
+
     def test_fixed_eval_subset_is_order_independent(self) -> None:
         cache = SimpleNamespace(
             windows=tuple(

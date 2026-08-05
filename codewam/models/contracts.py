@@ -24,6 +24,28 @@ def _require_bool_mask(
         )
 
 
+def _require_time_offsets(
+    name: str,
+    value: torch.Tensor | None,
+    shape: tuple[int, ...],
+) -> None:
+    if value is None:
+        return
+    if not torch.is_floating_point(value) or tuple(value.shape) != shape:
+        raise ValueError(
+            f"`{name}` must be floating point with shape {shape}, got "
+            f"{value.dtype} {tuple(value.shape)}."
+        )
+    if value.device.type != "cpu" or value.numel() == 0:
+        return
+    if not torch.isfinite(value).all():
+        raise ValueError(f"`{name}` must contain finite relative times.")
+    if value.shape[1] > 1 and (value[:, 1:] < value[:, :-1]).any():
+        raise ValueError(f"`{name}` must be nondecreasing within each sample.")
+    if (value > 1e-6).any():
+        raise ValueError(f"`{name}` cannot contain information after decision time.")
+
+
 @dataclass(frozen=True)
 class StateInputs:
     """Task-free observations available before the current action is generated."""
@@ -34,6 +56,9 @@ class StateInputs:
     latent_valid: torch.Tensor | None = None
     proprio_valid: torch.Tensor | None = None
     past_action_valid: torch.Tensor | None = None
+    latent_time_offsets: torch.Tensor | None = None
+    proprio_time_offsets: torch.Tensor | None = None
+    past_action_time_offsets: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         _require_shape("latents", self.latents, 6)
@@ -61,6 +86,21 @@ class StateInputs:
         _require_bool_mask(
             "past_action_valid",
             self.past_action_valid,
+            tuple(self.past_actions.shape[:2]),
+        )
+        _require_time_offsets(
+            "latent_time_offsets",
+            self.latent_time_offsets,
+            (batch, time),
+        )
+        _require_time_offsets(
+            "proprio_time_offsets",
+            self.proprio_time_offsets,
+            tuple(self.proprio_history.shape[:2]),
+        )
+        _require_time_offsets(
+            "past_action_time_offsets",
+            self.past_action_time_offsets,
             tuple(self.past_actions.shape[:2]),
         )
 
@@ -136,9 +176,49 @@ class ActionBatch:
 
 
 @dataclass(frozen=True)
+class TransitionSchedule:
+    """Per-family action prefix and physical horizon for one transition target."""
+
+    action_prefix_lengths: torch.Tensor
+    delta_times: torch.Tensor
+
+    def __post_init__(self) -> None:
+        _require_shape(
+            "transition action prefix lengths",
+            self.action_prefix_lengths,
+            2,
+        )
+        _require_shape("transition delta times", self.delta_times, 2)
+        if self.action_prefix_lengths.dtype != torch.long:
+            raise ValueError("Transition action prefix lengths must use torch.long.")
+        if not torch.is_floating_point(self.delta_times):
+            raise ValueError("Transition delta times must be floating point.")
+        if self.action_prefix_lengths.shape != self.delta_times.shape:
+            raise ValueError("Transition prefix lengths and delta times must align.")
+        if self.action_prefix_lengths.shape[1] <= 0:
+            raise ValueError("Transition schedules need at least one clock family.")
+        if self.action_prefix_lengths.device.type == "cpu":
+            if (self.action_prefix_lengths < 0).any():
+                raise ValueError("Transition action prefix lengths cannot be negative.")
+            if not torch.isfinite(self.delta_times).all() or (
+                self.delta_times <= 0
+            ).any():
+                raise ValueError("Transition delta times must be finite and positive.")
+
+    @property
+    def batch_size(self) -> int:
+        return int(self.action_prefix_lengths.shape[0])
+
+    @property
+    def families(self) -> int:
+        return int(self.action_prefix_lengths.shape[1])
+
+
+@dataclass(frozen=True)
 class FutureCodeTargets:
     code_ids: torch.Tensor
     available: torch.Tensor
+    schedule: TransitionSchedule | None = None
 
     def __post_init__(self) -> None:
         _require_shape("future code ids", self.code_ids, 3)
@@ -149,6 +229,11 @@ class FutureCodeTargets:
             raise ValueError("Future code availability must use torch.bool.")
         if tuple(self.available.shape) != tuple(self.code_ids.shape[:2]):
             raise ValueError("Future code availability must be batch/family aligned.")
+        if self.schedule is not None and (
+            self.schedule.batch_size != int(self.code_ids.shape[0])
+            or self.schedule.families != int(self.code_ids.shape[1])
+        ):
+            raise ValueError("Future code targets and transition schedule must align.")
 
 
 @dataclass(frozen=True)
@@ -234,8 +319,59 @@ class CodeTokens:
 
 
 @dataclass(frozen=True)
+class MultiClockCodeState:
+    """One code token per clock plus cumulative RQ-prefix evidence."""
+
+    tokens: torch.Tensor
+    prefix_tokens: torch.Tensor
+    valid: torch.Tensor
+    families: tuple[str, ...]
+    levels: int
+
+    def __post_init__(self) -> None:
+        _require_shape("multi-clock code tokens", self.tokens, 3)
+        _require_shape("multi-clock RQ prefix tokens", self.prefix_tokens, 4)
+        _require_bool_mask(
+            "multi-clock code validity",
+            self.valid,
+            tuple(self.tokens.shape[:2]),
+        )
+        batch, families, width = self.tokens.shape
+        expected = (batch, families, int(self.levels), width)
+        if tuple(self.prefix_tokens.shape) != expected:
+            raise ValueError(
+                f"RQ prefix tokens must be {expected}, got "
+                f"{tuple(self.prefix_tokens.shape)}."
+            )
+        if families != len(self.families) or self.levels <= 0:
+            raise ValueError("Multi-clock family/depth identities are misaligned.")
+
+
+@dataclass(frozen=True)
 class WorldBelief:
     tokens: torch.Tensor
 
     def __post_init__(self) -> None:
         _require_shape("world belief tokens", self.tokens, 3)
+
+
+@dataclass(frozen=True)
+class StructuredWorldState:
+    """Control state retaining global belief and local continuous evidence."""
+
+    belief: WorldBelief
+    continuous: ContinuousState
+    codes: MultiClockCodeState | None = None
+
+    def __post_init__(self) -> None:
+        batch, _, width = self.belief.tokens.shape
+        if (
+            self.continuous.tokens.shape[0] != batch
+            or self.continuous.tokens.shape[2] != width
+        ):
+            raise ValueError("Global belief and continuous detail must align.")
+        if self.codes is not None and (
+            self.codes.tokens.shape[0] != batch
+            or self.codes.tokens.shape[2] != width
+        ):
+            raise ValueError("Global belief and multi-clock codes must align.")

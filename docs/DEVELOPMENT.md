@@ -48,7 +48,8 @@ CodeWAM/
 │   │   ├── belief_core.py      # task-free world belief
 │   │   ├── action_flow.py      # continuous action chunk flow
 │   │   ├── code_dynamics.py    # independent/prefix future-code heads
-│   │   └── codewam_v1.py       # C0/C1/C2 assembly
+│   │   ├── codewam_v1.py       # retained C0/C1/C2 baseline
+│   │   └── codewam_v2.py       # structured C0/C1/C2 candidate
 │   ├── model.py               # legacy FastWAM-compatible prototype
 │   ├── probe.py               # legacy compatibility probe
 │   └── runtime.py             # legacy Hydra factory
@@ -77,9 +78,9 @@ macOS 已有项目内轻量环境时:
 source .venv/bin/activate
 python -m pip install -e .
 python -m unittest discover -s tests -v
-python scripts/smoke_codewam_v1.py \
+python scripts/smoke_codewam_v2.py \
   --device cpu \
-  --output runs/model_smoke/codewam_v1.json
+  --output runs/model_smoke/codewam_v2.json
 ```
 
 该环境用于代码、配置、单元测试和小规模 MPS/CPU smoke,不承担大模型训练。当前
@@ -154,19 +155,19 @@ VAE、loader 与 converter 文件 SHA。
 
 CodeWAM owns:
 
-- frozen Q2/Q3/Q5 artifacts and nine-measurement interface;
-- `ContinuousStateEncoder`、`FrozenCodebookAdapter` 和 `WorldBeliefCore`;
-- `ActionFlowDecoder`、`CodeDynamicsDecoder` 和两个训练目标;
+- frozen Q2/Q3/Q5 artifacts and hierarchical multi-clock interface;
+- `ContinuousStateEncoder`、`FrozenCodebookAdapter` 和 `StructuredWorldBuilder`;
+- `ActionFlowDecoder`、`MultiClockTransitionModel` 和两个训练目标;
 - module-level visibility contracts and codebook evaluation pipeline;
 - CodeWAM configs and tests.
 
 FastWAM checkout 当前提供两类兼容能力:旧 Video-DiT/ActionDiT/MoT 训练对照,以及已被
 pooled-cache provenance 锁定的 Wan-VAE loader/转换器。前者只属于 `F0`;后者是可替换的
-数据适配器,不是 canonical model runtime。独立 v1 不 import FastWAM model 或 trainer。
+数据适配器,不是 canonical model runtime。独立 v1/v2 都不 import FastWAM model 或 trainer。
 
 ## 5. 模型文件
 
-下面的脚本准备 legacy/F0 compatible 模型,不是 canonical v1 的最低下载:
+下面的脚本准备 legacy/F0 compatible 模型,不是 canonical v2 的最低下载:
 
 ```bash
 bash scripts/download_models.sh
@@ -188,7 +189,7 @@ DOWNLOAD_ROBOTWIN_RELEASE=true bash scripts/download_models.sh
 ```
 
 RoboTwin/3-camera checkpoint 对 codebook 或 canonical C0-C2 都不是依赖。离线 latent export
-只需要固定版本 Wan-VAE、对应 loader 和预处理配置。canonical v1 需要 Wan-VAE、一个明确
+只需要固定版本 Wan-VAE、对应 loader 和预处理配置。canonical v2 需要 Wan-VAE、一个明确
 版本的 language encoder 和 CodeWAM-owned modules,不需要 Wan DiT 或 ActionDiT checkpoint。
 具体 language encoder 在实现 ticket 中选择并冻结版本。
 
@@ -516,7 +517,7 @@ transform 仍是 pilot contract,不是最终 controller contract。DROID 官方 
 
 ```bash
 torchrun --standalone --nproc_per_node=8 scripts/run_policy_ablation.py \
-  --config configs/policy/droid_c012_v1.yaml \
+  --config configs/policy/droid_c012_v2.yaml \
   --cache-dir "$JOINT_CACHE_ROOT/cache" \
   --language-cache-dir "$LANGUAGE_CACHE_ROOT" \
   --normalization-dir "$POLICY_NORMALIZATION_ROOT" \
@@ -532,28 +533,28 @@ python scripts/summarize_policy_ablation_seeds.py \
   --output "$POLICY_ROOT/multi_seed_summary.json"
 ```
 
-2026-07-31 的 seed `7/19/31` 200-step pilot 每变体使用 effective batch `32`。test flow
+上述 v2 命令是下一轮入口。2026-07-31 的历史 v1 seed `7/19/31` 200-step pilot 每变体使用 effective batch `32`。test flow
 MSE 的跨 seed 描述均值为 C0/C1/C2=`0.43446/0.43267/0.43534`;`C2-C1` 在三个 seed
 均变差,但该短跑只见 6,400 个 train windows,不能代替收敛实验或闭环 success。
 
-独立 CodeWAM v1 与数据链的本机最低验收:
+独立 CodeWAM v2 与数据链的本机最低验收:
 
 ```bash
 python -m unittest discover -s tests -v
-python scripts/smoke_codewam_v1.py \
+python scripts/smoke_codewam_v2.py \
   --device cpu \
-  --output runs/model_smoke/codewam_v1.json
+  --output runs/model_smoke/codewam_v2.json
 ```
 
-当前 190 项测试覆盖五模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
+当前 199 项测试覆盖 v1/v2 模块、防泄漏、梯度、RQ、manifest、真实导出 contracts、
 JointWindowCache、language/normalization sidecars、Gate 2、policy controls、resume 和
 multi-seed summary。合成 model smoke 仍标记 `scientific_evidence=false`;真实短跑必须按
 对应 protocol 的限制解释。
 
 模型 forward 接收 `CodeMeasurements`,不会在内部重新聚类。训练 cache 与部署 runtime 必须
 使用同一 descriptor、normalization、centers 和 chart identity;online runtime 只能调用
-冻结赋码,不能流式更新聚类中心。`configs/model/codewam_v1.yaml` 仍不是 policy trainer;
-正式 policy 入口是 `configs/policy/droid_c012_v1.yaml` 与
+冻结赋码,不能流式更新聚类中心。`configs/model/codewam_v2.yaml` 仍不是 policy trainer;
+正式 v2 policy 入口是 `configs/policy/droid_c012_v2.yaml` 与
 `scripts/run_policy_ablation.py`。
 
 ## 8. Legacy/F0 模型训练
@@ -577,8 +578,8 @@ bash scripts/train_zero1.sh 8 task=libero_codewam_2cam224
 bash scripts/train_zero1.sh 8 task=robotwin_codewam_3cam384
 ```
 
-这些命令不是 canonical v1。`state_codebook.enabled=false` 必须保持默认,旧 online-EMA
-codebook 和新 frozen nine-token interface 不能混用。
+这些命令不是 canonical v2。`state_codebook.enabled=false` 必须保持默认,旧 online-EMA
+codebook 和新的 frozen hierarchical multi-clock interface 不能混用。
 
 ## 9. 本地状态边界
 

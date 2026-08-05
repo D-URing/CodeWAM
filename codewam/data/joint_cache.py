@@ -26,6 +26,7 @@ from codewam.models.contracts import (
     FutureCodeTargets,
     PolicyCondition,
     StateInputs,
+    TransitionSchedule,
 )
 
 from .droid_endpoint import DROID_ENDPOINT_POLICY
@@ -1575,6 +1576,10 @@ class JointWindowSample:
     code_available: torch.Tensor
     language_tokens: torch.Tensor | None
     language_valid: torch.Tensor | None
+    latent_time_offsets: torch.Tensor | None = None
+    proprio_time_offsets: torch.Tensor | None = None
+    past_action_time_offsets: torch.Tensor | None = None
+    action_step_seconds: float = 1.0
 
 
 def _sequence_position(index: int, length: int) -> int:
@@ -2092,6 +2097,22 @@ class JointWindowCache:
         available = torch.tensor(record.code_available, dtype=torch.bool)
         current_codes = episode.code_ids[current].clone()
         future_codes = episode.code_ids[future].clone()
+        step_seconds = 1.0 / float(self.contract["nominal_fps"])
+        latent_sources = episode.latent_source_indices[
+            record.state_latent_start : record.state_latent_stop
+        ]
+        latent_time_offsets = (
+            latent_sources.to(torch.float32) - float(record.decision_source_index)
+        ) * step_seconds
+        decision_local = record.decision_source_index - episode.range_start
+        proprio_time_offsets = (
+            torch.arange(record.proprio_start, record.proprio_stop).float()
+            - float(decision_local)
+        ) * step_seconds
+        past_action_time_offsets = (
+            torch.arange(record.past_action_start, record.past_action_stop).float()
+            - float(decision_local)
+        ) * step_seconds
         return JointWindowSample(
             record=record,
             latents=episode.latents[
@@ -2117,6 +2138,10 @@ class JointWindowCache:
             code_available=available,
             language_tokens=episode.language_tokens,
             language_valid=episode.language_valid,
+            latent_time_offsets=latent_time_offsets,
+            proprio_time_offsets=proprio_time_offsets,
+            past_action_time_offsets=past_action_time_offsets,
+            action_step_seconds=step_seconds,
         )
 
     def action_chunk(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -2203,6 +2228,21 @@ def collate_joint_windows(
         [sample.past_actions for sample in samples],
         left=True,
     )
+    time_fields = (
+        "latent_time_offsets",
+        "proprio_time_offsets",
+        "past_action_time_offsets",
+    )
+    time_values: dict[str, torch.Tensor | None] = {}
+    for name, left in zip(time_fields, (True, True, True)):
+        rows = [getattr(sample, name) for sample in samples]
+        if all(value is None for value in rows):
+            time_values[name] = None
+            continue
+        if any(value is None for value in rows):
+            raise ValueError(f"Joint samples mix missing and present `{name}`.")
+        padded, _ = _pad_sequence(rows, left=left)
+        time_values[name] = padded
     actions, action_padding_valid = _pad_sequence(
         [sample.actions for sample in samples],
         left=False,
@@ -2266,6 +2306,18 @@ def collate_joint_windows(
     available = torch.stack(
         [sample.code_available for sample in samples]
     ).bool()
+    family_count = int(available.shape[1])
+    prefix_lengths = torch.tensor(
+        [
+            [sample.record.action_stop - sample.record.action_start] * family_count
+            for sample in samples
+        ],
+        dtype=torch.long,
+    )
+    delta_times = prefix_lengths.float() * torch.tensor(
+        [sample.action_step_seconds for sample in samples],
+        dtype=torch.float32,
+    )[:, None]
     batch = CodeWAMBatch(
         state=StateInputs(
             latents=latents,
@@ -2274,6 +2326,9 @@ def collate_joint_windows(
             latent_valid=latent_valid,
             proprio_valid=proprio_valid,
             past_action_valid=past_action_valid,
+            latent_time_offsets=time_values["latent_time_offsets"],
+            proprio_time_offsets=time_values["proprio_time_offsets"],
+            past_action_time_offsets=time_values["past_action_time_offsets"],
         ),
         policy=PolicyCondition(
             language=language,
@@ -2291,6 +2346,10 @@ def collate_joint_windows(
         future_codes=FutureCodeTargets(
             code_ids=future_codes,
             available=available,
+            schedule=TransitionSchedule(
+                action_prefix_lengths=prefix_lengths,
+                delta_times=delta_times,
+            ),
         ),
     )
     return JointModelBatch(

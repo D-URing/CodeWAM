@@ -39,15 +39,19 @@ from codewam.models import (
     PolicyCondition,
     StateInputs,
     SupervisionMasks,
+    TransitionSchedule,
     build_codewam_v1,
+    build_codewam_v2,
 )
 from codewam.models.codewam_v1 import CodeWAMV1
+from codewam.models.codewam_v2 import CodeWAMV2
 
 
 POLICY_ABLATION_SCHEMA = "codewam.policy-ablation.v1"
 POLICY_ABLATION_PROTOCOL_SCHEMA = "codewam.policy-ablation-protocol.v1"
 POLICY_ABLATION_CHECKPOINT_SCHEMA = "codewam.policy-ablation-checkpoint.v1"
 POLICY_VARIANTS = ("C0", "C1", "C2")
+PolicyModel = CodeWAMV1 | CodeWAMV2
 
 
 def _canonical_hash(payload: Any) -> str:
@@ -80,6 +84,7 @@ class PolicyAblationRunConfig:
     output_dir: str
     artifact_paths: dict[str, str]
     chart_name: str = "droid"
+    architecture: str = "v1"
     seed: int = 20260731
     batch_size: int = 4
     eval_batch_size: int = 8
@@ -111,6 +116,8 @@ class PolicyAblationRunConfig:
             raise ValueError("Policy-ablation paths and chart name must be nonempty.")
         if set(self.artifact_paths) != {"Q2", "Q3", "Q5"}:
             raise ValueError("Policy ablation requires exactly Q2/Q3/Q5 artifacts.")
+        if self.architecture not in {"v1", "v2"}:
+            raise ValueError("Policy architecture must be `v1` or `v2`.")
         positive = (
             self.batch_size,
             self.eval_batch_size,
@@ -321,6 +328,15 @@ def _move_batch(batch: CodeWAMBatch, device: torch.device) -> CodeWAMBatch:
             latent_valid=_move_optional(state.latent_valid, device),
             proprio_valid=_move_optional(state.proprio_valid, device),
             past_action_valid=_move_optional(state.past_action_valid, device),
+            latent_time_offsets=_move_optional(state.latent_time_offsets, device),
+            proprio_time_offsets=_move_optional(
+                state.proprio_time_offsets,
+                device,
+            ),
+            past_action_time_offsets=_move_optional(
+                state.past_action_time_offsets,
+                device,
+            ),
         ),
         policy=PolicyCondition(
             language=batch.policy.language.to(device, non_blocking=True),
@@ -355,6 +371,22 @@ def _move_batch(batch: CodeWAMBatch, device: torch.device) -> CodeWAMBatch:
                 available=batch.future_codes.available.to(
                     device,
                     non_blocking=True,
+                ),
+                schedule=(
+                    None
+                    if batch.future_codes.schedule is None
+                    else TransitionSchedule(
+                        action_prefix_lengths=(
+                            batch.future_codes.schedule.action_prefix_lengths.to(
+                                device,
+                                non_blocking=True,
+                            )
+                        ),
+                        delta_times=batch.future_codes.schedule.delta_times.to(
+                            device,
+                            non_blocking=True,
+                        ),
+                    )
                 ),
             )
         ),
@@ -473,24 +505,27 @@ def _build_model(
     *,
     variant: str,
     device: torch.device,
-) -> CodeWAMV1:
+) -> PolicyModel:
     torch.manual_seed(config.seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(config.seed)
-    model = build_codewam_v1(
-        _variant_config(config, variant),
-        {chart.name: chart.artifacts},
-    )
+    builder = build_codewam_v1 if config.architecture == "v1" else build_codewam_v2
+    model = builder(_variant_config(config, variant), {chart.name: chart.artifacts})
     if variant == "C0":
         model.frozen_codebook.requires_grad_(False)
     if variant in {"C0", "C1"}:
-        model.code_dynamics.requires_grad_(False)
+        dynamics = (
+            model.code_dynamics
+            if isinstance(model, CodeWAMV1)
+            else model.transition
+        )
+        dynamics.requires_grad_(False)
     return model.to(device)
 
 
 def _unwrap_model(
-    model: CodeWAMV1 | DistributedDataParallel,
-) -> CodeWAMV1:
+    model: PolicyModel | DistributedDataParallel,
+) -> PolicyModel:
     if isinstance(model, DistributedDataParallel):
         return model.module
     return model
@@ -573,6 +608,17 @@ def _protocol(
             "codewam_v1": file_sha256(
                 Path(__file__).parents[1] / "models" / "codewam_v1.py"
             ),
+            "codewam_v2": file_sha256(
+                Path(__file__).parents[1] / "models" / "codewam_v2.py"
+            ),
+            "world_state": file_sha256(
+                Path(__file__).parents[1] / "models" / "world_state.py"
+            ),
+            "multiclock_dynamics": file_sha256(
+                Path(__file__).parents[1]
+                / "models"
+                / "multiclock_dynamics.py"
+            ),
             "action_flow": file_sha256(
                 Path(__file__).parents[1] / "models" / "action_flow.py"
             ),
@@ -626,7 +672,7 @@ def _checkpoint_payload(
     sample_offset: int,
     global_step: int,
     history: Sequence[Mapping[str, Any]],
-    model: CodeWAMV1 | DistributedDataParallel,
+    model: PolicyModel | DistributedDataParallel,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
 ) -> dict[str, Any]:
@@ -725,7 +771,7 @@ def _train_variant(
         sample_offset = int(checkpoint["sample_offset"])
         global_step = int(checkpoint["global_step"])
         history = list(checkpoint["history"])
-    wrapped: CodeWAMV1 | DistributedDataParallel = model
+    wrapped: PolicyModel | DistributedDataParallel = model
     if context.world_size > 1:
         wrapped = DistributedDataParallel(
             model,
@@ -883,7 +929,7 @@ def _load_model(
     chart: FrozenArtifactChart,
     protocol_hash: str,
     device: torch.device,
-) -> CodeWAMV1:
+) -> PolicyModel:
     path = Path(config.output_dir) / variant.lower() / "final.pt"
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     _validate_checkpoint(

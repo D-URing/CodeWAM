@@ -1,0 +1,29 @@
+# Structured CodeWAM v2. Wan-VAE and all RQ centers remain frozen.
+_target_: codewam.models.CodeWAMConfig
+
+variant: C2
+dynamics_mode: prefix
+
+latent_channels: 48
+proprio_dim: 14
+action_dim: 7
+language_dim: 4096
+dim: 512
+heads: 8
+patch_size: 2
+
+max_time: 32
+max_cameras: 8
+max_spatial_tokens: 1024
+max_action_horizon: 32
+
+state_spatial_layers: 2
+state_temporal_layers: 2
+belief_queries: 8
+belief_layers: 2
+action_layers: 3
+dynamics_layers: 2
+dynamics_action_layers: 1
+
+dropout: 0.0
+lambda_code: 0.1

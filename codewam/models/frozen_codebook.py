@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from typing import Literal
 
 import torch
 from torch import nn
 
 from codewam.codebook_eval.streaming import FrozenRQArtifact
 
-from .contracts import CodeMeasurements, CodeTokens
+from .contracts import CodeMeasurements, CodeTokens, MultiClockCodeState
 
 
 CHART_IDENTITY_KEYS = (
@@ -21,6 +22,10 @@ CHART_IDENTITY_KEYS = (
 )
 ARTIFACT_IDENTITY_KEYS = (*CHART_IDENTITY_KEYS, "config_hash")
 ADAPTER_EXTRA_STATE_SCHEMA = "codewam.frozen-codebook-adapter.v1"
+HIERARCHICAL_ADAPTER_EXTRA_STATE_SCHEMA = (
+    "codewam.hierarchical-frozen-codebook-adapter.v1"
+)
+CodeLayout = Literal["flat", "hierarchical"]
 
 
 class FrozenCodebookAdapter(nn.Module):
@@ -32,12 +37,15 @@ class FrozenCodebookAdapter(nn.Module):
         *,
         dim: int,
         families: Sequence[str] = ("Q2", "Q3", "Q5"),
+        layout: CodeLayout = "flat",
     ):
         super().__init__()
         if not artifact_sets:
             raise ValueError("At least one frozen codebook chart is required.")
         if dim <= 0:
             raise ValueError("Codebook adapter width must be positive.")
+        if layout not in {"flat", "hierarchical"}:
+            raise ValueError(f"Unsupported codebook layout `{layout}`.")
         if any(not isinstance(name, str) or not name for name in artifact_sets):
             raise ValueError("Codebook chart names must be nonempty strings.")
         self.chart_names = tuple(sorted(artifact_sets))
@@ -45,6 +53,7 @@ class FrozenCodebookAdapter(nn.Module):
         if not self.families or len(set(self.families)) != len(self.families):
             raise ValueError("Codebook families must be nonempty and unique.")
         self.dim = int(dim)
+        self.layout: CodeLayout = layout
         self._chart_index = {name: index for index, name in enumerate(self.chart_names)}
         self._buffer_names: dict[tuple[int, int, int], str] = {}
         self.chart_metadata: dict[str, dict[str, object]] = {}
@@ -149,6 +158,13 @@ class FrozenCodebookAdapter(nn.Module):
             torch.randn(len(self.families), self.levels, dim) * (dim**-0.5)
         )
         self.output_norm = nn.LayerNorm(dim)
+        if self.layout == "hierarchical":
+            self.family_fusion = nn.Sequential(
+                nn.LayerNorm(self.levels * dim),
+                nn.Linear(self.levels * dim, dim),
+                nn.GELU(),
+                nn.Linear(dim, dim),
+            )
 
     @staticmethod
     def _projection_key(chart: int, family: int, level: int) -> str:
@@ -158,13 +174,20 @@ class FrozenCodebookAdapter(nn.Module):
         return getattr(self, self._buffer_names[(chart, family, level)])
 
     def get_extra_state(self) -> dict[str, object]:
-        return {
-            "schema": ADAPTER_EXTRA_STATE_SCHEMA,
+        state = {
+            "schema": (
+                ADAPTER_EXTRA_STATE_SCHEMA
+                if self.layout == "flat"
+                else HIERARCHICAL_ADAPTER_EXTRA_STATE_SCHEMA
+            ),
             "chart_names": self.chart_names,
             "families": self.families,
             "codebook_sizes": self.codebook_sizes,
             "artifact_metadata": deepcopy(self.artifact_metadata),
         }
+        if self.layout == "hierarchical":
+            state["layout"] = self.layout
+        return state
 
     def set_extra_state(self, state: object) -> None:
         if state != self.get_extra_state():
@@ -173,7 +196,12 @@ class FrozenCodebookAdapter(nn.Module):
                 "constructed chart artifacts."
             )
 
-    def forward(self, measurements: CodeMeasurements) -> CodeTokens:
+    def forward(
+        self,
+        measurements: CodeMeasurements,
+    ) -> CodeTokens | MultiClockCodeState:
+        if self.layout == "hierarchical":
+            return self._forward_hierarchical(measurements)
         batch, families, levels = measurements.code_ids.shape
         if (families, levels) != (len(self.families), self.levels):
             raise ValueError(
@@ -250,6 +278,93 @@ class FrozenCodebookAdapter(nn.Module):
         return CodeTokens(
             tokens=tokens,
             valid=valid,
+            families=self.families,
+            levels=self.levels,
+        )
+
+    def _forward_hierarchical(
+        self,
+        measurements: CodeMeasurements,
+    ) -> MultiClockCodeState:
+        batch, families, levels = measurements.code_ids.shape
+        if (families, levels) != (len(self.families), self.levels):
+            raise ValueError(
+                f"Expected code layout {(len(self.families), self.levels)}, "
+                f"got {(families, levels)}."
+            )
+        unknown = sorted(set(measurements.chart_names) - set(self.chart_names))
+        if unknown:
+            raise ValueError(f"Unknown codebook charts: {unknown}.")
+
+        device = self.family_embedding.device
+        code_ids = measurements.code_ids.to(device=device)
+        available = measurements.available.to(device=device)
+        chart_ids_list = [
+            self._chart_index[name] for name in measurements.chart_names
+        ]
+        chart_ids = torch.tensor(chart_ids_list, dtype=torch.long, device=device)
+        identity = (
+            self.chart_embedding[chart_ids, None, None]
+            + self.family_embedding[None, :, None]
+            + self.level_embedding[None, None, :]
+        )
+        prefix_tokens = self.missing[None] + identity
+
+        chart_groups: dict[int, list[int]] = {}
+        for sample_index, chart_index in enumerate(chart_ids_list):
+            chart_groups.setdefault(chart_index, []).append(sample_index)
+        for chart_index, sample_indices in chart_groups.items():
+            chart_samples = torch.tensor(
+                sample_indices,
+                dtype=torch.long,
+                device=device,
+            )
+            for family_index in range(families):
+                selected = chart_samples[available[chart_samples, family_index]]
+                if selected.numel() == 0:
+                    continue
+                descriptor_dim = int(
+                    self._centers(chart_index, family_index, 0).shape[1]
+                )
+                cumulative = torch.zeros(
+                    (selected.numel(), descriptor_dim),
+                    dtype=self._centers(chart_index, family_index, 0).dtype,
+                    device=device,
+                )
+                for level_index in range(levels):
+                    centers = self._centers(
+                        chart_index,
+                        family_index,
+                        level_index,
+                    )
+                    codes = code_ids[selected, family_index, level_index]
+                    invalid = (codes < 0) | (codes >= centers.shape[0])
+                    if codes.device.type == "cpu" and invalid.any():
+                        bad_code = int(codes[invalid][0].item())
+                        chart_name = self.chart_names[chart_index]
+                        raise ValueError(
+                            f"Code {bad_code} is outside [0,{centers.shape[0]}) for "
+                            f"{chart_name}/{self.families[family_index]}/"
+                            f"L{level_index + 1}."
+                        )
+                    cumulative = cumulative + centers.index_select(0, codes)
+                    projected = self.projections[
+                        self._projection_key(
+                            chart_index,
+                            family_index,
+                            level_index,
+                        )
+                    ](cumulative)
+                    prefix_tokens[selected, family_index, level_index] = (
+                        projected + identity[selected, family_index, level_index]
+                    )
+
+        tokens = self.family_fusion(prefix_tokens.flatten(2, 3))
+        tokens = self.output_norm(tokens)
+        return MultiClockCodeState(
+            tokens=tokens,
+            prefix_tokens=prefix_tokens,
+            valid=available,
             families=self.families,
             levels=self.levels,
         )

@@ -381,8 +381,8 @@ mixed-prefix 直接复测中,最后一个 hybrid 的 action gain 为 6.96%/6.96%
 6.57%/6.86%、Q2+Q3-L3 的 6.76%/6.89% 和 all-L2 的 6.82%/6.21%。hybrid 的 future
 proprio 为 2.66%/3.06%、future latent moment 为 2.14%/2.09%,与 all-L3 的
 2.69%/3.02%、2.13%/2.10% 基本持平。这个 `Q2-L3+Q3-L3+Q5-L2` profile 继续保留为
-**历史 readout ablation**,不再定义 Policy visibility。canonical v1 让九个 available
-measurement 全部进入任务无关 `B`,由联合训练学习相关性。这些实验仍是 code-only probe,
+**历史 readout ablation**,不再定义 Policy visibility。structured v2 保留全部三级信息,
+按累积 RQ prefix 形成 Q2/Q3/Q5 三个 clock token,由联合训练学习相关性。这些实验仍是 code-only probe,
 尚未回答 action-conditioned code transition 或闭环控制价值。
 
 #### P1 cross-scene retrieval 与时间反事实: 2026-07-29
@@ -428,7 +428,7 @@ Q2 `2.62/6.17/19.10%`,Q3 `2.73/8.78/36.48%`,Q5 `4.12/33.47/24.63%`。
 - L1 主要是当前内容与粗状态坐标,不能单独当成动态类别。
 - 时间顺序主要进入 residual levels;Q2/Q3 更集中于 L3,Q5 的方向信号在 L2 最强。
 - Q5 的方向信号在 L2 最强,与 aligned action probe 的 mixed-prefix 结果一致;这只说明层级
-  时间敏感性,不决定 Policy visibility,canonical v1 仍读取全部 available levels。
+  时间敏感性,不决定 Policy visibility,v2 的累计 prefix 仍保留全部 available levels。
 - 反事实是 frozen representation sensitivity,不是物理环境因果干预;对象级平移/缩放仍需
   controlled geometry probe。
 

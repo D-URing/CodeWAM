@@ -15,6 +15,15 @@ from codewam.data import (
     moments_from_sums,
     write_policy_normalization,
 )
+from codewam.models import (
+    ActionBatch,
+    CodeWAMBatch,
+    FutureCodeTargets,
+    PolicyCondition,
+    StateInputs,
+    SupervisionMasks,
+    TransitionSchedule,
+)
 
 
 class PolicyNormalizationTests(unittest.TestCase):
@@ -64,6 +73,40 @@ class PolicyNormalizationTests(unittest.TestCase):
                 normalizer.normalize_actions(raw)
             )
             torch.testing.assert_close(decoded, raw, atol=1e-6, rtol=1e-6)
+            schedule = TransitionSchedule(
+                action_prefix_lengths=torch.tensor([[1, 2, 2]]),
+                delta_times=torch.tensor([[0.1, 0.2, 0.2]]),
+            )
+            latent_time = torch.tensor([[-0.1, 0.0]])
+            proprio_time = torch.tensor([[-0.1, 0.0]])
+            action_time = torch.tensor([[-0.1]])
+            batch = CodeWAMBatch(
+                state=StateInputs(
+                    latents=torch.zeros((1, 2, 1, 4, 2, 2)),
+                    proprio_history=torch.zeros((1, 2, 14)),
+                    past_actions=torch.zeros((1, 1, 7)),
+                    latent_time_offsets=latent_time,
+                    proprio_time_offsets=proprio_time,
+                    past_action_time_offsets=action_time,
+                ),
+                policy=PolicyCondition(language=torch.zeros((1, 1, 8))),
+                actions=ActionBatch(values=torch.zeros((1, 2, 7))),
+                supervision=SupervisionMasks(
+                    temporal=torch.ones(1, dtype=torch.bool),
+                    action=torch.ones(1, dtype=torch.bool),
+                    dynamics=torch.ones(1, dtype=torch.bool),
+                ),
+                future_codes=FutureCodeTargets(
+                    code_ids=torch.zeros((1, 3, 3), dtype=torch.long),
+                    available=torch.ones((1, 3), dtype=torch.bool),
+                    schedule=schedule,
+                ),
+            )
+            transformed = normalizer.transform_batch(batch)
+            self.assertIs(transformed.state.latent_time_offsets, latent_time)
+            self.assertIs(transformed.state.proprio_time_offsets, proprio_time)
+            self.assertIs(transformed.state.past_action_time_offsets, action_time)
+            self.assertIs(transformed.future_codes.schedule, schedule)
             with self.assertRaisesRegex(RuntimeError, "different joint cache"):
                 PolicyNormalizer(
                     temporary,

@@ -16,6 +16,7 @@ from codewam.models import (
     PolicyCondition,
     StateInputs,
     SupervisionMasks,
+    TransitionSchedule,
 )
 
 
@@ -109,6 +110,11 @@ def small_batch(
         latents=torch.randn((batch, 5, 2, 4, 8, 8), generator=generator),
         proprio_history=torch.randn((batch, 3, 6), generator=generator),
         past_actions=torch.randn((batch, 2, 7), generator=generator),
+        latent_time_offsets=torch.tensor(
+            [[-0.4, -0.3, -0.2, -0.1, 0.0]] * batch
+        ),
+        proprio_time_offsets=torch.tensor([[-0.2, -0.1, 0.0]] * batch),
+        past_action_time_offsets=torch.tensor([[-0.2, -0.1]] * batch),
     )
     policy = PolicyCondition(
         language=torch.randn((batch, 4, 8), generator=generator),
@@ -124,6 +130,10 @@ def small_batch(
     future = FutureCodeTargets(
         code_ids=torch.randint(0, 4, (batch, 3, 3), generator=generator),
         available=torch.ones((batch, 3), dtype=torch.bool),
+        schedule=TransitionSchedule(
+            action_prefix_lengths=torch.tensor([[1, 2, 3]] * batch),
+            delta_times=torch.tensor([[0.1, 0.2, 0.3]] * batch),
+        ),
     )
     return CodeWAMBatch(
         state=state,

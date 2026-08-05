@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .blocks import masked_mean
+from .blocks import masked_mean, sinusoidal_embedding
 from .contracts import ContinuousState, StateInputs
 
 
@@ -51,6 +51,7 @@ class ContinuousStateEncoder(nn.Module):
         max_time: int = 32,
         max_cameras: int = 8,
         max_spatial_tokens: int = 1024,
+        use_relative_time: bool = False,
         dropout: float = 0.0,
     ):
         super().__init__()
@@ -76,6 +77,7 @@ class ContinuousStateEncoder(nn.Module):
         self.max_time = int(max_time)
         self.max_cameras = int(max_cameras)
         self.max_spatial_tokens = int(max_spatial_tokens)
+        self.use_relative_time = bool(use_relative_time)
         self.patch_projection = nn.Conv2d(
             latent_channels,
             dim,
@@ -84,6 +86,12 @@ class ContinuousStateEncoder(nn.Module):
         )
         self.camera_embedding = nn.Embedding(max_cameras, dim)
         self.time_embedding = nn.Embedding(max_time, dim)
+        if self.use_relative_time:
+            self.relative_time_projection = nn.Sequential(
+                nn.Linear(dim, dim),
+                nn.SiLU(),
+                nn.Linear(dim, dim),
+            )
         self.spatial_embedding = nn.Parameter(
             torch.randn(max_spatial_tokens, dim) * (dim**-0.5)
         )
@@ -154,6 +162,19 @@ class ContinuousStateEncoder(nn.Module):
 
         time_ids = torch.arange(time, device=latents.device)
         values = values + self.time_embedding(time_ids)[None, :, None, None]
+        if self.use_relative_time:
+            offsets = state.latent_time_offsets
+            if offsets is None:
+                offsets = (
+                    torch.arange(time, device=latents.device, dtype=latents.dtype)
+                    - float(time - 1)
+                )[None].expand(batch, -1)
+            else:
+                offsets = offsets.to(device=latents.device, dtype=latents.dtype)
+            relative_time = self.relative_time_projection(
+                sinusoidal_embedding(offsets.reshape(-1), self.dim)
+            ).reshape(batch, time, self.dim)
+            values = values + relative_time[:, :, None, None]
         temporal = values.permute(0, 2, 3, 1, 4).reshape(
             batch * views * spatial_tokens,
             time,
@@ -354,6 +375,13 @@ def temporal_pretraining_loss(
         ),
         proprio_valid=state.proprio_valid,
         past_action_valid=state.past_action_valid,
+        latent_time_offsets=(
+            None
+            if state.latent_time_offsets is None
+            else state.latent_time_offsets[:, : context_index + 1]
+        ),
+        proprio_time_offsets=state.proprio_time_offsets,
+        past_action_time_offsets=state.past_action_time_offsets,
     )
     context = state_encoder(context_state)
     return predictor.loss(

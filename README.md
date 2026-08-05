@@ -1,23 +1,25 @@
 # CodeWAM
 
 CodeWAM 是一个独立的 world-action model。冻结的 Wan-VAE 提供连续视觉 latent,三套离线
-RQ codebook 提供多时间尺度离散世界坐标;CodeWAM 自己学习共享 world belief、连续动作和
-action-conditioned code transition。FastWAM 只作为外部对照与历史兼容路径,不是 canonical
+RQ codebook 提供多时间尺度离散世界坐标;CodeWAM 自己学习结构化世界状态、连续动作和
+action-prefix-conditioned code transition。FastWAM 只作为外部对照与历史兼容路径,不是 canonical
 模型依赖。
 
 ## 核心结构
 
 ```text
-Wan latent -> ContinuousStateEncoder -> H --------------------+
-                                                             |
-causal Q2/Q3/Q5 IDs -> FrozenCodebookAdapter -> 9 tokens E --+-> WorldBeliefCore -> B
-proprio + past actions ---------------------------------------+
-                                                                  |          |
-                                                        language  |          | GT action (train only)
-                                                                  v          v
-                                                        ActionFlowDecoder  CodeDynamicsDecoder
-                                                                  |          |
-                                                          action chunk   future code IDs
+Wan latent history -> Causal Visual Stem -> H --------------------+
+                                                                  |
+timed proprio/actions -> WorldAttention(Q=slots,KV=[H,R]) -> G0 --+-> G
+                                                                  ^
+Q2/Q3/Q5 IDs -> cumulative RQ prefixes -> 3 clock tokens -> gate -+
+
+S={G,H,clock tokens,current proprio}
+       | + language                         | + action prefix/delta time
+       v                                    v
+ActionFlowDecoder                   MultiClockTransition
+       |                                    |
+continuous action chunk                future RQ paths
 ```
 
 三套码本使用严格因果窗口:
@@ -28,10 +30,10 @@ Q3(t) = RQ3([u(t-6),  u(t-3), u(t)])
 Q5(t) = RQ5([u(t-10), u(t-5), u(t)])
 ```
 
-它们彼此独立,三级 residual centers 不共享。九个 code measurement 不求和、不替代连续
-latent,也不在联合训练中更新。所有可用 code 默认进入任务无关的 `B`;语言只进入
-ActionFlowDecoder,未来 code 只作为 CodeDynamicsDecoder 的标签。v1 只有 action flow 与
-future-code classification 两个 loss,基本推理不运行 future-code decoder。
+它们彼此独立,三级 residual centers 不共享。v2 在每个 family 内使用累积 RQ 前缀
+`e1/e1+e2/e1+e2+e3`,再形成一个 clock token;code 不替代连续 latent,centers 也不在联合训练中
+更新。语言只进入 ActionFlowDecoder,未来 code 只作为 MultiClockTransition 标签。联合训练
+仍只有 action flow 与 future-code classification 两个 loss,基本推理不运行 transition。
 
 ## 文档
 
@@ -49,7 +51,7 @@ codewam/
 ├── codebook_eval/ # canonical manifest, pooled shards, streaming RQ and pipeline
 ├── data/          # DROID cache, frozen language and policy normalization
 ├── experiments/   # controlled Gate 2 and C0/C1/C2 protocols
-├── models/        # independent five-module CodeWAM v1
+├── models/        # retained v1 baseline and structured CodeWAM v2
 ├── model.py       # legacy FastWAM-compatible prototype
 ├── runtime.py     # legacy Hydra factory
 └── probe.py       # legacy compatibility probe
@@ -60,7 +62,8 @@ tests/             # canonical codebook contracts and numerical equivalence
 
 `codewam/codebook.py` 和当前 `codewam/model.py` 中的单 token online-EMA 路径不是 canonical
 CodeWAM,配置必须保持默认关闭。独立模型位于 `codewam/models/`;legacy `CodeWAM` 仍是惰性
-兼容导出,`CodeWAMV1`、`CodeWAMConfig` 和 `build_codewam_v1` 不依赖 FastWAM。
+兼容导出。`CodeWAMV1/build_codewam_v1` 保留历史基线;当前候选由
+`CodeWAMV2/build_codewam_v2` 显式构造,二者都不依赖 FastWAM。
 
 ## 开始开发
 
@@ -70,9 +73,9 @@ CodeWAM,配置必须保持默认关闭。独立模型位于 `codewam/models/`;le
 source .venv/bin/activate
 python -m pip install -e .
 python -m unittest discover -s tests -v
-python scripts/smoke_codewam_v1.py \
+python scripts/smoke_codewam_v2.py \
   --device cpu \
-  --output runs/model_smoke/codewam_v1.json
+  --output runs/model_smoke/codewam_v2.json
 ```
 
 集群工程 smoke 把 `--device cpu` 改为 `--device cuda`;该命令使用合成 tensor 和合成 frozen
@@ -187,11 +190,12 @@ BridgeData V2 frozen-transfer and independent-refit replication
 
 ## 当前状态
 
-- 已锁定:五个 CodeWAM-owned 模块、三套独立 causal RQ、九个只读 code measurements、
-  任务无关 world belief、连续 action flow、action-conditioned code dynamics 和双 loss。
-- 已实现:`codewam/models/` 的 typed contracts、causal spatiotemporal state encoder、
-  chart-local frozen-center adapter、task-free belief、continuous action flow、independent/prefix
-  future-code decoder、可丢弃 Stage-0 temporal head,以及 `C0/C1/C2` 单一构建接口。
+- 当前候选:structured CodeWAM v2。三套独立 causal RQ 在 family 内形成三级累积 prefix 和
+  三个 clock token;WorldAttention 只读取连续视觉与带相对时间的机器人历史,code 通过零初始化
+  gate 修正 global belief。Policy 直接读取 `G/H/C/language/proprio`,避免精细信息瓶颈。
+- 已实现:`CodeWAMV2/build_codewam_v2`、hierarchical frozen-center adapter、typed relative-time
+  contracts、structured world state、continuous action flow,以及按每族 action prefix/delta time
+  对齐的轻量 GRU+MLP transition。`CodeWAMV1` 原样保留为历史对照。
 - 已实现的数据边界:expert/failure/recovery/unlabeled interaction/action-free video 五种角色分别
   控制 temporal、action imitation 和 dynamics supervision;失败动作不会进入 imitation loss,
   但失败状态仍可服务 world learning。
@@ -208,7 +212,8 @@ BridgeData V2 frozen-transfer and independent-refit replication
 - 已实现:RLDS endpoint audit、冻结 Q2/Q3/Q5 causal assigner、未池化多相机
   `JointWindowCache v1`、source-rate action/proprio、rank-aware Wan exporter、verified
   dataloader/collator,以及等预算 Gate 2 runner 与 episode-block bootstrap。
-- 已验证:190 项单元测试、单卡/双 rank centers 等价、
+- 已验证:199 项单元测试、CodeWAM v2 synthetic optimizer-step smoke、未来标签隔离、RQ prefix
+  累积等价、per-clock action-prefix 隔离、单卡/双 rank centers 等价、
   synthetic Q2/Q3/Q5 端到端 smoke、
   58,116-episode canonical DROID manifest、10,000-episode/756,225-tick Wan pooled cache、
   causal-prefix 零差异审计、完整 camera/pool/capacity 候选比较、val/test 一致的时间反事实
@@ -238,8 +243,9 @@ BridgeData V2 frozen-transfer and independent-refit replication
 - 已验证:`action` 与 `action_dict.cartesian_position + gripper_position` 在 DROID-10k 的
   3,002,148 个 source rows 上逐值相等;六种 position/velocity 分量均已冻结。尚未实现的是
   部署侧 online runtime 和闭环 benchmark。
-- 下一步:先锁定 controller-compatible raw target 与 orientation representation,再做足够收敛的
-  多种子 C0/C1/C2 learning curve;只有确认不是短预算或梯度干扰后才调整 C2 权重/训练阶段。
+- 下一步:先锁定 controller-compatible raw target 与 orientation representation,再在真实 joint
+  batch 上完成 v2 CUDA optimizer-step/显存/延迟 smoke,随后做足够收敛的 v2 多种子 C0/C1/C2
+  learning curve;只有确认不是短预算或梯度干扰后才调整 C2 权重/训练阶段。
   LIBERO 使用独立 chart/refit,不能把 DROID code ID 当成共享语义。
 
 外部代码 revision 和模型来源固定在 [`upstreams.yaml`](./upstreams.yaml)。数据集、模型、
